@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+  <meta name="theme-color" content="#0e0e0e">
+  <meta name="color-scheme" content="dark">
+  <meta name="description" content="Personal Indian stock market trading terminal — NSE/MCX live data, options strategy, swing trade scoring">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="manifest" href="/manifest.webmanifest">
+
+  <!-- TradeDesk professional web app icons -->
+  <link rel="icon" type="image/png" sizes="64x64" href="data:image/png;base64,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">
+  <link rel="icon" type="image/png" sizes="192x192" href="/icon-192.png">
+  <link rel="apple-touch-icon" sizes="192x192" href="/icon-192.png">
+  <title>TradeDesk v1.0 — Live Indian Market</title>
+  <link rel="stylesheet" href="/css/base.css">
+
+
+<!-- v23 bottom tab slight lower: visual-only, keeps hit area and content clearance -->
+<link rel="stylesheet" href="/css/td-v23-bottom-tab-slight-lower.css">
+
+
+
+<!-- v24 professional trading terminal visual refresh: desktop only, CSS only, no mobile layout impact -->
+<link rel="stylesheet" href="/css/td-v24-professional-desktop-ui.css">
+
+</head>
+<body class="td-index-mode">
+
+<header class="hdr">
+  <div class="logo">TradeDesk</div>
+  <div class="live-dot" title="Live data"></div>
+  <div class="tnav">
+    <button class="nbtn active" data-view="indices">Indices</button>
+    <button class="nbtn" data-view="stocks">Stocks</button>
+    <button class="nbtn" data-view="commodities">MCX</button>
+<!-- hidden: not used for trading; remove style to show again -->
+    <button class="nbtn" data-view="markets">Markets</button>
+  </div>
+  <div class="hdr-right">
+    <span class="mpill" id="mpill">--</span>
+    <!-- Logout is POST-only on the server (a GET link let any page log the user out). -->
+    <form method="POST" action="/auth/logout" style="display:inline;margin:0"><button type="submit" style="font-size:.7rem;padding:3px 10px;background:rgba(255,255,255,.04);border:1px solid #2a2a3a;border-radius:20px;color:#5a5a7a;text-decoration:none;white-space:nowrap;cursor:pointer;font-family:inherit" title="Sign out">🔒 Logout</button></form>
+  </div>
+</header>
+
+<main class="ml" role="main">
+  <div class="ip" id="sidebar">
+    <div class="view active" id="view-indices">
+      <div class="vt">NSE Indices</div>
+      <div class="ic" data-symbol="NSE:NIFTY" data-name="Nifty 50"><div class="icn">Nifty 50</div><div class="ics">NSE · Broad Market</div><div class="icp" id="q-NSE:NIFTY">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYNXT50" data-name="Nifty Next 50"><div class="icn">Nifty Next 50</div><div class="ics">NSE · Broad Market</div><div class="icp" id="q-NSE:NIFTYNXT50">--</div></div>
+      <div class="ic" data-symbol="NSE:BANKNIFTY" data-name="Nifty Bank"><div class="icn">Nifty Bank</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:BANKNIFTY">--</div></div>
+      <div class="ic" data-symbol="NSE:FINNIFTY" data-name="FinNifty"><div class="icn">FinNifty</div><div class="ics">NSE · Financial Services</div><div class="icp" id="q-NSE:FINNIFTY">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYFINEXBANK" data-name="Nifty Fin Services Ex-Bank"><div class="icn">Nifty Fin Services Ex-Bank</div><div class="ics">NSE · Financial Services</div><div class="icp" id="q-NSE:NIFTYFINEXBANK">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYPVTBANK" data-name="Nifty Private Bank"><div class="icn">Nifty Private Bank</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYPVTBANK">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYPSUBANK" data-name="Nifty PSU Bank"><div class="icn">Nifty PSU Bank</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYPSUBANK">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYIT" data-name="Nifty IT"><div class="icn">Nifty IT</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYIT">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYAUTO" data-name="Nifty Auto"><div class="icn">Nifty Auto</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYAUTO">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYPHARMA" data-name="Nifty Pharma"><div class="icn">Nifty Pharma</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYPHARMA">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYFMCG" data-name="Nifty FMCG"><div class="icn">Nifty FMCG</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYFMCG">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYMETAL" data-name="Nifty Metal"><div class="icn">Nifty Metal</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYMETAL">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYREALTY" data-name="Nifty Realty"><div class="icn">Nifty Realty</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYREALTY">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYMEDIA" data-name="Nifty Media"><div class="icn">Nifty Media</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYMEDIA">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYENERGY" data-name="Nifty Energy"><div class="icn">Nifty Energy</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYENERGY">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYOILGAS" data-name="Nifty Oil & Gas"><div class="icn">Nifty Oil &amp; Gas</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYOILGAS">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYHEALTH" data-name="Nifty Healthcare"><div class="icn">Nifty Healthcare</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYHEALTH">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYCONSDUR" data-name="Nifty Consumer Durables"><div class="icn">Nifty Consumer Durables</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYCONSDUR">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYCONSUMPTION" data-name="Nifty India Consumption"><div class="icn">Nifty India Consumption</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYCONSUMPTION">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYCOMMODITIES" data-name="Nifty Commodities"><div class="icn">Nifty Commodities</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYCOMMODITIES">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYINFRA" data-name="Nifty Infra"><div class="icn">Nifty Infra</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYINFRA">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYPSE" data-name="Nifty PSE"><div class="icn">Nifty PSE</div><div class="ics">NSE · Sector</div><div class="icp" id="q-NSE:NIFTYPSE">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYHOUSING" data-name="Nifty Housing"><div class="icn">Nifty Housing</div><div class="ics">NSE · Theme</div><div class="icp" id="q-NSE:NIFTYHOUSING">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYDIGITAL" data-name="Nifty India Digital"><div class="icn">Nifty India Digital</div><div class="ics">NSE · Theme</div><div class="icp" id="q-NSE:NIFTYDIGITAL">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYTOURISM" data-name="Nifty India Tourism"><div class="icn">Nifty India Tourism</div><div class="ics">NSE · Theme</div><div class="icp" id="q-NSE:NIFTYTOURISM">--</div></div>
+      <div class="ic" data-symbol="NSE:NIFTYMID150" data-name="Nifty Midcap 150"><div class="icn">Nifty Midcap 150</div><div class="ics">NSE · Broad Market</div><div class="icp" id="q-NSE:NIFTYMID150">--</div></div>
+    </div>
+    <div class="view" id="view-stocks">
+      <div class="vt">Search Stock</div>
+      <div class="stock-search-wrap">
+        <div class="sbox"><input type="text" id="sinp" placeholder="Type name or symbol e.g. Reliance…" autocomplete="off" spellcheck="false"><button id="sgo">Go</button></div>
+        <div id="suggestions"></div>
+      </div>
+      <button type="button" id="stockScreenerBtn" class="chip" style="width:100%;justify-content:center;margin-bottom:8px;color:var(--acc);border-color:var(--brdl);font-weight:800">✅ Open Screener</button>
+      <div id="recentStocks"></div>
+    </div>
+    <div class="view" id="view-commodities">
+      <div class="vt">MCX Commodities</div>
+      <div class="ic" data-symbol="MCX:GOLD"       data-name="Gold (MCX)">       <div class="icn">Gold</div>        <div class="ics">MCX · ₹/10g proxy</div>  <div class="icp" id="q-MCX:GOLD">--</div></div>
+      <div class="ic" data-symbol="MCX:GOLDPETAL"  data-name="Gold Petal (MCX)"> <div class="icn">Gold Petal</div>  <div class="ics">MCX · ₹/1g proxy</div>       <div class="icp" id="q-MCX:GOLDPETAL">--</div></div>
+      <div class="ic" data-symbol="MCX:SILVER"     data-name="Silver (MCX)">     <div class="icn">Silver</div>      <div class="ics">MCX · ₹/kg proxy</div>  <div class="icp" id="q-MCX:SILVER">--</div></div>
+      <div class="ic" data-symbol="MCX:CRUDEOIL"   data-name="Crude Oil (MCX)">  <div class="icn">Crude Oil</div>   <div class="ics">MCX · ₹/barrel proxy</div>  <div class="icp" id="q-MCX:CRUDEOIL">--</div></div>
+      <div class="ic" data-symbol="MCX:NATURALGAS" data-name="Natural Gas (MCX)"><div class="icn">Natural Gas</div> <div class="ics">MCX · ₹/MMBtu proxy</div>  <div class="icp" id="q-MCX:NATURALGAS">--</div></div>
+      <div class="ic" data-symbol="MCX:COPPER"     data-name="Copper (MCX)">     <div class="icn">Copper</div>      <div class="ics">MCX · ₹/kg proxy</div>      <div class="icp" id="q-MCX:COPPER">--</div></div>
+    </div>
+    <div class="view" id="view-markets">
+      <div class="vt">Global Markets</div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">Global Bias</div><div class="ics">Computed · US/Asia/VIX</div></div><div class="icp" id="g-gift-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">Nasdaq</div><div class="ics">US · Tech</div></div><div class="icp" id="g-nasdaq-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">S&amp;P 500</div><div class="ics">US · Broad Market</div></div><div class="icp" id="g-sp500-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">Dow Jones</div><div class="ics">US · Blue Chips</div></div><div class="icp" id="g-dow-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">Nikkei</div><div class="ics">Japan</div></div><div class="icp" id="g-nikkei-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">Hang Seng</div><div class="ics">Hong Kong</div></div><div class="icp" id="g-hangseng-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">USD/INR</div><div class="ics">Currency</div></div><div class="icp" id="g-usdinr-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">DXY</div><div class="ics">US Dollar Index</div></div><div class="icp" id="g-dxy-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">US 10Y Yield</div><div class="ics">Bond Yield</div></div><div class="icp" id="g-us10y-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">WTI Crude</div><div class="ics">Oil</div></div><div class="icp" id="g-wti-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">Brent Crude</div><div class="ics">Oil</div></div><div class="icp" id="g-brent-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">India VIX</div><div class="ics">Volatility</div></div><div class="icp" id="g-vix-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">IV Percentile</div><div class="ics">Options Pricing</div></div><div class="icp" id="g-ivpct-v">--</div></div>
+      <div class="ic mkt-row" data-global-tab="marketinfo"><div style="flex:1"><div class="icn">A/D Ratio</div><div class="ics">Nifty 50 Breadth</div></div><div class="icp" id="g-ad-v">--</div></div>
+    </div>
+  </div>
+
+  <div class="ap">
+    <div class="es" id="es">
+      <div class="ei">📊</div>
+      <div class="et">Select an instrument to analyse</div>
+      <div class="es2">Live NSE · MCX · Swing trade analysis</div>
+    </div>
+    <div class="ls" style="display:none" id="ls"><div class="sp"></div><div class="lt" id="lt">Fetching live data…</div></div>
+    <div class="ih" style="display:none" id="ih">
+      <div class="ihl"><div class="ihn" id="ihn">--</div><div class="ihx" id="ihx">--</div></div>
+      <div class="ihr"><div class="ihp" id="ihp">--</div><div class="ihc" id="ihc">--</div><div class="ihov" id="ihov">--</div><div class="iht" id="iht">--</div></div>
+      <button class="rb" id="rb">↻ Refresh</button>
+    </div>
+    <div class="tb" style="display:none" id="tbar">
+      <button class="tbt active" data-tab="overview">Overview</button>
+      <button class="tbt" data-tab="analysis">Analysis</button>
+      <button class="tbt" data-tab="strategy" style="display:none">Strategy</button>
+      <button class="tbt" data-tab="score" style="display:none">Decision</button>
+      <button class="tbt" data-tab="marketinfo">Market</button>
+      <button class="tbt" data-tab="alerts" style="display:none">Alerts</button>
+      <button class="tbt" data-tab="screener" style="display:none">Screener</button>
+    </div>
+    <div class="tc" style="display:none" id="tc"></div>
+  </div>
+</main>
+
+<!-- Shared swing-plan engine (same file the server uses for the screener) -->
+<script src="/swing-plan.js"></script>
+<script src="/js/app.js"></script>
+
+
+<!-- Real tab-mode + market compact fix: UI/routing only, no trading calculations changed -->
+<link rel="stylesheet" href="/css/td-screener-context.css">
+<link rel="stylesheet" href="/css/td-real-tab-mode-fix.css">
+<script src="/js/td-real-tab-mode-fix-js.js"></script>
+
+
+
+<!-- Bottom tab default-mode repair: UI only, no calculation changes -->
+<link rel="stylesheet" href="/css/td-bottom-default-fix.css">
+<script src="/js/td-bottom-default-fix-js.js"></script>
+
+
+
+<link rel="stylesheet" href="/css/td-polish-v7.css">
+<!-- Scroll + overlap fix only: CSS only, no logic/calculation changes -->
+<link rel="stylesheet" href="/css/td-scroll-overlap-fix-only.css">
+
+
+<!-- Bottom tab small lift + iPhone search zoom fix -->
+<link rel="stylesheet" href="/css/td-bottom-tab-small-lift-ios-fix.css">
+
+<!-- Final Markets top-nav repair: always show compact Global Market Snapshot in Markets view -->
+<script src="/js/td-final-market-snapshot-fix.js"></script>
+
+
+<link rel="stylesheet" href="/css/td-v25-quiet-terminal.css">
+<link rel="stylesheet" href="/css/td-v26-market-gradient.css">
+<link rel="stylesheet" href="/css/td-v24b.css">
+</body>
+</html>
+
+<!-- Final uniform mobile picker fix: Indices + MCX use the same compact two-column picker style as Global Markets -->
+<link rel="stylesheet" href="/css/td-final-uniform-picker-fix.css">
+<link rel="stylesheet" href="/css/td-ui-polish.css">

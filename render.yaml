@@ -1,0 +1,16 @@
+# Render Blueprint: Render reads this file when you choose New → Blueprint and pick this repository.
+# APP_PASSWORD is asked for once at creation (sync: false keeps it out of the repository).
+services:
+  - type: web
+    name: tradedesk
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm install
+    startCommand: npm start
+    healthCheckPath: /auth/login
+    envVars:
+      - key: APP_PASSWORD
+        sync: false
+      - key: NODE_ENV
+        value: production

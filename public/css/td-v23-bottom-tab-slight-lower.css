@@ -1,0 +1,10 @@
+@media(max-width:820px){
+  .tb{bottom:-4px!important;padding-bottom:calc(7px + env(safe-area-inset-bottom))!important;}
+  .ml{padding-bottom:calc(80px + env(safe-area-inset-bottom))!important;}
+  .tc{padding-bottom:calc(90px + env(safe-area-inset-bottom))!important;}
+}
+@media(max-width:420px){
+  .tb{bottom:-3px!important;}
+  .ml{padding-bottom:calc(78px + env(safe-area-inset-bottom))!important;}
+  .tc{padding-bottom:calc(88px + env(safe-area-inset-bottom))!important;}
+}

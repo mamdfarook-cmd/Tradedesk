@@ -1,0 +1,100 @@
+/* v25 "Quiet Terminal" theme - the last style layer, so it wins over the earlier ones (they use !important too).
+   Colour, borders, corners, shadows and weights only; no layout changes, no web fonts, no images.
+   Graphite surfaces, hairline borders, one blue accent kept apart from the green/red that mean up/down. */
+:root{
+  --bg:#0b0d10; --bgp:#0f1216; --bgc:#13171c; --bgi:#1a1f26;
+  --brd:#232a33; --brdl:#3a4552; --ctl:#4a5563;
+  --acc:#5b9cff; --acc2:#5b9cff; --acc-fg:#0b0d10; --acc-soft:rgba(91,156,255,.12);
+  --bull:#2fbf71; --bullb:rgba(47,191,113,.12); --sbull:#3fd483;
+  --bear:#f0616d; --bearb:rgba(240,97,109,.12); --sbear:#f08a4b;
+  --neu:#e2b340; --neub:rgba(226,179,64,.12);
+  --tx:#e6e9ee; --tx2:#a9b1bc; --tx3:#8a95a3;
+  --r:10px; --rs:7px;
+  --td-font:"Segoe UI Variable Text","Segoe UI",-apple-system,BlinkMacSystemFont,Roboto,"Helvetica Neue",Arial,sans-serif;
+  --td-surface:var(--bgc); --td-surface-soft:var(--bgc); --td-panel-bg:var(--bgc); --td-card-bg:var(--bgc);
+  --td-border:var(--brd); --td-soft-brd:var(--brd); --td-card-brd:var(--brd); --td-border-hot:var(--brdl);
+  --td-shadow:none; --shadow:none; --shadow2:none;
+}
+@media (max-width:820px){ :root{ --r:10px; --rs:7px; } }
+
+html,body{background:var(--bg)!important}
+body{background:var(--bg)!important;color:var(--tx)!important;letter-spacing:0!important;font-feature-settings:"tnum" 1,"kern" 1}
+
+/* Header and navigation: flat, one accent */
+.hdr{background:var(--bgp)!important;border-bottom:1px solid var(--brd)!important;box-shadow:none!important;backdrop-filter:none!important}
+.logo{color:var(--tx)!important;text-shadow:none!important;background:none!important;-webkit-text-fill-color:currentColor!important;font-weight:700!important}
+.logo::after{display:none!important}
+.live-dot{box-shadow:none!important}
+.mpill{background:transparent!important;border-color:var(--brd)!important;color:var(--tx2)!important;font-weight:600!important}
+.mpill.open{color:var(--bull)!important;border-color:rgba(47,191,113,.45)!important;background:var(--bullb)!important}
+.mpill.closed{color:var(--tx2)!important}
+.nbtn,.anl-btn{background:transparent!important;border:1px solid var(--brd)!important;color:var(--tx2)!important;font-weight:600!important;box-shadow:none!important}
+.nbtn:hover,.anl-btn:hover{border-color:var(--ctl)!important;color:var(--tx)!important;background:rgba(255,255,255,.03)!important}
+.nbtn.active,.anl-btn.active{background:var(--acc-soft)!important;border-color:rgba(91,156,255,.55)!important;color:#cfe0ff!important;box-shadow:none!important}
+.tbt{color:var(--tx2)!important;font-weight:600!important;background:transparent!important;box-shadow:none!important}
+.tbt:hover{color:var(--tx)!important}
+.tbt.active{color:var(--tx)!important;background:var(--bgc)!important;border-color:var(--brd)!important;box-shadow:inset 0 -2px 0 var(--acc)!important}
+.nbtn:focus-visible,.anl-btn:focus-visible,.tbt:focus-visible,.chip:focus-visible,.ic:focus-visible,button:focus-visible,input:focus-visible,select:focus-visible{outline:2px solid var(--acc)!important;outline-offset:2px!important}
+
+/* Instrument list: rows separated by hairlines instead of a card per row */
+.ip{background:var(--bgp)!important;border-right:1px solid var(--brd)!important}
+.ic{background:transparent!important;border:0!important;border-bottom:1px solid var(--brd)!important;border-radius:0!important;box-shadow:none!important;margin-bottom:0!important}
+.ic:hover{background:rgba(255,255,255,.03)!important;border-color:var(--brd)!important;box-shadow:none!important}
+.ic.active{background:var(--acc-soft)!important;box-shadow:inset 3px 0 0 var(--acc)!important;border-left:0!important}
+.icp{color:var(--tx)!important}
+.chip{background:transparent!important;border-color:var(--brd)!important;box-shadow:none!important;color:var(--tx2)!important}
+.chip:hover{border-color:var(--ctl)!important;color:var(--tx)!important;background:rgba(255,255,255,.03)!important}
+.chip.active{background:var(--acc-soft)!important;border-color:rgba(91,156,255,.55)!important;color:#cfe0ff!important}
+.sbox input,input[type=number],input[type=text],select{background:var(--bgi)!important;border:1px solid var(--ctl)!important;color:var(--tx)!important;border-radius:var(--rs)!important}
+#sgo{background:var(--acc)!important;color:var(--acc-fg)!important;border:0!important;box-shadow:none!important}
+
+/* Phone list picker ("Select Index") */
+.selector-toggle{background:var(--bgc)!important;border:1px solid var(--ctl)!important;box-shadow:none!important;color:var(--tx)!important}
+.selector-toggle:hover{border-color:var(--acc)!important}
+
+/* Instrument header, sub-tab bar, buttons and info boxes */
+.ih{background:var(--bgp)!important;border:0!important;border-bottom:1px solid var(--brd)!important;box-shadow:none!important}
+.analysis-bar,.analysis-bar-v14{background:transparent!important;border-color:var(--brd)!important;box-shadow:none!important}
+.rb,.idea-btn{background:transparent!important;border:1px solid var(--ctl)!important;color:var(--tx)!important;box-shadow:none!important}
+.rb:hover,.idea-btn:hover{border-color:var(--acc)!important;color:#cfe0ff!important;background:var(--acc-soft)!important}
+.idea-btn.ghost{color:var(--tx2)!important}
+.aib{background:var(--bgi)!important;border:1px solid var(--brd)!important;border-left:2px solid var(--acc)!important;box-shadow:none!important;color:var(--tx2)!important}
+.ap,.tc{background:var(--bg)!important}
+
+/* Cards: outer card = surface + hairline; inner items = slightly lighter tone, no border shadow */
+.ov-box,.sc,.strat-hero,.pulse-hero,.candle-card,.lvl-card,.gauge-card,.alert-panel,.scr-header,.scr-card,
+.trade-plan-card,.tp-section,.tp-decision,.pos-calc,.cg-gauge,.market-verdict,.ni,.coin-card,.earn-row,.cal-event,
+.alert-item,.sugg-item,.td-more,.idea-card,.ov-card,.scr-sum-card,.email-section,.td-mtab{
+  background:var(--bgc)!important;border:1px solid var(--brd)!important;box-shadow:none!important;border-radius:var(--r)!important}
+.cp-item,.ov-item,.sbi,.scd,.scr-met,.tp-item,.tp-mini,.tp-detail,.tp-qrow,.lvl-row,.pat-item,.sr,.coin-stat,.zone-row,.idea-grid>div{
+  background:var(--bgi)!important;border:1px solid transparent!important;box-shadow:none!important;border-radius:var(--rs)!important}
+.ov-box:hover,.scr-card:hover,.ov-card:hover,.coin-card:hover,.sugg-item:hover{border-color:var(--brdl)!important;box-shadow:none!important;background:var(--bgc)!important}
+/* The decision card keeps a thin colour edge so the verdict is found first */
+.tp-decision{border-top:2px solid var(--acc)!important}
+.idea-card{border-left:2px solid var(--acc)!important}
+
+/* Score tiles and state cards: tone surface, state shown as a thin top edge (plus the label/colour of the value) */
+.tp-score-mini,.scr-card.bull,.scr-card.bear{box-shadow:none!important}
+.tp-score-mini{background:var(--bgi)!important;border:1px solid transparent!important;border-top:2px solid var(--brdl)!important;border-radius:var(--rs)!important}
+.tp-score-mini.bull{border-top-color:var(--bull)!important}
+.tp-score-mini.bear{border-top-color:var(--bear)!important}
+.tp-score-mini.neutral{border-top-color:var(--neu)!important}
+
+/* Section labels: small caps-style, quieter */
+.ov-title,.st,.tp-kicker,.tp-section-title,.tp-decision-label,.scr-sum-label,.ov-label,.strat-label,.scl,.cp-label,
+.pm-label,.gauge-title,.lvl-header,.vt,.idea-kicker,.tp-detail-label{
+  font-weight:650!important;letter-spacing:.06em!important;color:var(--tx3)!important}
+.ov-val,.slv,.sn,.tp-val,.tp-detail-value,.strat-val,.cpb-val,.scr-score,.scr-sym{font-weight:650!important}
+
+/* Badges: quiet fill + text colour, border only as a hairline */
+.bdg{font-weight:700!important;letter-spacing:.04em!important;border-width:1px!important}
+.bdg.bull,.bdg.strong-bull{background:var(--bullb)!important;color:var(--bull)!important;border-color:rgba(47,191,113,.35)!important}
+.bdg.bear,.bdg.strong-bear{background:var(--bearb)!important;color:var(--bear)!important;border-color:rgba(240,97,109,.35)!important}
+.bdg.neutral,.bdg.na{background:var(--neub)!important;color:var(--neu)!important;border-color:rgba(226,179,64,.3)!important}
+
+/* Scrollbars */
+*::-webkit-scrollbar{width:8px;height:8px}
+*::-webkit-scrollbar-thumb{background:#2a323c;border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+*::-webkit-scrollbar-track{background:transparent}
+
+@media (prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

@@ -1,0 +1,27 @@
+{
+  "name": "tradedesk",
+  "version": "1.0.0",
+  "description": "TradeDesk v1.0 - personal Indian market terminal: NSE stocks and indices, MCX reference prices, options, swing screener, backtest and background alerts.",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js",
+    "check": "node --check server.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "keywords": [
+    "trading",
+    "nse",
+    "india",
+    "stock-market",
+    "options",
+    "swing-trade",
+    "gold",
+    "mcx"
+  ],
+  "author": "Private",
+  "license": "UNLICENSED",
+  "private": true
+}
