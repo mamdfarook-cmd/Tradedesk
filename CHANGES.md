@@ -1,3 +1,4 @@
+[CHANGES.md](https://github.com/user-attachments/files/34524536/CHANGES.md)
 # TradeDesk — fixed release (23 Oct 2026)
 
 ## Before you run it
@@ -486,3 +487,43 @@ No paid service, API key, database or new hosting. Nothing new to configure: eve
    - **Caching:** files are gzipped once, with ETags and revalidation. A repeat visit transfers about 6 KB instead of the whole page.
    - **Smaller:** the base64 icons were replaced by `icon-192.png`, the unused Yahoo / Marketaux preconnects removed, and 4 dead crypto / forward-test selectors removed.
    - **Not done:** the stacked `!important` style layers were moved, not rewritten. Merging them would risk visual changes for no functional gain.
+
+## Strategy upgrade + full review (7 Nov 2026)
+
+**Strategy** (all three tested on one year of data before adding)
+1. **Breakout with Volume is watch-only.** It had 33% wins and −0.21R over 108 trades. A pullback that qualifies now wins over a watch-only breakout in the setup picker.
+2. **Nifty trend gate:** READY and Ready-on-limit need Nifty above its EMA50 with EMA20 above EMA50.
+   - Screener and Overview use the same rule and the same wording.
+   - The sector / relative-strength gate stays.
+3. **Quick Bounce (RSI-2), a new setup.** Shared `SwingPlan.quickBounce`, computed on completed bars only.
+   - Rules: 2-day RSI under 10, price above its 50- and 200-day averages, Nifty above its 200-day average, no results within 5 trading days.
+   - Trade: buy at the next open, stop 2.5 × ATR, sell at the first close above the 5-day average or on day 10.
+   - Shown as its own screener group, an Overview card with a position calculator, and the 09:25 / 15:15 push. It is checked against the Overview like READY.
+
+Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 trades at 61% wins and +0.09R. Quick Bounce alone: 246 trades, 65% wins, 3.4 days.
+
+**Review fixes, server**
+- **Keep-awake runs around the clock.** A sleeping instance can't wake itself, so the 09:25 scan was missed.
+- **NSE 401/403 no longer counts as a rate limit.** That pause had blocked the fresh-session retry for the option chain, indices and results.
+- **Fin Services Ex-Bank never shows the raw ETF price.** It scales by the last known ratio, or fails so the last good value is used.
+- **Option Builder prices everything on one expiry**: strikes, estimates, Greeks and probability all use the NSE expiry it quotes. The expiry list is cached on its own, and chains are cached per expiry.
+- **Backtest**: completed bars only, and Quick Bounce's 5-day-average exits counted as target exits.
+- **Login cookies and the push key come from a random secret**: `APP_SECRET`, or `data/secret.key`. Before, they were derived from the password, which allowed offline guessing. A logout now survives restarts.
+- **Stock history allows 20 s in the Yahoo queue** (cold start failed with "No historical data"), and the page waits 30 s for it.
+- **Refresh forces a rescan**, at most one every 5 minutes.
+- **Dead `apiScreener` removed** (159 lines).
+
+**Review fixes, page**
+- **Trade Gate** no longer notifies a stock the Overview demoted.
+- **A slow scan** no longer overwrites a page the user opened meanwhile.
+- **Every screener mode switch stops the previous Overview-check loops**, so Refresh can't run two at once.
+- **Alerts are deleted and marked triggered by ID**, so a sync can't hit the wrong alert or make one fire again.
+- **The limit line** says "no limit plan" instead of "limit ₹0.00".
+- **The limit re-score** no longer overwrites the stock's real score.
+- **Market Pulse** shows a spinner while it loads.
+
+**Checked after the fixes**
+- Every tab of a stock, three indices and three MCX contracts, plus Markets, Screener, Backtest and Track Record: no errors, no empty pages, no NaN / undefined.
+- Screener vs Overview: 20 of 20 match.
+- Web Push end to end with the new key.
+- A logged-out cookie stays rejected after a restart.
