@@ -242,7 +242,9 @@ function scheduleHost(host, fn) {
 }
 function noteHostResult(host, status) {
   const st = hostState(host);
-  const blocked = status === 429 || status === 999 || (status === 403 && /yahoo|nseindia/i.test(host));
+  /* NSE answers 401/403 when its session cookie has expired - the callers fetch a fresh cookie and retry, so it is
+     not a rate limit (pausing NSE here blocked that retry and the option chain / indices / results for minutes). */
+  const blocked = status === 429 || status === 999 || (status === 403 && /yahoo/i.test(host));
   if (blocked) {
     /* Replies to requests that were already in flight when the pause started do not add strikes: one burst
        of 429s used to escalate straight to the 15-minute maximum. */
@@ -596,8 +598,19 @@ async function nseIndexPrice(sym) {
   return { liveRaw:+r.last, prevRaw:+r.previousClose || +r.last, rawPct:+r.percentChange || 0, todayOpen:+r.open || +r.last,
     todayHigh:+r.high || +r.last, todayLow:+r.low || +r.last, todayVol:0, changeBasis:'previousClose', basisTime:null, source:'NSE' };
 }
+const NSE_PROXY_RATIO = {};   /* index / ETF price, learned whenever NSE answered (apiQuote) */
 async function getIndexFallbackPrice(sym, ticker) {
-  if (NSE_INDEX_PRIMARY.has(sym)) { try { return await withTimeout(nseIndexPrice(sym), 15000, 'NSE index'); } catch (e) { console.warn('NSE index price failed, using Yahoo proxy:', sym, e.message); } }
+  if (NSE_INDEX_PRIMARY.has(sym)) {
+    try { return await withTimeout(nseIndexPrice(sym), 15000, 'NSE index'); }
+    catch (e) {
+      /* The Yahoo symbol is an ETF (~31 for an index at ~31,500): scale it by the last known ratio, or fail so the
+         last good value is served - a raw ETF price fired every "below" alert on this index. */
+      const k = NSE_PROXY_RATIO[sym];
+      if (!(k > 0)) throw new Error(`${sym}: NSE index value unavailable (${e.message}) and Yahoo only has an ETF proxy`);
+      const y = await getPriceAndChange(ticker, sym);
+      return { ...y, liveRaw: y.liveRaw * k, prevRaw: y.prevRaw * k, todayOpen: y.todayOpen * k, todayHigh: y.todayHigh * k, todayLow: y.todayLow * k, source: 'ETFxRatio' };
+    }
+  }
   try { return await getPriceAndChange(ticker, sym); }
   catch (e) {
     if (!NSE_INDEX_NAME[sym]) throw e;
@@ -2131,7 +2144,7 @@ async function apiStrategy(req, res, p) {
   const sym      = p.get('sym')      || 'NSE:NIFTY';
   const strat    = (p.get('strategy')|| 'iron_condor').toLowerCase().replace(/ /g,'_');
   const expiryIn = +(p.get('expiry') || 30);
-  const expiry   = Math.max(1, Math.min(90, Number.isFinite(expiryIn) ? expiryIn : 30));
+  let expiry     = Math.max(1, Math.min(90, Number.isFinite(expiryIn) ? expiryIn : 30));
   const ivParam  = p.get('iv')  ? +p.get('iv')  / 100 : null;
   const spotParam= p.get('spot') && +p.get('spot') > 0 ? +p.get('spot') : null;
   const lotParam = p.get('lot') ? +p.get('lot')  : null;   /* user-overridden lot size */
@@ -2164,6 +2177,16 @@ async function apiStrategy(req, res, p) {
     /* Guardrails: Black-Scholes breaks with zero/negative IV and becomes useless with extreme IV. */
     iv = Math.max(0.01, Math.min(2.00, iv));
 
+    /* Live NSE premiums for the index option legs (Nifty / Bank Nifty / FinNifty): the NSE expiry closest to the
+       chosen days. Strikes, estimates, Greeks and the probability then use THAT expiry too (Bank Nifty has monthly
+       expiries only: 7 days asked can mean 18 days priced). */
+    let chain = null;
+    const expiryAsked = expiry;
+    if (OC_SYMBOLS[sym] && p.get('live') !== '0') {
+      const want = new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10);
+      chain = await withTimeout(getOptionChain(sym, want), 20000, 'option chain').catch(() => null);
+      if (chain?.expiry) expiry = Math.max(1, Math.round((Date.parse(chain.expiry + 'T15:30:00+05:30') - Date.now()) / 86400000));
+    }
     const T   = expiry / 365;
     const si  = getStrikeInterval(sym, spot);
     /* Never guess a lot size: a silent default of 50 made every ₹ figure wrong for unknown symbols. */
@@ -2176,13 +2199,6 @@ async function apiStrategy(req, res, p) {
       return err(res, `IV ${(iv*100).toFixed(0)}% with ${expiry} days gives a strike at or below zero for ${strat}. Lower the IV or the expiry.`, 400);
     }
 
-    /* Live NSE premiums for the index option legs (Nifty / Bank Nifty / FinNifty), expiry closest to the
-       chosen days. Black-Scholes stays for any leg NSE has no quote for. */
-    let chain = null;
-    if (OC_SYMBOLS[sym] && p.get('live') !== '0') {
-      const want = new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10);
-      chain = await withTimeout(getOptionChain(sym, want), 20000, 'option chain').catch(() => null);
-    }
     const livePrem = (k, t) => chain ? SwingPlan.ocPremium(chain, k, t) : null;
 
     /* Apply user-supplied strike overrides — recalculate premiums & payoff */
@@ -2233,7 +2249,7 @@ async function apiStrategy(req, res, p) {
       result.oi = { pcr: chain.pcr, maxPain: chain.maxPain, callWalls: chain.callWalls, putWalls: chain.putWalls, expiry: chain.expiry, nseSpot: chain.spot };
     }
     send(res, {
-      sym, spot:+spot.toFixed(2), expiry, iv:+(iv*100).toFixed(1),
+      sym, spot:+spot.toFixed(2), expiry, expiryAsked, iv:+(iv*100).toFixed(1),
       strikeInterval:si, lotSize:lot, ...result,
       updatedAt: new Date().toISOString(),
     });
@@ -3563,7 +3579,16 @@ function softScreenerGateReasonsS(reasons) {
 }
 
 /* Setups that can be shown and alerted on, but are never a READY (buy-now) signal. */
-const WATCH_ONLY_SETUPS = new Set(['Pre-Breakout Watch', 'Momentum Continuation']);
+const WATCH_ONLY_SETUPS = new Set(['Pre-Breakout Watch', 'Momentum Continuation', 'Breakout with Volume']);   /* = SwingPlan.WATCH_ONLY */
+/* Same wording as the Overview's Ready Gate. */
+const NIFTY_TREND_WHY = 'Nifty not in an uptrend (needs Nifty above its EMA50 and EMA20 above EMA50) - no fresh swing longs';
+/* Daily bars that are complete: today's bar is still forming between 09:15 and 15:35 IST (same rule as the
+   Overview's getConfirmedDailyIndex). */
+function completedLenS(T) {
+  const n = (T || []).length; if (!n) return 0;
+  const { m, key } = istNowParts();
+  return istDateKeyS(T[n - 1]) === key && m >= 9 * 60 + 15 && m < 15 * 60 + 35 ? n - 1 : n;
+}
 function selectedFromStrategyS(x) {
   const reasons = x?.readyGate?.reasons || [];
   return { name: x.name, score: Math.round(+x.score || 0), action: WATCH_ONLY_SETUPS.has(x.name) ? 'WATCH' : (x.readyGate?.passed ? (x.action === 'READY' || +x.score >= 80 ? 'READY' : 'CONFIRM') : 'WATCH'),
@@ -3775,13 +3800,20 @@ async function runBacktestS() {
   const universe = screenerEligibleUniverseS();
   const niftyRaw = await safeFetch(() => yfChart('^NSEI', '1d', '2y'), 1);
   const nifty = niftyRaw ? parseBars(niftyRaw) : null;
+  if (nifty) { const cl = completedLenS(nifty.T); if (cl < nifty.T.length) ['T', 'O', 'H', 'L', 'C', 'V'].forEach(k => { nifty[k] = nifty[k].slice(0, cl); }); }
   const niftyByT = nifty ? new Map(nifty.T.map((t, k) => [istDateKeyS(t), k])) : new Map();
+  /* Nifty trend (READY gate) and 200-day average (Quick Bounce) for every date, as the live scan uses them. */
+  const nEma = p => { if (!nifty) return []; const k = 2 / (p + 1), o = []; nifty.C.forEach((v, i) => o.push(i ? v * k + o[i - 1] * (1 - k) : v)); return o; };
+  const nE20 = nEma(20), nE50 = nEma(50);
+  const nUp = k => k != null && nifty.C[k] > nE50[k] && nE20[k] > nE50[k];
+  const nAbove200 = k => k != null && k >= 199 && nifty.C[k] > nifty.C.slice(k - 199, k + 1).reduce((a, b) => a + b, 0) / 200;
   const trades = [];
   let stocks = 0;
   for (const ticker of universe) {
     let raw = null;
     try { raw = await withTimeout(safeFetch(() => yfChart(ticker, '1d', '2y'), 1), 20000, ticker + ' backtest'); } catch {}
     const bars = raw ? parseBars(raw) : null;
+    if (bars) { const cl = completedLenS(bars.T); if (cl < bars.T.length) ['T', 'O', 'H', 'L', 'C', 'V'].forEach(k => { bars[k] = bars[k].slice(0, cl); }); }
     if (!bars || bars.C.length < 320) continue;
     stocks++;
     let busyUntil = -1;
@@ -3790,12 +3822,37 @@ async function runBacktestS() {
       if (i <= busyUntil) continue;
       const sl = k => bars[k].slice(0, i + 1);
       const C = sl('C'), H = sl('H'), L = sl('L'), V = sl('V'), T = sl('T');
+      const nk = niftyByT.get(istDateKeyS(T[T.length - 1]));
+      /* Quick Bounce (RSI-2): signal at the close, buy the next open, sell at the first close above the 5-day
+         average or day 10, stop 2.5 ATR under the signal close. */
+      const qb = SwingPlan.quickBounce({ C, H, L });
+      if (qb?.ok && nifty && nAbove200(nk)) {
+        const entry = bars.O[i + 1];
+        if (entry > qb.stop) {
+          let t = null;
+          for (let j = i + 1, d = 1; j < n && d <= 10; j++, d++) {
+            const o = j === i + 1 ? entry : bars.O[j];
+            if (bars.L[j] <= qb.stop) { const px = Math.min(o, qb.stop); t = { exit: px, days: d, how: 'SL', exitIdx: j }; break; }
+            const s5 = bars.C.slice(j - 4, j + 1).reduce((a, b) => a + b, 0) / 5;
+            if (bars.C[j] > s5 || d === 10) { t = { exit: bars.C[j], days: d, how: bars.C[j] > s5 ? 'SMA5' : 'Time', exitIdx: j }; break; }
+          }
+          if (t) {
+            const risk = entry - qb.stop;
+            trades.push({ sym: ticker.replace(/\.(NS|BO)$/, ''), date: istDateKeyS(T[T.length - 1]), setup: 'Quick Bounce (RSI-2)', kind: 'Quick',
+              r: +((t.exit - entry) / risk).toFixed(2), days: t.days, how: t.how, entry: +entry.toFixed(2), entryDate: istDateKeyS(bars.T[i + 1]),
+              stop: qb.stop, target: null, exit: +t.exit.toFixed(2), exitDate: istDateKeyS(bars.T[t.exitIdx]) });
+            busyUntil = t.exitIdx;
+            continue;
+          }
+        }
+      }
       const m = qualifiedMetricsS({ C, H, L, V, weekly: null, marketCapCr: null, prevIdx: i - 1 });
       if (m.bias !== 'Bullish' || !m.picked) continue;
       const chk = readyChecksS(m, T, C);
       if (!chk.readyCore && !chk.limitCore) continue;
+      if (nifty && !nUp(nk)) continue;   /* Nifty trend gate, as the live scan */
       if (nifty) {   /* relative strength (3 months) as the strength gate's measurable half */
-        const ni = niftyByT.get(istDateKeyS(T[T.length - 1]));
+        const ni = nk;
         const rs = ni != null ? SwingPlan.relStrength(C, nifty.C.slice(0, ni + 1)) : null;
         if (rs && Number.isFinite(rs.rs3m) && rs.rs3m <= 0) continue;
       }
@@ -3828,7 +3885,7 @@ async function runBacktestS() {
       avgWinR: wins.length ? +(wins.reduce((a, t) => a + t.r, 0) / wins.length).toFixed(2) : null,
       avgLossR: losses.length ? +(losses.reduce((a, t) => a + t.r, 0) / losses.length).toFixed(2) : null,
       avgDays: list.length ? +(list.reduce((a, t) => a + t.days, 0) / list.length).toFixed(1) : null,
-      byExit: { T1: list.filter(t => t.how === 'T1').length, SL: list.filter(t => t.how === 'SL').length, Time: list.filter(t => t.how === 'Time').length },
+      byExit: { T1: list.filter(t => t.how === 'T1' || t.how === 'SMA5').length, SL: list.filter(t => t.how === 'SL').length, Time: list.filter(t => t.how === 'Time').length },   /* SMA5 = Quick Bounce's target exit */
       worstLosingStreak: worst };
   };
   const groups = {};
@@ -3836,10 +3893,10 @@ async function runBacktestS() {
   const dates = trades.map(t => t.date).sort();
   const out = { generatedAt: new Date().toISOString(), seconds: Math.round((Date.now() - started) / 1000), stocks,
     from: dates[0] || null, to: dates[dates.length - 1] || null,
-    all: stat(trades), ready: stat(trades.filter(t => t.kind === 'READY')), limit: stat(trades.filter(t => t.kind === 'Limit')),
+    all: stat(trades), ready: stat(trades.filter(t => t.kind === 'READY')), limit: stat(trades.filter(t => t.kind === 'Limit')), quick: stat(trades.filter(t => t.kind === 'Quick')),
     bySetup: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, stat(v)]).sort((a, b) => b[1].trades - a[1].trades)),
     recent: trades.slice().sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 40),
-    rules: 'Signal at the close; READY buys the next open, Ready-on-limit buys when the next 3 days reach the limit. Exit at SL, T1 or the day-10 close; SL and T1 on the same day counts as SL. One trade per stock at a time. No charges. Results-date and sector filters are not replayed; 3-month relative strength vs Nifty is.' };
+    rules: 'Signal at the close; READY buys the next open, Ready-on-limit buys when the next 3 days reach the limit. Exit at SL, T1 or the day-10 close; SL and T1 on the same day counts as SL. Quick Bounce buys the next open and sells at the first close above the 5-day average or day 10. One trade per stock at a time. No charges (about 0.25% a round trip for delivery). Nifty trend, 3-month relative strength and breakout watch-only are replayed; results dates and sector strength are not.' };
   BACKTEST_CACHE = out;
   try { require('fs').mkdirSync(require('path').dirname(BACKTEST_FILE), { recursive: true }); require('fs').writeFileSync(BACKTEST_FILE, JSON.stringify(out)); } catch {}
   return out;
@@ -3899,13 +3956,17 @@ async function getNiftyRegime() {
     else if (price > e50) { status = 'CAUTION'; allowReady = true; note = 'Nifty above EMA50 but losing momentum - longs allowed, use smaller size'; }
     else if (price > e200) { status = 'CORRECTION'; allowReady = false; note = 'Nifty below EMA50 - no fresh swing longs; candidates shown as Watchlist'; }
     else { status = 'BEAR'; allowReady = false; note = 'Nifty below EMA200 - downtrend; no fresh swing longs'; }
-    NIFTY_REGIME_CACHE = { status, allowReady, nifty:+price.toFixed(2), ema20:+e20.toFixed(2), ema50:+e50.toFixed(2), ema200:+e200.toFixed(2), note };
+    /* trendUp: the READY gate (backtest 7 Nov 2026 - pullbacks went from break-even to +0.3% a trade with it).
+       aboveSma200: the Quick Bounce (RSI-2) market filter. */
+    const sma200 = C.slice(n - 200).reduce((a, b) => a + b, 0) / 200;
+    NIFTY_REGIME_CACHE = { status, allowReady, nifty:+price.toFixed(2), ema20:+e20.toFixed(2), ema50:+e50.toFixed(2), ema200:+e200.toFixed(2), note,
+      trendUp: price > e50 && e20 > e50, sma200: +sma200.toFixed(2), aboveSma200: price > sma200 };
     NIFTY_CLOSES = C.slice();
     NIFTY_REGIME_TS = Date.now();
     return NIFTY_REGIME_CACHE;
   } catch (er) {
     console.warn('Nifty regime fetch failed:', er.message);
-    return { status:'UNKNOWN', allowReady:true, nifty:null, ema20:null, ema50:null, ema200:null, note:'Nifty data unavailable - regime filter skipped; check the market trend manually' };
+    return { status:'UNKNOWN', allowReady:true, nifty:null, ema20:null, ema50:null, ema200:null, trendUp:null, sma200:null, aboveSma200:null, note:'Nifty data unavailable - regime filter skipped; check the market trend manually' };
   }
 }
 
@@ -4005,7 +4066,8 @@ function resultsCheckFor(sym, cal, todayKey) {
 let MY_TRADE_SCREENER_INFLIGHT = null;
 async function apiMyTradeScreener(req, res) {
   const q = url.parse(req.url, true).query || {};
-  const forceRefresh = q.refresh === '1' || q.force === '1' || q.nocache === '1';
+  /* A forced rescan (~250 Yahoo calls) is allowed at most every 5 minutes; inside that, the fresh result is reused. */
+  const forceRefresh = (q.refresh === '1' || q.force === '1' || q.nocache === '1') && !(MY_TRADE_SCREENER_CACHE && Date.now() - MY_TRADE_SCREENER_TS < 5 * 60 * 1000);
   if (!forceRefresh && MY_TRADE_SCREENER_CACHE && Date.now() - MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL) return send(res, MY_TRADE_SCREENER_CACHE);
   /* A full scan is ~150 Yahoo calls. Concurrent requests (several tabs, refresh clicks) now share the
      scan already running instead of each starting another one. */
@@ -4075,6 +4137,7 @@ async function runMyTradeScreenerScan() {
   let biasEligibleCount = 0;
   const ready = [];
   const watch = [];
+  const quickCands = [];
 
   for (let i = 0; i < universe.length; i += BATCH) {
     if (Date.now() - startedAt > maxScanMs) { timedOut = true; break; }
@@ -4099,6 +4162,9 @@ async function runMyTradeScreenerScan() {
         /* No upper price cap: share price says nothing about swing quality (it excluded most Nifty heavyweights). */
         if (!(m.price > 10)) return null;
         priceEligibleCount++;
+        /* Quick Bounce (RSI-2) on completed bars - independent of the swing setups below. */
+        { const cl = completedLenS(daily.T); const qb = SwingPlan.quickBounce({ C: C.slice(0, cl), H: H.slice(0, cl), L: L.slice(0, cl) });
+          if (qb?.ok) quickCands.push({ ticker, qb, price: +m.price.toFixed(2) }); }
         /* 1-month return for the sector-strength ranking (every eligible stock counts, not only bullish ones). */
         const secInfo = sectorInfoFor(ticker);
         if (secInfo?.sector && C.length > 22) sectorRet.push({ sector: secInfo.sector, ret: (C[C.length-1] / C[C.length-22] - 1) * 100 });
@@ -4242,6 +4308,11 @@ async function runMyTradeScreenerScan() {
     return [sp ? `${sec} sector down ${Math.abs(sp.ret)}% in 1 month` : 'Sector strength unknown', rsUp === null ? 'RS vs Nifty unavailable' : `lagging Nifty (3M RS ${x.rs3m}%)`].join(' and ');
   };
   for (const x of ready.splice(0)) {
+    if (marketTrend.trendUp === false) {
+      regimeBlockedCount++;
+      watch.push({ ...x, tradeStatus:'WATCH', isStrictQualified:false, regimeBlock:true, watchReason: NIFTY_TREND_WHY, confirmationNeeded: NIFTY_TREND_WHY, trigger:'Needs Nifty back above its EMA50 with EMA20 above EMA50' });
+      continue;
+    }
     const why = strengthWhy(x);
     if (!why) {
       if (!marketTrend.allowReady) x.marketNote = `Market ${String(marketTrend.status).toLowerCase()}: passed on sector / relative strength - use smaller size`;
@@ -4252,7 +4323,7 @@ async function runMyTradeScreenerScan() {
   }
   for (const x of watch) {
     /* Ready-on-limit passes the same strength gate as READY. */
-    if (x.limitReady) { const why = strengthWhy(x); if (why) { x.limitReady = false; x.rankScore -= 500; x.watchReason = `${why} · ${x.watchReason}`; x.confirmationNeeded = x.watchReason; } continue; }
+    if (x.limitReady) { const why = marketTrend.trendUp === false ? NIFTY_TREND_WHY : strengthWhy(x); if (why) { x.limitReady = false; x.rankScore -= 500; x.watchReason = `${why} · ${x.watchReason}`; x.confirmationNeeded = x.watchReason; } continue; }
     if (x.regimeBlock || x.rsOk !== false) continue;
     const why = strengthWhy(x);
     if (why) { x.watchReason = `${why} · ${x.watchReason || ''}`.replace(/ · $/, ''); x.confirmationNeeded = x.watchReason; }
@@ -4279,10 +4350,26 @@ async function runMyTradeScreenerScan() {
     .sort(sortRank)
     .slice(0, 20)
     .map(x => ({...x, screenerNo:2, screenerName:'Watchlist', confirmationRequired:true, selectedAction:'CONFIRM'}));
+  /* Quick Bounce list: RSI-2 dips in large caps above their 50/200-day averages, only while Nifty is above its
+     200-day average, no results within 5 trading days, not already READY. Most oversold first. */
+  const niftyOk200 = marketTrend.aboveSma200 !== false;
+  const quickBounce = !niftyOk200 ? [] : quickCands
+    .filter(q => !readySymsAll.has(q.ticker.replace(/\.(NS|BO)$/, '').toUpperCase()))
+    .map(q => {
+      const sym = q.ticker.replace(/\.(NS|BO)$/, ''), ri = resultsCheckFor(sym, resultsCal, todayKey);
+      const sec = sectorInfoFor(sym)?.sector || null;
+      return { sym, ticker: q.ticker, price: q.price, ...q.qb, sector: sec, resultsDate: ri?.date || null, resultsBlock: !!ri?.block,
+        resultsTradingDays: ri ? ri.tradingDays : null, resultsRecent: !!ri?.recent };
+    })
+    .filter(q => !q.resultsBlock)
+    .sort((a, b) => a.rsi2 - b.rsi2).slice(0, 15);
+  const quickBounceNote = !niftyOk200 ? `Quick Bounce paused: Nifty is below its 200-day average (${marketTrend.sma200})` : '';
   LAST_SCAN_DIAG = { ts: Date.now(), rows: scanDiag };
   const result = {
     picks,
     watchlist,
+    quickBounce,
+    quickBounceNote,
     screen1: picks,
     screen2: watchlist,
     duplicateCheck: {readySymbols: readySymsAll.size, watchlistExcludesAllReady: true},
@@ -4313,7 +4400,8 @@ async function runMyTradeScreenerScan() {
     },
     universeLabel: 'Eligible NSE large-cap scan: market cap > ₹35,000Cr, price > ₹10, bullish bias only',
     screenerFlow: [
-      {step:'Market', rule:'READY only when Nifty is above EMA50 with >=40% of stocks above their 50-DMA, or breadth >=60% (broad recovery)'},
+      {step:'Market', rule:'READY only while Nifty is above its EMA50 with EMA20 above EMA50; plus sector up (1M) or beating Nifty (3M)'},
+      {step:'Quick Bounce', rule:'RSI-2 under 10, close above the 50/200-day averages, Nifty above its 200-day average; exit at the first close above the 5-day average or day 10'},
       {step:'Relative strength', rule:'READY needs the stock to outperform Nifty over ~3 months; leaders rank higher'},
       {step:'Volume', rule:'Pullbacks: quiet pullback, green bounce day on >=1.0x volume · Breakout: >=1.1x'},
       {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days`},
@@ -4343,165 +4431,6 @@ const SCREENER_TTL = 60 * 60 * 1000; /* 1 hour cache */
 
 /* News cache — per symbol, 15 min TTL */
 
-async function apiScreener(req, res) {
-  const q = url.parse(req.url, true).query || {};
-  const forceRefresh = q.refresh === '1' || q.force === '1' || q.nocache === '1';
-
-  /* Serve cache if fresh unless user pressed Refresh */
-  if (!forceRefresh && SCREENER_CACHE && Date.now() - SCREENER_TS < SCREENER_TTL) {
-    return send(res, SCREENER_CACHE);
-  }
-
-  /* Legacy base filter retained for reference; public screener routes now use apiMyTradeScreener.
-     Important: passing this base screen is NOT the same as a buy alert. */
-  const maxPrice        = Infinity; /* price cap removed */
-  const minMcap         = MIN_SCREENER_MCAP_CR; /* Cr — static large-cap whitelist */
-  const minRSI          = 50;
-  const maxRSI          = 65;
-  const minMonthReturn  = 0;
-  const price20Rule      = 'price >= EMA20';
-  const screenerUniverse = screenerEligibleUniverseS();
-
-  /* Fetch eligible large-cap stocks in batches of 20 to avoid overwhelming Yahoo */
-  const startedAt = Date.now();
-  const maxScanMs = 85000;
-  let timedOut = false;
-  let scannedAttempted = 0;
-  const BATCH = 20;
-  const allResults = [];
-
-  for (let i = 0; i < screenerUniverse.length; i += BATCH) {
-    if (Date.now() - startedAt > maxScanMs) { timedOut = true; break; }
-    const batch = screenerUniverse.slice(i, i + BATCH);
-    scannedAttempted += batch.length;
-    const batchResults = await withTimeoutFallback(Promise.allSettled(
-      batch.map(async ticker => {
-        try {
-          /* Fetch 1 year of daily data — need 200 bars for DMA200 */
-          const chart1y = await withTimeout(safeFetch(() => yfChart(ticker, '1d', '2y'), 1), 8000, ticker + ' stock-of-week history');
-
-          const daily = parseBars(chart1y);
-          const n = daily.n;
-          if (n < 200) return null; /* need enough data for DMA200 */
-
-          const { C, H, L, V } = daily;
-          const price = C[n - 1];
-          const meta  = chart1y.meta || {};
-
-          /* ── FILTERS ── */
-
-          /* 1. Market capitalization > ₹35,000 Cr is enforced by screenerUniverse */
-
-          /* 2. Current price < ₹1,000 */
-          if (price >= maxPrice) return null;
-
-          /* 3-5. DMA trend filters: Price>DMA200, Price>DMA50, DMA50>DMA200 */
-          const dma20  = dmaS(C, 20);
-          const dma50  = dmaS(C, 50);
-          const dma200 = dmaS(C, 200);
-          const e20    = emaS(C, 20);
-          if (!dma20 || !dma50 || !dma200 || !e20) return null;
-          if (price <= dma200) return null;
-          if (dma50 <= dma200) return null;
-          if (price <= dma50) return null;
-
-          /* 6. Current price must be equal to / above EMA20 */
-          if (price < e20) return null;
-
-          /* 7-8. RSI > 50 AND RSI < 65 */
-          const rsi = rsiS(C);
-          if (rsi == null || rsi < minRSI || rsi > maxRSI) return null;
-
-          /* 9. MACD > 0 */
-          const macd = macdS(C);
-          if (!macd || macd.macd <= 0) return null;
-
-          /* 10. Return over 1 month > 0 */
-          const prevWeek  = C[n - 6];
-          const prevMonth = C[n - 23];
-          const weekChg   = +((price - prevWeek)  / prevWeek  * 100).toFixed(2);
-          const monthChg  = +((price - prevMonth) / prevMonth * 100).toFixed(2);
-          if (monthChg <= minMonthReturn) return null;
-
-          /* ── SCORING ── rank survivors by quality inside the requested filters */
-          const clamp01 = v => Math.max(0, Math.min(1, v));
-          const rsiScore    = clamp01(1 - Math.abs(rsi - 57.5) / 7.5);       /* best near middle of 50-65 */
-          const macdScore   = clamp01(macd.hist / (Math.abs(macd.signal) || 0.1));
-          const dma50Dist   = (price - dma50) / dma50;                       /* % above DMA50 */
-          const dma50Score  = clamp01(1 - Math.abs(dma50Dist - 0.04) / 0.06); /* prefer close but not stretched */
-          const returnScore = clamp01(Math.min(monthChg, 20) / 20);              /* positive 1M return, capped at 20% for ranking */
-
-          const score = (rsiScore * 0.30) + (macdScore * 0.30) + (dma50Score * 0.25) + (returnScore * 0.15);
-
-          /* 52-week high/low from meta */
-          const hiArr = C.slice(-252); const loArr = C.slice(-252);
-          const hi52 = meta.fiftyTwoWeekHigh || (hiArr.length ? Math.max(...hiArr) : price);
-          const lo52 = meta.fiftyTwoWeekLow  || (loArr.length ? Math.min(...loArr) : price);
-          const fromHi = +((price - hi52) / hi52 * 100).toFixed(1);
-
-          const sym = ticker.replace('.NS', '');
-          const marketCapCr = getScreenerMcapCr(ticker);
-          const swMetrics = qualifiedMetricsS({C,H,L,V,weekly:null,marketCapCr});
-
-          return {
-            ticker, sym, marketCapCr,
-            price: +price.toFixed(2),
-            e20:    +e20.toFixed(2),
-            dma20:  +dma20.toFixed(2),
-            dma50:  +dma50.toFixed(2),
-            dma200: +dma200.toFixed(2),
-            rsi:    +rsi.toFixed(1),
-            macd:   +macd.macd.toFixed(3),
-            signal: +macd.signal.toFixed(3),
-            macdHist: +macd.hist.toFixed(3),
-            weekChg,
-            monthChg,
-            hi52: +hi52.toFixed(2),
-            lo52: +lo52.toFixed(2),
-            fromHi,
-            score: +score.toFixed(4),
-            setup: swMetrics.setup,
-            finalQualification: swMetrics.finalQualification,
-            decisionScore: swMetrics.decisionScore,
-            volPressure: +swMetrics.volRatio.toFixed(2),
-            rr: +swMetrics.rrBull.toFixed(2),
-            strategyScores: swMetrics.strategyScores,
-            ...stockWeekAlertFromStrategyS(swMetrics.strategyScores),
-          };
-        } catch { return null; }
-      })
-    ), 10000, []);
-    if (!Array.isArray(batchResults) || !batchResults.length) timedOut = true;
-    batchResults.forEach(r => { if (r.status === 'fulfilled' && r.value) allResults.push(r.value); });
-
-    /* Small delay between batches to be gentle on Yahoo */
-    if (i + BATCH < screenerUniverse.length) await new Promise(r => setTimeout(r, 250));
-  }
-
-  /* Sort all base-screen matches. Do not slice to Top 10: user expects this tab to reconcile
-     with Screener.in's result count, while the separate buyAlert field tells what is actionable. */
-  const sortedMatches = allResults
-    .sort((a, b) => b.score - a.score);
-
-  const result = {
-    picks:      sortedMatches,
-    scanned:    screenerUniverse.length,
-    scannedAttempted,
-    partial:    timedOut,
-    passed:     allResults.length,
-    filters: {
-      maxPrice, minMcap, minRSI, maxRSI, minMonthReturn, price20Rule,
-      criteria: 'Base screen: MCap>₹35,000Cr static whitelist · Price<₹1,000 · Price>DMA200 · Price>DMA50 · DMA50>DMA200 · Price≥EMA20 · MACD>0 · RSI 50–65 · 1M return>0%. Separate Trade Alert shows READY/CONFIRM only when strategy gates also pass.',
-    },
-    scoreBasis: 'server technical score uses neutral market/event credit; full instrument tab recalculates 100-point live score',
-    generatedAt: new Date().toISOString(),
-    note: timedOut ? 'Partial legacy screener results due to data-provider timeout; refresh later for a fuller scan.' : 'Legacy screener returns every base-screen match sorted by quality. Treat only READY/CONFIRM Trade Alert rows as actionable; other rows are watchlist only.',
-  };
-
-  SCREENER_CACHE = result;
-  SCREENER_TS    = Date.now();
-  send(res, result);
-}
 
 /* ══════════════════════════════════════════════════════════════════════
    ECONOMIC CALENDAR — Key Indian + US market events
@@ -4814,9 +4743,16 @@ async function getOptionChain(sym, want = '') {
   const name = OC_SYMBOLS[sym];
   if (!name) throw new Error('Option chain only for NSE:NIFTY, NSE:BANKNIFTY, NSE:FINNIFTY');
   {
-    const { value } = await cacheWrap(`oc_${name}_${want}`, istMarketHoursS() ? 180e3 : 1800e3, async () => {
-      const info = await nseOcGet(`/api/option-chain-contract-info?symbol=${name}`);
-      const exps = (info.expiryDates || []).map(e => ({ nse: e, key: nseExpKey(e) })).filter(e => e.key);
+    /* Expiry list cached 30 min on its own; the chain is cached per NSE expiry, so different "days" that land on
+       the same expiry share one fetch (each new key used to cost two NSE calls in a one-at-a-time queue). */
+    const info = (await cacheWrap(`ocinfo_${name}`, 1800e3, () => nseOcGet(`/api/option-chain-contract-info?symbol=${name}`))).value;
+    const exps0 = (info.expiryDates || []).map(e => ({ nse: e, key: nseExpKey(e) })).filter(e => e.key);
+    const today0 = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+    const dd0 = (a, b) => Math.abs(Date.parse(a) - Date.parse(b));
+    const pick0 = exps0.find(e => e.key === want) || (want ? exps0.slice().sort((a, b) => dd0(a.key, want) - dd0(b.key, want))[0] : exps0.find(e => e.key >= today0)) || exps0[0];
+    if (!pick0) throw new Error('No expiry dates from NSE');
+    const { value } = await cacheWrap(`oc_${name}_${pick0.key}`, istMarketHoursS() ? 180e3 : 1800e3, async () => {
+      const exps = exps0;
       const today = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
       /* The app's expiry calendar is generated by rule; NSE's list is the truth (holiday shifts). Exact date,
          else the closest NSE expiry to the one asked for, else the nearest one from today. */
@@ -4871,6 +4807,7 @@ async function apiSwingContext(req, res, p) {
     send(res, {
       sym,
       regime: { status: regime.status, allowReady: regime.allowReady, note: regime.note, nifty: regime.nifty, ema50: regime.ema50,
+        ema20: regime.ema20, trendUp: regime.trendUp ?? null, sma200: regime.sma200 ?? null, aboveSma200: regime.aboveSma200 ?? null,
         breadthPct: regime.breadth?.pct ?? null, breadthAt: regime.breadth ? new Date(regime.breadth.ts).toISOString() : null },
       rs,
       resultsSoon: r && r.block ? { date: r.date, tradingDaysUntil: r.tradingDays, purpose: r.purpose } : null,
@@ -4900,12 +4837,14 @@ async function apiQuote(req,res,p){
       /* Fetch price and historical series in parallel.
          Old flow waited for price first, then fetched history, which made stock switching slower. */
       const priceP=withTimeout(getIndexFallbackPrice(sym, ticker), 20000, ticker + ' quote price');
+      /* 20 s like the screener: requests wait their turn in the polite Yahoo queue, and on a cold start (sidebar +
+         market context) a 10 s limit expired in the queue and the stock failed with "No historical data". */
       const histP=Promise.allSettled([
         /* 2y, not 1y: EMA200 needs a long warm-up, otherwise it is still ~60% its SMA seed and disagrees with charting platforms. */
-      withTimeout(safeFetch(() => yfChart(ticker,'1d','2y'), 1), 10000, ticker + ' daily history'),
-        withTimeout(safeFetch(() => yfChart(ticker,'1wk','2y'), 1), 10000, ticker + ' weekly history'),
-        withTimeout(safeFetch(() => yfChart(ticker,'1h','5d'), 1), 10000, ticker + ' intraday history'),
-        withTimeout(safeFetch(() => yfChart(ticker,'1mo','5y'), 1), 10000, ticker + ' monthly history'),
+      withTimeout(safeFetch(() => yfChart(ticker,'1d','2y'), 1), 20000, ticker + ' daily history'),
+        withTimeout(safeFetch(() => yfChart(ticker,'1wk','2y'), 1), 20000, ticker + ' weekly history'),
+        withTimeout(safeFetch(() => yfChart(ticker,'1h','5d'), 1), 20000, ticker + ' intraday history'),
+        withTimeout(safeFetch(() => yfChart(ticker,'1mo','5y'), 1), 20000, ticker + ' monthly history'),
       ]);
 
       const [priceData, histResults] = await Promise.all([priceP, histP]);
@@ -4920,10 +4859,11 @@ async function apiQuote(req,res,p){
       /* Price from NSE but history from Yahoo's ETF proxy: scale the ETF bars by (index / ETF price) so the
          candles, EMAs and levels sit at the index level (the shape is the ETF's, which tracks the index). */
       let proxyScale = null;
-      if (priceData.source === 'NSE' && NSE_INDEX_PRIMARY.has(sym)) {
+      if ((priceData.source === 'NSE' || priceData.source === 'ETFxRatio') && NSE_INDEX_PRIMARY.has(sym)) {
         const etfLast = +dailyR.value?.meta?.regularMarketPrice || +daily.C[daily.C.length - 1];
         if (etfLast > 0 && liveRaw > 0) {
           proxyScale = liveRaw / etfLast;
+          if (priceData.source === 'NSE') NSE_PROXY_RATIO[sym] = proxyScale;
           const sc = b => b ? { ...b, O:b.O.map(v => v * proxyScale), H:b.H.map(v => v * proxyScale), L:b.L.map(v => v * proxyScale), C:b.C.map(v => v * proxyScale) } : b;
           daily = sc(daily); weekly = sc(weekly); intra = sc(intra); monthly = sc(monthly);
         }
@@ -5410,7 +5350,19 @@ setInterval(() => {
 /* Signed session token "<expiry>.<random>.<hmac>": valid after a server restart (Render restarts used to log
    you out, because sessions lived only in memory). The key comes from APP_PASSWORD, so changing the password
    logs every device out. Logout revokes the token in memory and clears the cookie. */
-const SESSION_HMAC_KEY = require('crypto').createHash('sha256').update('td-session-v1|' + APP_PASSWORD).digest();
+/* Random secret for session signing and the Web Push key: APP_SECRET (Render generates it - render.yaml), else
+   data/secret.key, created once. Deriving them from APP_PASSWORD let anyone holding one cookie (or the public push
+   key sent to Google / Apple) test password guesses offline, past the login rate limit. */
+const APP_SECRET = (() => {
+  if (process.env.APP_SECRET && process.env.APP_SECRET.length >= 16) return process.env.APP_SECRET;
+  const f = require('path').join(__dirname, 'data', 'secret.key');
+  try { const v = require('fs').readFileSync(f, 'utf8').trim(); if (v.length >= 32) return v; } catch {}
+  const v = require('crypto').randomBytes(32).toString('hex');
+  try { require('fs').mkdirSync(require('path').dirname(f), { recursive: true }); require('fs').writeFileSync(f, v); } catch {}
+  return v;
+})();
+/* Changing APP_PASSWORD still logs every device out: it is part of the signing key. */
+const SESSION_HMAC_KEY = require('crypto').createHash('sha256').update('td-session-v2|' + APP_SECRET + '|' + APP_PASSWORD).digest();
 const REVOKED_TOKENS = new Set();
 function signSession(body) { return require('crypto').createHmac('sha256', SESSION_HMAC_KEY).update(body).digest('base64url'); }
 function genToken() {
@@ -5419,7 +5371,7 @@ function genToken() {
 }
 function signedTokenValid(token) {
   const m = /^(\d{13})\.([0-9a-f]{24})\.([A-Za-z0-9_-]{43})$/.exec(token || '');
-  if (!m || !APP_PASSWORD || REVOKED_TOKENS.has(token) || Date.now() > +m[1]) return false;
+  if (!m || !APP_PASSWORD || REVOKED_TOKENS.has(token) || USER_STORE.revoked?.[token] || Date.now() > +m[1]) return false;
   const a = Buffer.from(m[3]), b = Buffer.from(signSession(`${m[1]}.${m[2]}`));
   return a.length === b.length && require('crypto').timingSafeEqual(a, b);
 }
@@ -5527,7 +5479,7 @@ const STATIC_CACHE = new Map();
      data/user-store.json, newest copy wins per key, so laptop and phone see the same data. On a host whose
      disk resets (Render free), any browser that still has the data uploads it again on its next visit.
    - Web Push (VAPID, RFC 8291) straight from Node's crypto: alerts reach the phone with the app closed.
-     The VAPID key is derived from APP_PASSWORD, so it stays the same across restarts with no extra setting.
+     The VAPID key is derived from APP_SECRET, so it stays the same across restarts.
    - Server alert engine (every minute in market hours), scheduled screener scans (09:25 and 15:15 IST)
      and, on Render, a self-ping that keeps the free instance awake during trading hours.
 ══════════════════════════════════════════════════════════════════ */
@@ -5535,8 +5487,8 @@ const nodeCrypto = require('crypto');
 const STORE_FILE = path.join(__dirname, 'data', 'user-store.json');
 const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const STORE_MAX_BYTES = 1500000;
-let USER_STORE = { keys: {}, subs: [], scans: {} };
-try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {} }; } catch {}
+let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {} };
+try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {} }; } catch {}
 let STORE_SAVE_TIMER = null;
 function saveStore() {
   clearTimeout(STORE_SAVE_TIMER);
@@ -5578,7 +5530,7 @@ const b64u = b => Buffer.from(b).toString('base64url');
 const VAPID = (() => {
   if (!APP_PASSWORD) return null;
   try {
-    const d = Buffer.from(nodeCrypto.hkdfSync('sha256', Buffer.from(APP_PASSWORD), Buffer.from('tradedesk-vapid-v1'), Buffer.from('p256 private key'), 32));
+    const d = Buffer.from(nodeCrypto.hkdfSync('sha256', Buffer.from(APP_SECRET), Buffer.from('tradedesk-vapid-v2'), Buffer.from('p256 private key'), 32));
     const ecdh = nodeCrypto.createECDH('prime256v1'); ecdh.setPrivateKey(d);
     const pub = ecdh.getPublicKey();
     const key = nodeCrypto.createPrivateKey({ format: 'jwk', key: { kty: 'EC', crv: 'P-256', d: b64u(d), x: b64u(pub.subarray(1, 33)), y: b64u(pub.subarray(33, 65)) } });
@@ -5700,7 +5652,8 @@ async function scheduledScanTick() {
   }
   const ready = (data.picks || []).map(x => x.sym), limits = (data.watchlist || []).filter(x => x.limitReady && x.limitEntry);
   const body = [ready.length ? `READY: ${ready.join(', ')}` : 'No READY stock',
-    limits.length ? `Ready on limit: ${limits.map(x => `${x.sym} ₹${x.limitEntry.price}`).join(', ')}` : ''].filter(Boolean).join(' · ');
+    limits.length ? `Ready on limit: ${limits.map(x => `${x.sym} ₹${x.limitEntry.price}`).join(', ')}` : '',
+    (data.quickBounce || []).length ? `Quick bounce: ${data.quickBounce.slice(0, 6).map(x => x.sym).join(', ')}` : ''].filter(Boolean).join(' · ');
   await pushAll({ title: `TradeDesk ${slot < 12 * 60 ? 'morning' : 'closing'} scan`, body, tag: 'td-scan', url: '/' });
 }
 
@@ -5709,13 +5662,12 @@ setInterval(() => {
   scheduledScanTick().catch(e => console.warn('Scheduled scan:', e.message));
 }, 60 * 1000);
 
-/* Render free sleeps after ~15 idle minutes, which stops the alert engine and the scheduled scans. A request
-   to its own public address every 10 minutes keeps it awake on weekdays 08:30-24:00 IST (~340 h a month,
-   inside the 750 free hours). */
+/* Render free sleeps after ~15 idle minutes, which stops the alert engine and the scheduled scans - and a sleeping
+   process runs no timers, so it cannot wake itself (an overnight pause meant no 09:25 scan). A request to its own
+   public address every 10 minutes, around the clock, keeps it awake: ~744 h a month, inside the 750 free hours
+   (if no other free Render service shares them). */
 if (ON_RENDER && process.env.RENDER_EXTERNAL_URL) {
   setInterval(() => {
-    const { d, m } = istNowParts();
-    if (d < 1 || d > 5 || m < 8 * 60 + 30) return;
     https.get(process.env.RENDER_EXTERNAL_URL.replace(/\/$/, '') + '/auth/login', r => r.resume()).on('error', () => {});
   }, 10 * 60 * 1000);
 }
@@ -5786,7 +5738,13 @@ async function handleRequest(req,res){
   }
   if (pn==='/auth/logout') {
     const token = getCookie(req, 'td_session');
-    if (token) { SESSIONS.delete(token); REVOKED_TOKENS.add(token); }
+    if (token) {
+      SESSIONS.delete(token); REVOKED_TOKENS.add(token);
+      /* Saved, so a logged-out token stays dead after a restart (expired entries are dropped). */
+      const now = Date.now(), exp = +String(token).split('.')[0] || now + SESSION_TTL;
+      USER_STORE.revoked = Object.fromEntries(Object.entries(USER_STORE.revoked || {}).filter(([, e]) => e > now).concat([[token, exp]]));
+      saveStore();
+    }
     res.writeHead(302, {
       'Location': '/auth/login',
       'Set-Cookie': 'td_session=; HttpOnly; Max-Age=0; Path=/',
