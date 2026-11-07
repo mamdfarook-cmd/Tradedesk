@@ -145,6 +145,31 @@
     return planRR(from, card.stop, card.target);
   }
 
+  /* Quick Bounce (RSI-2): a short dip inside an uptrend. Close above its 50- and 200-day averages and the 2-day
+     RSI (Wilder) under 10. Buy next open (or near the close), stop 2.5 ATR(14) below the close, sell at the first
+     close above the 5-day average or after 10 trading days. The caller also needs Nifty above its 200-day average.
+     Backtest 7 Nov 2026 (235 large caps, 1 year, after 0.25% costs): 64-67% winners, +0.30% per trade, 3-4 days.
+     Pass COMPLETED daily bars only (a forming bar makes the signal flicker during the day). */
+  function quickBounce({ C, H, L }) {
+    const n = (C || []).length;
+    if (n < 210) return null;
+    const sma = p => C.slice(n - p).reduce((a, b) => a + +b, 0) / p;
+    let ag = 0, al = 0;
+    for (let i = 1; i < n; i++) {
+      const d = C[i] - C[i - 1], g = Math.max(d, 0), l = Math.max(-d, 0);
+      if (i <= 2) { ag += g / 2; al += l / 2; } else { ag = (ag + g) / 2; al = (al + l) / 2; }
+    }
+    const rsi2 = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
+    let atr = 0;
+    for (let i = 1; i < n; i++) {
+      const tr = Math.max(H[i] - L[i], Math.abs(H[i] - C[i - 1]), Math.abs(L[i] - C[i - 1]));
+      atr = i <= 14 ? atr + tr / 14 : (atr * 13 + tr) / 14;
+    }
+    const close = +C[n - 1], sma5 = sma(5), sma50 = sma(50), sma200 = sma(200);
+    const ok = close > sma200 && close > sma50 && rsi2 < 10;
+    return { ok, rsi2: +rsi2.toFixed(1), close: R2(close), sma5: R2(sma5), sma50: R2(sma50), sma200: R2(sma200), atr: R2(atr), stop: R2(close - 2.5 * atr) };
+  }
+
   /* Option leg price from an NSE chain row (server Option Builder and the options idea card): the bid/ask
      middle when the spread is tight (<= 15% of the middle); else the last traded price, but only if it traded
      today and sits inside the bid/ask; else null (the caller keeps its estimate). A stale last price on an
@@ -232,7 +257,9 @@
 
   /* Which long setup the price is actually in. Same rules for Overview and screener.
      Pullbacks/bounces rank first (nearest entry wins), then breakout, then momentum (watch-only). */
-  const WATCH_ONLY = new Set(['Pre-Breakout Watch', 'Momentum Continuation']);
+  /* Watch-only: shown and alerted, never READY. Breakout with Volume joined on 7 Nov 2026 - over the last year it
+     won 33% of trades for -0.21R on average (108 trades), with or without a market filter. */
+  const WATCH_ONLY = new Set(['Pre-Breakout Watch', 'Momentum Continuation', 'Breakout with Volume']);
   function pickLongSetup({ price, e20, e50, e200, sr, rsi, macd, adx, volBlend, C, L, rrOf }) {
     const supportRef = swingSupport(sr, price);
     const distPct = level => Number.isFinite(+level) && +level > 0 ? Math.abs(+price - +level) / Math.max(Math.abs(+level), 1) * 100 : 999;
@@ -265,6 +292,7 @@
     /* When several setups qualify, use one whose own R:R works (>= 1.25) if there is one: the nearest-level
        rule alone handed FLUOROCHEM-type stocks to a pullback that fails R:R while their breakout passed,
        and ANTHEM-type stocks to a breakout with R:R 0.54 while their EMA50 bounce had 1.35. */
+    { const tradable = list.filter(x => !WATCH_ONLY.has(x.name)); if (tradable.length) list = tradable; }   /* a pullback that qualifies beats a watch-only breakout */
     if (typeof rrOf === 'function') { const good = list.filter(x => +rrOf(x.name) >= 1.25); if (good.length) list = good; }
     const best = list.sort((a, b) => Math.abs(a.dist - b.dist) > 0.15 ? a.dist - b.dist : a.priority - b.priority)[0];
     return best ? best.name : null;
@@ -287,5 +315,5 @@
     return null;
   }
 
-  return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY };
+  return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY };
 });
