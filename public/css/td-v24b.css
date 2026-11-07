@@ -23,3 +23,6 @@ body:not(.td-stock-mode) .tb .tbt[data-tab="screener"]{display:none!important}
 .tp-alert-dot{position:absolute;top:3px;right:3px;width:7px;height:7px;border-radius:50%;background:var(--bull)}
 .pl-tag.low{background:rgba(148,163,184,.14);color:var(--tx3);border:1px solid rgba(148,163,184,.3)}
 .pl-row .scr-ov{font-size:.72rem;margin-top:4px}
+.tp-qb-card{border-color:rgba(0,188,212,.45);background:linear-gradient(135deg,rgba(0,188,212,.12),rgba(0,188,212,.03))}
+.tp-qb-card.paused{border-color:var(--brd);background:var(--bgc)}
+.tp-qb-card .pos-calc{margin-top:10px}
