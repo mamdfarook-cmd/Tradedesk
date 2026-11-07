@@ -1,3 +1,4 @@
+[README.md](https://github.com/user-attachments/files/34524515/README.md)
 [README.md](https://github.com/user-attachments/files/28040590/README.md)
 # TradeDesk v1.0
 
@@ -64,6 +65,9 @@ Runtime: Node
 Build Command: npm install
 Start Command: npm start
 Required Environment Variable: APP_PASSWORD = your-private-password
+Recommended Environment Variable: APP_SECRET = any long random text (32+ characters). render.yaml generates it.
+  Without it the server makes data/secret.key, which Render's free disk loses on every deploy: you would have to
+  log in again and turn background alerts on again after each deploy.
 Recommended Environment Variable: NODE_ENV = production
 Optional news API variables: MARKETAUX_KEY, FINNHUB_KEY, NEWSDATA_KEY
 Optional: TRUST_PROXY_HOPS (default 1 in production, 0 locally)
