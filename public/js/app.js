@@ -148,7 +148,7 @@ async function apiFetch(path, timeoutMs=15000) {
    Alerts, Track Record, calculator settings, recent stocks and MCX calibrations follow you between devices.
    Every change to one of those keys is time-stamped; the newest copy wins, here or on the server. If the
    server's disk was reset, this browser uploads its copy again. */
-const SYNC_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
+const SYNC_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const SYNC_META_KEY = 'td_sync_meta';
 let SYNC_APPLYING = false, SYNC_TIMER = null, SYNC_INFLIGHT = null, SYNC_STATE = { ok:null, at:null, msg:'' };
 function syncMeta(){ try { return JSON.parse(localStorage.getItem(SYNC_META_KEY) || '{}') || {}; } catch { return {}; } }
@@ -4242,6 +4242,7 @@ async function tabScreener(mode = CURRENT_SCREENER_MODE, force = false) {
   tcBeginRender();
   if (mode === 'qualified' || mode === 'picklist' || mode === 'stockweek') mode = 'mytrade';   /* one screener list */
   if (mode === 'backtest') { CURRENT_SCREENER_MODE = mode; await tabBacktest(); return; }
+  if (mode === 'momentum') { CURRENT_SCREENER_MODE = mode; await tabMomentum(force); return; }
   CURRENT_SCREENER_MODE = mode;
   if (mode === 'mytrade') { await tabMyTradeScreener(force); return; }
   if (mode === 'stockweek') { await tabStockOfWeekScreener(); return; }
@@ -4329,7 +4330,7 @@ function screenerCardGateHtml(s) {
 async function tabMyTradeScreener(force = false) {
   const tc = document.getElementById('tc');
   const live = tcGuard();   /* a slow scan must not replace a page the user opened meanwhile */
-  tc.innerHTML = `<div class="scr-loading">
+  tc.innerHTML = `${screenerModeSwitch('mytrade')}<div class="scr-loading">
     <div class="sp"></div>
     <div class="lt">Scanning Screener Matches & Watchlist…</div>
     <div class="scr-progress">One scan · Screener Match + Watchlist · no duplicate stocks</div>
@@ -4643,6 +4644,59 @@ function renderPickList(data, source='server'){
   }));
 }
 
+/* ── MONTHLY MOMENTUM (separate from the swing screener) ──
+   Top 20 of the 100 largest stocks by the NSE-style score, decided on the previous month-end close and held all
+   month (server /api/momentum). Backtested 8.8 years: 13.1% a year vs Nifty 9.4% after costs. */
+const MOM_CAP_KEY = 'td_mom_capital';
+async function tabMomentum(force = false){
+  const tc = document.getElementById('tc');
+  CURRENT_SCREENER_MODE = 'momentum';
+  const live = tcGuard();
+  tc.innerHTML = `${screenerModeSwitch('momentum')}<div class="scr-loading"><div class="sp"></div><div class="lt">Ranking the 100 largest stocks…</div><div class="scr-progress">First load after a restart reads ~250 charts (1-2 minutes); then it is cached.</div></div>`;
+  let d;
+  try { d = await apiFetch('/api/momentum' + (force ? '?refresh=1' : ''), 240000); }
+  catch(e){ if(live()) tc.innerHTML = `${screenerModeSwitch('momentum')}<div class="eb">Momentum list error: ${escHtml(e.message)}</div>`; return; }
+  if(!live() || CURRENT_SCREENER_MODE !== 'momentum') return;
+  MOM_LAST = d;
+  renderMomentum(d);
+}
+let MOM_LAST = null;
+function momCapitalChanged(el){ savePosSetting(MOM_CAP_KEY, Number(el.value)); if(MOM_LAST) renderMomentum(MOM_LAST); }
+function renderMomentum(d){
+  const tc = document.getElementById('tc');
+  const cap = readPosSetting(MOM_CAP_KEY, 500000), per = cap / Math.max(1, d.holdings.length);
+  const dt = k => k ? new Date(k + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'}) : '--';
+  const pct = v => `<span style="color:${v >= 0 ? 'var(--bull)' : 'var(--bear)'}">${v >= 0 ? '+' : ''}${(+v).toFixed(1)}%</span>`;
+  const nf = d.niftyFilter || {};
+  const filter = nf.aboveSma200 === false
+    ? `<div class="mom-filter bear"><b>Nifty is below its 200-day average</b> (${fmt(nf.nifty,0)} vs ${fmt(nf.sma200,0)}). The tested version holds <b>cash</b> this month: that cut the worst fall from -30% to -21% for about 0.5% a year less return.</div>`
+    : nf.aboveSma200 === true ? `<div class="mom-filter bull"><b>Nifty is above its 200-day average</b> (${fmt(nf.nifty,0)} vs ${fmt(nf.sma200,0)}) - stay invested in the list.</div>` : '';
+  const preview = d.livePreview || [], inNow = new Set(d.holdings.map(h => h.sym));
+  const wouldIn = preview.filter(p => !inNow.has(p.sym)).map(p => p.sym), wouldOut = d.holdings.filter(h => !preview.some(p => p.sym === h.sym)).map(h => h.sym);
+  const open = s => `onclick="loadInstrument(${jsArg('NSE:' + s)}, ${jsArg(CLIENT_NAMES[s] || s)})"`;
+  const rows = d.holdings.map(h => { const qty = h.price > 0 ? Math.floor(per / h.price) : 0; return `<tr class="mom-row" ${open(h.sym)} title="Open ${escHtml(h.sym)}">
+      <td>${h.rank}</td><td><b>${escHtml(h.sym)}</b>${h.isNew ? ' <span class="pl-tag ready">New</span>' : ''}<div class="mom-sub">${escHtml(h.sector || '')}</div></td>
+      <td>${h.score.toFixed(2)}</td><td>${pct(h.r6)}</td><td>${pct(h.r12)}</td><td>${h.vol.toFixed(0)}%</td>
+      <td>₹${fmt(h.price)}</td><td><b>${qty.toLocaleString('en-IN')}</b><div class="mom-sub">${formatINR(qty * h.price)}</div></td>
+      <td>${h.liveRank ? '#' + h.liveRank : '--'}</td></tr>`; }).join('');
+  tc.innerHTML = `${screenerModeSwitch('momentum')}
+    <div class="aib mom-head"><b>List for ${escHtml(d.month)}</b> · ranked on the ${dt(d.listDate)} close · buy / sell on <b>${dt(d.rebalanceDay)}</b> · next rebalance <b>${dt(d.nextRebalance)}</b> · ${d.universe.ranked} largest stocks ranked</div>
+    ${filter}
+    <div class="mom-changes">
+      <div><span class="mom-lbl">Sell (left the top 20)</span>${d.sells.length ? d.sells.map(x => `<span class="mom-chip sell" ${open(x.sym)}>${escHtml(x.sym)}${x.nowRank ? ` #${x.nowRank}` : ''}</span>`).join('') : '<span class="mom-none">none</span>'}</div>
+      <div><span class="mom-lbl">Buy (new in the top 20)</span>${d.buys.length ? d.buys.map(s => `<span class="mom-chip buy" ${open(s)}>${escHtml(s)}</span>`).join('') : '<span class="mom-none">none</span>'}</div>
+      <div class="mom-cap"><label>Capital ₹<input type="number" min="0" step="10000" value="${cap}" onchange="momCapitalChanged(this)"></label><span>${formatINR(per)} per stock (equal weight, ${d.holdings.length} stocks)</span></div>
+    </div>
+    <div class="bt-wrap"><table class="bt-table mom-table"><thead><tr><th>#</th><th>Stock</th><th>Score</th><th>6M</th><th>12M</th><th>Volatility</th><th>Price now</th><th>Qty</th><th>Rank today</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div class="aib" style="font-size:.72rem;margin-bottom:10px"><b>If the month ended today:</b> ${wouldIn.length ? `${escHtml(wouldIn.join(', '))} would enter` : 'no new entries'}${wouldOut.length ? ` · ${escHtml(wouldOut.join(', '))} would leave` : ''}. This is only a preview - trade the list once a month, not on daily rank changes.</div>
+    <div class="aib mom-how">
+      <b>How it works.</b> On the first trading day of each month: rank the 100 largest stocks by (6-month return + 12-month return) ÷ 2, divided by their 1-year volatility, the way NSE's Nifty200 Momentum 30 does. Hold the top 20 in equal amounts for the month; sell what left the list, buy what joined (usually 5-6 stocks). No stop-loss, no target - the monthly ranking is the exit.
+      <br><b>Note:</b> a stock's Overview judges a 1-10 day swing entry, so strong momentum stocks often show "overbought" or "wait" there. For this monthly list, that swing verdict does not apply.
+      <br><b>Backtest</b> (Jan 2018 - Oct 2026, 0.25% per swap): <b>13.1% a year vs Nifty 9.4%</b>, worst fall -30% (-21% with the 200-day filter). It wins big in trending years (2021 +64%, 2024 +31%) and lags in choppy ones (behind Nifty in 4 of 9 years, including 2025-26) - expect a bad year now and then.
+      <br><b>Tax:</b> most stocks are sold within a year, so gains are short-term (20%). A Nifty200 Momentum 30 index fund / ETF does the same with no tax until you sell. Not investment advice.
+    </div>`;
+}
+
 /* ── BACKTEST: the screener's READY / Ready-on-limit rules replayed on the last ~15 months (server /api/backtest) ── */
 async function tabBacktest(run = false){
   const tc = document.getElementById('tc');
@@ -4752,17 +4806,15 @@ function screenerResultsChip(s) {
   return `<span class="scr-chip">📅 Results ${d}</span>`;
 }
 function screenerModeSwitch(active='mytrade') {
-  /* One screener list; Track Record (past picks) and Backtest (the rules over ~15 months) are small buttons. */
-  const btn = 'padding:7px 12px;border-radius:999px;border:1px solid var(--brdl);background:var(--bgi);font-size:.75rem;font-weight:900;cursor:pointer';
-  const title = active === 'track' ? 'Track Record' : active === 'backtest' ? 'Backtest' : 'Screener';
-  const nav = active === 'mytrade'
-    ? `<button onclick="tabScreener('track')" title="How past screener picks played out" style="margin-left:auto;${btn};color:var(--tx2)">Track record</button>
-       <button onclick="tabScreener('backtest')" title="The screener's rules replayed over ~15 months" style="${btn};color:var(--tx2)">Backtest</button>
-       <button onclick="clearMyTradeScreenerCache();tabScreener('mytrade', true)" title="New scan (at most one every 5 minutes)" style="${btn};color:var(--acc)">↻ Refresh</button>`
-    : `<button onclick="tabScreener('mytrade')" style="margin-left:auto;${btn};color:var(--tx2)">← Screener</button>
-       ${active === 'track' ? `<button onclick="tabScreener('track')" style="${btn};color:var(--acc)">↻ Refresh</button>` : `<button onclick="tabBacktest(true)" style="${btn};color:var(--acc)">↻ Run again</button>`}`;
-  return `<div class="scr-tabs-row" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">
-    <div style="font-size:1rem;font-weight:800;color:var(--acc)">${title}</div>${nav}
+  /* Four views of the Screener page; the button on the right refreshes the one that is open. */
+  const tabs = [['mytrade', 'Swing'], ['momentum', 'Monthly momentum'], ['track', 'Track record'], ['backtest', 'Backtest']];
+  const action = active === 'mytrade' ? `<button class="scr-act" onclick="clearMyTradeScreenerCache();tabScreener('mytrade', true)" title="New scan (at most one every 5 minutes)">↻ Refresh</button>`
+    : active === 'momentum' ? `<button class="scr-act" onclick="tabScreener('momentum', true)" title="Re-rank with the latest prices">↻ Refresh</button>`
+    : active === 'track' ? `<button class="scr-act" onclick="tabScreener('track')">↻ Refresh</button>`
+    : `<button class="scr-act" onclick="tabBacktest(true)">↻ Run again</button>`;
+  return `<div class="scr-tabs-row scr-tabs-v2">
+    ${tabs.map(([id, label]) => `<button class="scr-tab${active === id ? ' active' : ''}" onclick="tabScreener('${id}')">${label}</button>`).join('')}
+    ${action}
   </div>`;
 }
 
@@ -7083,6 +7135,8 @@ function renderRecentStocks(){
 document.addEventListener('DOMContentLoaded', () => setTimeout(renderRecentStocks, 300));
 
 async function loadInstrument(sym,name){
+  /* Opened from the Screener page: switch the top menu to Stocks first (sidebar, tab bar, mode). */
+  if(document.body.classList.contains('screener-mode') && /^NSE:/.test(String(sym)) && !isIndexSymbol(sym)) document.querySelector('.nbtn[data-view="stocks"]')?.click();
   try{ rememberRecentStock(sym, name); }catch{}
   closeCompactPickers();
   const seq = ++LOAD_SEQ;
@@ -7291,12 +7345,18 @@ document.addEventListener('DOMContentLoaded',()=>{
     show('ls','none'); show('ih','none'); show('tbar','none'); show('tc','none'); show('es','flex');
     const copy = {
       indices: ['Select an index', 'Pick Nifty 50, Bank Nifty or any sector index from the list for trend, breadth and options view.'],
-      stocks: ['Search a stock', 'Type a symbol in the search box, open a recent stock, or use Open Screener for today\'s swing candidates.'],
+      stocks: ['Search a stock', 'Type a symbol in the search box, open a recent stock, or open the Screener (top menu) for swing candidates and the monthly momentum list.'],
       commodities: ['Select a commodity', 'Pick Gold, Gold Petal, Silver, Crude, Natural Gas or Copper from the list.']
     }[view];
     if(es && copy) es.innerHTML = `<div class="ei"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></div><div class="et">${copy[0]}</div><div class="es2">${copy[1]}</div>`;
   }
   window.showViewHome = showViewHome;
+  /* Screener page (top menu): full width, no instrument header or tab bar. */
+  window.openScreenerView = function(){
+    show('es','none'); show('ls','none'); show('ih','none'); show('tbar','none'); show('tc','flex');
+    document.querySelectorAll('.tbt').forEach(b => b.classList.remove('active'));
+    tabScreener(CURRENT_SCREENER_MODE || 'mytrade');
+  };
   document.querySelectorAll('.nbtn').forEach(btn=>btn.addEventListener('click',()=>{
   if(btn.dataset.view !== 'crypto') document.body.classList.remove('crypto-mode');
   if(btn.dataset.view !== 'markets') document.body.classList.remove('market-mode');
@@ -7309,6 +7369,7 @@ document.addEventListener('DOMContentLoaded',()=>{
       loadViewPrices(btn.dataset.view).catch(()=>{});
     }
     if(['indices','stocks','commodities'].includes(btn.dataset.view)) showViewHome(btn.dataset.view);
+    if(btn.dataset.view==='screener') openScreenerView();
     if(btn.dataset.view==='markets') {
       activeView?.classList.add('selector-open');
       /* ONE render per click. Previously this handler, the v19 patch and the final snapshot patch each

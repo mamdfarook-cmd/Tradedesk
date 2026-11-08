@@ -1,6 +1,6 @@
 (function(){
   function modeClear(){
-    document.body.classList.remove('td-index-mode','td-stock-mode','td-mcx-mode');
+    document.body.classList.remove('td-index-mode','td-stock-mode','td-mcx-mode','screener-mode');
   }
   function applyBottomModeForSymbol(sym){
     modeClear();

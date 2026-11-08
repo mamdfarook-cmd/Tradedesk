@@ -1,4 +1,3 @@
-[CHANGES.md](https://github.com/user-attachments/files/34524536/CHANGES.md)
 # TradeDesk — fixed release (23 Oct 2026)
 
 ## Before you run it
@@ -527,3 +526,21 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - Screener vs Overview: 20 of 20 match.
 - Web Push end to end with the new key.
 - A logged-out cookie stays rejected after a restart.
+
+## Screener in the top menu + Monthly Momentum (8 Nov 2026)
+
+- **Screener is its own top-menu page** (Indices · Stocks · MCX · Screener · Markets): full width, with no instrument header or tab bar. The sidebar "Open Screener" button is gone.
+  - Opening a stock from it switches the menu to Stocks.
+- **Screener tabs:** Swing · Monthly momentum · Track record · Backtest. The button on the right refreshes whichever one is open.
+- **Monthly momentum** (`/api/momentum`) is the method that tested best on 8.8 years: 13.1% a year vs Nifty 9.4% after 0.25% per swap, worst fall −30% (−21% with the Nifty 200-day filter), behind Nifty in 4 of 9 years.
+  - Universe: the 100 largest stocks by market cap at the month-end close.
+  - Score: (6-month + 12-month return) ÷ 2 ÷ 1-year volatility, the NSE Nifty200 Momentum 30 style.
+  - List: top 20, equal weight, held all month.
+- **The page shows:**
+  - the list, with sells and buys vs last month;
+  - the Nifty 200-day filter (the tested version holds cash when Nifty is below it);
+  - quantity per stock for your capital, a setting that syncs between devices;
+  - each stock's rank today and an "if the month ended today" preview.
+- **Rebalance alert:** on the first trading day of the month, the 09:25 push adds the sells and buys.
+- **Checked:** the app's list matches the backtest code's list on the same date (19 of 20; the one difference is the stock at exactly #100 by market cap, because the live universe has a few more stocks). It uses the same cached charts as the swing scan.
+- **Momentum Continuation (the 1-10 day swing setup)** was tested on 9 years: −0.025R a trade, profitable in 3 of 10 years, so it stays watch-only.

@@ -3910,6 +3910,90 @@ async function apiBacktest(req, res, p) {
   try { send(res, await BACKTEST_INFLIGHT); } catch (e) { err(res, 'Backtest failed: ' + e.message); }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   MONTHLY MOMENTUM (separate from the swing screener) - the method that backtested best on 8.8 years
+   (Jan 2018 - Oct 2026, after 0.25% per swap): 13.1% a year vs Nifty 9.4%, worst fall -30% (-21% with the
+   Nifty 200-day filter), behind Nifty in 4 of 9 years.
+   - Universe: the 100 largest stocks of the screener universe by market cap at the month-end close.
+   - Score (NSE-style, as Nifty200 Momentum 30): average of the 6- and 12-month returns / 1-year volatility.
+   - List: top 20, equal weight, decided on the last close of the previous month and held for the whole month.
+   Uses the same cached 2-year daily charts as the screener scan (no extra calls after a scan).
+══════════════════════════════════════════════════════════════════ */
+let MOMENTUM_CACHE = null, MOMENTUM_INFLIGHT = null;
+const MOM_TOP = 20, MOM_UNIVERSE = 100;
+function momScoreS(C, i) {
+  if (i < 253) return null;
+  const r6 = C[i] / C[i - 126] - 1, r12 = C[i] / C[i - 252] - 1;
+  let m = 0; const d = [];
+  for (let k = i - 251; k <= i; k++) { const x = Math.log(C[k] / C[k - 1]); d.push(x); m += x; }
+  m /= d.length;
+  const vol = Math.sqrt(d.reduce((a, x) => a + (x - m) ** 2, 0) / d.length) * Math.sqrt(252);
+  return vol > 0 ? { score: (r6 + r12) / 2 / vol, r6: r6 * 100, r12: r12 * 100, vol: vol * 100 } : null;
+}
+function momRankS(data, dateKey) {   // dateKey: rank on the last close on or before this date
+  const rows = [];
+  for (const x of data) {
+    let i = x.b.T.length - 1; while (i >= 0 && istDateKeyS(x.b.T[i]) > dateKey) i--;
+    const sc = i >= 0 ? momScoreS(x.b.C, i) : null;
+    if (!sc) continue;
+    const sh = SHARES_CACHE[x.ticker]?.shares;
+    rows.push({ ticker: x.ticker, sym: x.ticker.replace(/\.(NS|BO)$/, ''), close: x.b.C[i], date: istDateKeyS(x.b.T[i]), mcapCr: sh ? sh * x.b.C[i] / 1e7 : null, ...sc });
+  }
+  const big = rows.filter(r => r.mcapCr).sort((a, b) => b.mcapCr - a.mcapCr).slice(0, MOM_UNIVERSE);
+  return big.sort((a, b) => b.score - a.score).map((r, k) => ({ ...r, rank: k + 1 }));
+}
+function monthStartKey(key, back = 0) { const d = new Date(key.slice(0, 7) + '-01T00:00:00Z'); d.setUTCMonth(d.getUTCMonth() - back); return d.toISOString().slice(0, 10); }
+function prevDayKey(key) { const d = new Date(key + 'T00:00:00Z'); d.setUTCDate(d.getUTCDate() - 1); return d.toISOString().slice(0, 10); }
+function firstTradingDayOfMonth(key) {
+  let d = new Date(key.slice(0, 7) + '-01T00:00:00Z');
+  for (let k = 0; k < 10; k++) { const kk = d.toISOString().slice(0, 10); if (d.getUTCDay() >= 1 && d.getUTCDay() <= 5 && !isNseHoliday(kk)) return kk; d.setUTCDate(d.getUTCDate() + 1); }
+  return key;
+}
+async function computeMomentumS() {
+  const uni = screenerEligibleUniverseS(), data = [];
+  for (let i = 0; i < uni.length; i += 8) {
+    await Promise.all(uni.slice(i, i + 8).map(async ticker => {
+      try {
+        const raw = await withTimeout(safeFetch(() => yfChart(ticker, '1d', '2y'), 1), 20000, ticker + ' momentum history');
+        const b = raw ? parseBars(raw) : null;
+        if (!b || b.C.length < 260) return;
+        const cl = completedLenS(b.T);
+        ['T', 'O', 'H', 'L', 'C', 'V'].forEach(k => { b[k] = b[k].slice(0, cl); });
+        data.push({ ticker, b });
+      } catch {}
+    }));
+  }
+  const today = istNowParts().key;
+  const thisMonth = monthStartKey(today), lastMonth = monthStartKey(today, 1);
+  const cur = momRankS(data, prevDayKey(thisMonth)), prev = momRankS(data, prevDayKey(lastMonth)), live = momRankS(data, today);
+  const top = cur.slice(0, MOM_TOP), prevTop = prev.slice(0, MOM_TOP);
+  const prevSet = new Set(prevTop.map(r => r.sym)), curSet = new Set(top.map(r => r.sym));
+  const liveRank = new Map(live.map(r => [r.sym, r.rank])), liveClose = new Map(live.map(r => [r.sym, r.close]));
+  const nifty = await getNiftyRegime();
+  const nextMonth = monthStartKey(new Date(Date.parse(thisMonth) + 40 * 864e5).toISOString().slice(0, 10));
+  const out = {
+    month: thisMonth.slice(0, 7), listDate: top[0]?.date || null, rebalanceDay: firstTradingDayOfMonth(thisMonth), nextRebalance: firstTradingDayOfMonth(nextMonth),
+    holdings: top.map(r => ({ sym: r.sym, rank: r.rank, score: +r.score.toFixed(2), r6: +r.r6.toFixed(1), r12: +r.r12.toFixed(1), vol: +r.vol.toFixed(1),
+      price: +(liveClose.get(r.sym) ?? r.close).toFixed(2), mcapCr: r.mcapCr ? Math.round(r.mcapCr) : null, sector: sectorInfoFor(r.sym)?.sector || null,
+      isNew: !prevSet.has(r.sym), liveRank: liveRank.get(r.sym) || null })),
+    sells: prevTop.filter(r => !curSet.has(r.sym)).map(r => ({ sym: r.sym, nowRank: cur.find(x => x.sym === r.sym)?.rank || null })),
+    buys: top.filter(r => !prevSet.has(r.sym)).map(r => r.sym),
+    livePreview: live.slice(0, MOM_TOP).map(r => ({ sym: r.sym, rank: r.rank, inList: curSet.has(r.sym) })),
+    niftyFilter: { aboveSma200: nifty.aboveSma200 ?? null, nifty: nifty.nifty ?? null, sma200: nifty.sma200 ?? null },
+    universe: { stocks: data.length, ranked: cur.length },
+    generatedAt: new Date().toISOString(),
+  };
+  MOMENTUM_CACHE = { ts: Date.now(), value: out };
+  return out;
+}
+async function apiMomentum(req, res, p) {
+  const fresh = p.get('refresh') === '1';
+  /* The list changes once a month; the live preview and prices are refreshed at most every 2 hours. */
+  if (!fresh && MOMENTUM_CACHE && Date.now() - MOMENTUM_CACHE.ts < 2 * 3600e3 && MOMENTUM_CACHE.value.month === istNowParts().key.slice(0, 7)) return send(res, { ...MOMENTUM_CACHE.value, cached: true });
+  if (!MOMENTUM_INFLIGHT) MOMENTUM_INFLIGHT = computeMomentumS().finally(() => { MOMENTUM_INFLIGHT = null; });
+  try { send(res, await MOMENTUM_INFLIGHT); } catch (e) { err(res, 'Momentum ranking failed: ' + e.message); }
+}
+
 /* ── Nifty market regime ──
    Swing longs work best when the index trend supports them. READY is allowed only while Nifty holds
    above its EMA50; below EMA50 every candidate is shown as Watchlist with the regime as the reason.
@@ -5485,7 +5569,7 @@ const STATIC_CACHE = new Map();
 ══════════════════════════════════════════════════════════════════ */
 const nodeCrypto = require('crypto');
 const STORE_FILE = path.join(__dirname, 'data', 'user-store.json');
-const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
+const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const STORE_MAX_BYTES = 1500000;
 let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {} };
 try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {} }; } catch {}
@@ -5655,6 +5739,13 @@ async function scheduledScanTick() {
     limits.length ? `Ready on limit: ${limits.map(x => `${x.sym} ₹${x.limitEntry.price}`).join(', ')}` : '',
     (data.quickBounce || []).length ? `Quick bounce: ${data.quickBounce.slice(0, 6).map(x => x.sym).join(', ')}` : ''].filter(Boolean).join(' · ');
   await pushAll({ title: `TradeDesk ${slot < 12 * 60 ? 'morning' : 'closing'} scan`, body, tag: 'td-scan', url: '/' });
+  if (slot < 12 * 60 && key === firstTradingDayOfMonth(key)) {
+    try {
+      const mo = await computeMomentumS();
+      await pushAll({ title: `Momentum rebalance - ${mo.month}`, tag: 'td-momentum', url: '/',
+        body: `Sell: ${mo.sells.map(x => x.sym).join(', ') || 'none'} · Buy: ${mo.buys.join(', ') || 'none'}${mo.niftyFilter.aboveSma200 === false ? ' · Nifty below its 200-day average (tested version holds cash)' : ''}` });
+    } catch (e) { console.warn('Momentum push:', e.message); }
+  }
 }
 
 setInterval(() => {
@@ -5788,6 +5879,7 @@ async function handleRequest(req,res){
   if(pn==='/api/option-chain')     return apiOptionChain(req,res,ps);
   if(pn==='/api/store')            return apiStore(req,res);
   if(pn==='/api/backtest')         return apiBacktest(req,res,ps);
+  if(pn==='/api/momentum')         return apiMomentum(req,res,ps);
   if(pn.startsWith('/api/push/'))  return apiPush(req,res,pn);
   if(pn==='/api/screener-explain') return apiScreenerExplain(req,res,ps);
   if(pn==='/api/screener-diag') return send(res, LAST_SCAN_DIAG);

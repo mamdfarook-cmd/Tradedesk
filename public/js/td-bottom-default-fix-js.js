@@ -2,11 +2,11 @@
   function q(s){return document.querySelector(s)}
   function qa(s){return Array.from(document.querySelectorAll(s))}
   function setMode(mode){
-    document.body.classList.remove('td-index-mode','td-stock-mode','td-mcx-mode','crypto-mode','market-mode');
+    document.body.classList.remove('td-index-mode','td-stock-mode','td-mcx-mode','crypto-mode','market-mode','screener-mode');
     document.body.classList.add(mode);
   }
   function allowedTabs(){
-    if(document.body.classList.contains('market-mode') || document.body.classList.contains('crypto-mode')) return [];
+    if(document.body.classList.contains('market-mode') || document.body.classList.contains('crypto-mode') || document.body.classList.contains('screener-mode')) return [];
     /* No Screener tab here: the sidebar "Open Screener" button opens it. */
     if(document.body.classList.contains('td-stock-mode')) return ['overview','analysis','marketinfo'];
     if(document.body.classList.contains('td-mcx-mode')) return ['overview','analysis','marketinfo'];
@@ -39,6 +39,7 @@
     if(v==='commodities') return 'td-mcx-mode';
     if(v==='crypto') return 'crypto-mode';
     if(v==='markets') return 'market-mode';
+    if(v==='screener') return 'screener-mode';
     return 'td-index-mode';
   }
   function init(){

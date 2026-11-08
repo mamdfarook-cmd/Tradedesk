@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/34524515/README.md)
 [README.md](https://github.com/user-attachments/files/28040590/README.md)
 # TradeDesk v1.0
 
