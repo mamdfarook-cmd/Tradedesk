@@ -42,7 +42,19 @@
     if(v==='screener') return 'screener-mode';
     return 'td-index-mode';
   }
+  /* On phones the tab bar is position:fixed at the bottom, but it sat inside <main>, the page's scrolling box.
+     In the installed home-screen app (standalone mode) a fixed bar inside a scrolling box can scroll away or be
+     clipped by it, so the menu "hid". On phone widths it now lives directly under <body>; on desktop it goes back
+     above the content, where it is a normal top tab row. */
+  function placeBar(){
+    const bar=q('#tbar'), ap=q('.ap'), tc=q('#tc'); if(!bar||!ap) return;
+    const phone=window.matchMedia('(max-width:820px)').matches;
+    if(phone && bar.parentElement!==document.body) document.body.appendChild(bar);
+    else if(!phone && bar.parentElement!==ap) ap.insertBefore(bar, tc && tc.parentElement===ap ? tc : null);
+  }
   function init(){
+    placeBar();
+    try { window.matchMedia('(max-width:820px)').addEventListener('change', placeBar); } catch(e) {}
     if(!document.body.classList.contains('td-stock-mode') && !document.body.classList.contains('td-mcx-mode') && !document.body.classList.contains('crypto-mode') && !document.body.classList.contains('market-mode')){
       document.body.classList.add('td-index-mode');
     }

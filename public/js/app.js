@@ -269,6 +269,18 @@ function isIndiaMarketHoursNow(){
 function getScreenerUiTtlMs(){
   return isIndiaMarketHoursNow() ? 30 * 60 * 1000 : 24 * 60 * 60 * 1000;
 }
+/* A scan made while NSE was open is out of date once that session has closed: prices moved on until 15:30, and
+   the Overview uses the final close. Such a scan was kept for 24 h after the close, so an evening "Check all vs
+   Overview" compared a 15:00 scan with closing prices and about half the stocks no longer matched. */
+function scanPredatesClose(at){
+  const ms = typeof at === 'number' ? at : Date.parse(at || '');
+  if (!Number.isFinite(ms)) return false;
+  const ist = x => { const t = new Date(x + 5.5 * 3600000); return { d: t.toISOString().slice(0, 10), m: t.getUTCHours() * 60 + t.getUTCMinutes(), wd: t.getUTCDay() }; };
+  const s = ist(ms), n = ist(Date.now());
+  const madeInSession = s.wd >= 1 && s.wd <= 5 && s.m >= 9 * 60 + 15 && s.m < 15 * 60 + 30;
+  if (!madeInSession) return false;
+  return n.d !== s.d || n.m >= 15 * 60 + 30;
+}
 
 function dailyCacheKey(name) {
   return `${DAILY_LOCAL_CACHE_VERSION}_${name}_${todayKeyPart()}`;
@@ -280,7 +292,7 @@ function readDailyLocalCache(name) {
     if (!raw) return null;
     const payload = JSON.parse(raw);
     if (!payload || !payload.data || !payload.savedAt) return null;
-    if (String(name).includes('screener') && Date.now() - Number(payload.savedAt) > getScreenerUiTtlMs()) return null;
+    if (String(name).includes('screener') && (Date.now() - Number(payload.savedAt) > getScreenerUiTtlMs() || scanPredatesClose(payload.data?.generatedAt || payload.savedAt))) return null;
     return {...payload.data, localCacheSavedAt: payload.savedAt, localCacheTtlMs: getScreenerUiTtlMs()};
   } catch { return null; }
 }
@@ -4336,7 +4348,7 @@ async function tabMyTradeScreener(force = false) {
     <div class="scr-progress">One scan · Screener Match + Watchlist · no duplicate stocks</div>
   </div>`;
   try {
-    if (!force && MY_TRADE_CACHE_UI && Date.now() - MY_TRADE_TS_UI < getScreenerUiTtlMs()) {
+    if (!force && MY_TRADE_CACHE_UI && Date.now() - MY_TRADE_TS_UI < getScreenerUiTtlMs() && !scanPredatesClose(MY_TRADE_CACHE_UI.generatedAt)) {
       renderMyTradeScreener(MY_TRADE_CACHE_UI, 'memory');
       return;
     }
@@ -4754,6 +4766,9 @@ async function checkAllVsOverview(){
       const sReady = String(s.tradeStatus).toUpperCase() === 'READY';
       if(sReady !== (v.action === 'READY')) why.push(`action ${v.action} vs ${s.tradeStatus}`);
       if(s.limitReady && s.limitEntry && !(Math.abs((+v.limit || 0) - +s.limitEntry.price) < 0.06)) why.push(`limit ${v.limit ?? 'none'} vs ${s.limitEntry.price}`);
+      /* Different price = different R:R and setup by design: say so, it is not a rule mismatch. */
+      const sp = +s.price, op = +v.price;
+      if(why.length && sp > 0 && op > 0 && Math.abs(op - sp) / sp > 0.001) why.push(`price moved ${op > sp ? '+' : ''}${((op - sp) / sp * 100).toFixed(2)}% since the scan (₹${fmt(sp)} → ₹${fmt(op)}) - Refresh the scan to compare like for like`);
     }
     if(why.length) bad.push(`<b>${escHtml(s.sym)}</b>: ${escHtml(why.join(', '))}`); else ok++;
   }
@@ -5744,10 +5759,7 @@ function buildReadyGate({bias, setupInfo, rrNum, qScore, price, e20, e50, e200, 
   const add=(txt)=>{ if(txt && !reasons.includes(txt)) reasons.push(txt); };
   /* Pre-Breakout Watch and Momentum Continuation are watch-only: alerts, never a READY entry. */
   const watchOnly = /pre[- ]?breakout|momentum continuation/i;
-  /* Breakout with Volume is watch-only too (backtest: 33% wins, -0.21R). Matched on the plan's own setup name only:
-     classifier labels mention "breakout" on stocks whose plan is a pullback. */
-  if(/^breakout with volume$/i.test(String(planSetupName || '').trim())) add('Breakout with Volume is watch-only (it lost money in the backtest) - buy the pullback to EMA20 / support after it, or set an alert');
-  else if(watchOnly.test(String(planSetupName || '')) || watchOnly.test(`${setupInfo?.setupDetail || ''} ${setupInfo?.label || ''}`)) add(`${/momentum/i.test(String(planSetupName || setupInfo?.setupDetail || '')) ? 'Momentum Continuation' : 'Pre-Breakout'} is watch-only — wait for an EMA20/EMA50 pullback or support bounce`);
+  if(watchOnly.test(String(planSetupName || '')) || watchOnly.test(`${setupInfo?.setupDetail || ''} ${setupInfo?.label || ''}`)) add(`${/momentum/i.test(String(planSetupName || setupInfo?.setupDetail || '')) ? 'Momentum Continuation' : 'Pre-Breakout'} is watch-only — wait for an EMA20/EMA50 pullback or support bounce`);
   /* Same rule as the screener: no fresh swing entry with results today or within 5 trading days (gap risk). */
   if(resultsSoon) add(resultsSoon.date === istDateKey() ? `Results today (${resultsSoon.date})` : `Results in ${resultsSoon.tradingDaysUntil} trading day${resultsSoon.tradingDaysUntil===1?'':'s'} (${resultsSoon.date})`);
   const setupText = `${setupInfo?.setupDetail || ''} ${setupInfo?.label || ''} ${setupInfo?.simple || ''}`.toLowerCase();
@@ -6298,7 +6310,7 @@ async function tabOverview(sym) {
   const finalSetupPill = buildFinalSetupPill(setupInfoForDecision, simpleDecision);
   const {decisionClass, decisionMain, actionBadge, actionBadgeSub, actionLine} = simpleDecision;
   OVERVIEW_VERDICT[sym] = {action: actionBadge, gate: readyGate.label, bias, setup: strategyPlan?.setupName || '', confidence, score: qScore,
-    reasons: readyGate.reasons.slice(), classified: setupInfo?.label || '', rr: rrNum,
+    reasons: readyGate.reasons.slice(), classified: setupInfo?.label || '', rr: rrNum, price,
     reason: actionBadge === 'READY' ? '' : (readyGate.passed ? simpleDecision.miniReason : readyGate.summary) || actionBadgeSub || '', ts: Date.now()};
   const biasDetailClass = bias==='Bullish' ? 'bull' : bias==='Bearish' ? 'bear' : 'neutral';
   const entryDetailClass = decisionClass==='qualified' ? 'bull' : decisionClass==='reject' ? 'bear' : 'neutral';

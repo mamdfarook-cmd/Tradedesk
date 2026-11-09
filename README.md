@@ -74,7 +74,10 @@ Optional: NSE_HOLIDAYS = extra trading holidays, comma-separated YYYY-MM-DD
 ```
 
 Notes for the free plan:
-- The server keeps itself awake on weekdays 08:30-24:00 IST (alerts and the 09:25 / 15:15 scans need it running).
+- The server keeps itself awake around the clock (it calls its own address every 10 minutes), so there is no cold
+  start and alerts / the 09:25 and 15:15 scans always run. That uses about 744 of the 750 free instance hours a
+  month, so it works only while this is your ONLY free Render web service: a second free service would use up the
+  hours before the month ends and Render would pause both until the 1st.
 - Render's free disk is wiped on every deploy: your alerts / Track Record come back automatically the next time
   you open TradeDesk on a device that has them; Export backup (Markets page) keeps a copy as a file.
 - Background alerts on a phone: open the 🔔 box on a stock → Turn on → Test. iPhone: Share → Add to Home Screen

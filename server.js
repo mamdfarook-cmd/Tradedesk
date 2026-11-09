@@ -435,6 +435,15 @@ function pickYahooLivePrev({ daily, intra, meta, intraMeta = null }) {
   ) || 0;
 
   let prevRaw = metaPrev;
+  /* Futures (NG=F, GC=F ...): the previous close is the daily bar before the live session's bar. Yahoo's
+     previousClose for them is not stable - on 9 Nov 2026 NG=F's said 3.533 in one answer and 2.998 (the real
+     6 Nov close) minutes later, which showed natural gas at -11% on a +4% day. */
+  if (/=F$/.test(String(meta?.symbol || '')) && dn >= 2) {
+    const tzF = meta?.exchangeTimezoneName || 'America/New_York';
+    const lastIsLive = sameMarketDate(daily.T?.[dn - 1], meta?.regularMarketTime, tzF) || Math.abs(daily.C[dn - 1] - liveRaw) <= liveRaw * 1e-4;
+    const p = lastIsLive ? daily.C[dn - 2] : daily.C[dn - 1];
+    if (p > 0) return { liveRaw, prevRaw: p };
+  }
   /* NSE / BSE: take the previous close from the bars - the last session dated BEFORE the live price's session.
      Yahoo's previousClose / chartPreviousClose for NSE indices can lag a full day (e.g. on 29 Oct night it
      still held the 27 Oct close while the bars had 28 Oct), which made every index day-change wrong.
@@ -448,7 +457,16 @@ function pickYahooLivePrev({ daily, intra, meta, intraMeta = null }) {
     for (let i = 0; i < inN; i++) { const d = dk(intra.T?.[i]); if (d && Number(intra.C[i]) > 0) lastClose[d] = +intra.C[i]; }
     for (let i = 0; i < dn; i++) { const d = dk(daily.T?.[i]); if (d && Number(daily.C[i]) > 0) lastClose[d] = +daily.C[i]; }
     const before = Object.keys(lastClose).filter(d => liveDay && d < liveDay).sort();
-    if (before.length) prevRaw = lastClose[before[before.length - 1]];
+    if (before.length) {
+      const barPrev = lastClose[before[before.length - 1]], barPrev2 = before.length > 1 ? lastClose[before[before.length - 2]] : null;
+      /* Yahoo's bars skip special sessions (Diwali Muhurat on Sunday 8 Nov 2026), while its previousClose has
+         them: on 9 Nov every stock's change was measured from Friday's close (GAIL +1.19% instead of NSE's +1.78%).
+         previousClose is kept unless it is the LAGGING kind seen on 29 Oct - equal to the close one session before
+         the bars' last one - or implausibly far from the bars. */
+      const lagging = barPrev2 != null && metaPrev != null && Math.abs(metaPrev - barPrev2) <= barPrev2 * 1e-5;
+      const plausible = metaPrev > 0 && Math.abs(metaPrev - barPrev) <= barPrev * 0.15;
+      prevRaw = plausible && !lagging ? metaPrev : barPrev;
+    }
   }
   if (!prevRaw) {
     const tz = meta?.exchangeTimezoneName || meta?.timezone || 'Asia/Kolkata';
@@ -581,14 +599,26 @@ const NSE_INDEX_NAME = {
   'NSE:NIFTYDIGITAL':'NIFTY INDIA DIGITAL', 'NSE:NIFTYTOURISM':'NIFTY INDIA TOURISM', 'NSE:NIFTYMEDIA':'NIFTY MEDIA', 'NSE:NIFTYREALTY':'NIFTY REALTY',
 };
 const NSE_INDEX_PRIMARY = new Set(['NSE:NIFTYFINEXBANK']);   /* Yahoo symbol is an ETF proxy, not the index */
-let NSE_ALLIDX = null;
+/* One NSE call returns every index (value, previous close, day high/low), so the 26 sidebar rows and the sector
+   list share it: cached 60 s in market hours, concurrent callers share the in-flight request, and after a failure
+   NSE is skipped for 5 minutes (Yahoo serves meanwhile) so a blocked NSE never slows every index by its timeout. */
+let NSE_ALLIDX = null, NSE_ALLIDX_INFLIGHT = null, NSE_ALLIDX_DOWN_UNTIL = 0;
 async function nseAllIndices() {
   if (NSE_ALLIDX && Date.now() - NSE_ALLIDX.ts < (istMarketHoursS() ? 60e3 : 600e3)) return NSE_ALLIDX.map;
-  const j = await nseOcGet('/api/allIndices');
-  const map = new Map((j.data || []).map(r => [String(r.index || '').toUpperCase(), r]));
-  if (!map.size) throw new Error('NSE allIndices empty');
-  NSE_ALLIDX = { map, ts: Date.now() };
-  return map;
+  if (Date.now() < NSE_ALLIDX_DOWN_UNTIL) throw new Error('NSE indices paused after a failure');
+  if (NSE_ALLIDX_INFLIGHT) return NSE_ALLIDX_INFLIGHT;
+  NSE_ALLIDX_INFLIGHT = (async () => {
+    const j = await withTimeout(nseOcGet('/api/allIndices'), 12000, 'NSE allIndices');
+    const map = new Map((j.data || []).map(r => [String(r.index || '').toUpperCase(), r]));
+    if (!map.size) throw new Error('NSE allIndices empty');
+    /* "09-Nov-2026 15:30" (IST) -> unix s: the time of the values, used by the sectors' stale-quote check. */
+    const m = /^(\d{2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2})/.exec(j.timestamp || '');
+    const at = m ? Math.round(Date.parse(`${m[3]}-${NSE_MON[m[2]]}-${m[1]}T${m[4]}:${m[5]}:00+05:30`) / 1000) : Math.round(Date.now() / 1000);
+    NSE_ALLIDX = { map, ts: Date.now(), at };
+    return map;
+  })().catch(e => { NSE_ALLIDX_DOWN_UNTIL = Date.now() + 5 * 60e3; throw e; })
+    .finally(() => { NSE_ALLIDX_INFLIGHT = null; });
+  return NSE_ALLIDX_INFLIGHT;
 }
 async function nseIndexPrice(sym) {
   const name = NSE_INDEX_NAME[sym];
@@ -596,7 +626,8 @@ async function nseIndexPrice(sym) {
   const r = (await nseAllIndices()).get(name);
   if (!r || !(+r.last > 0)) throw new Error('NSE has no value for ' + name);
   return { liveRaw:+r.last, prevRaw:+r.previousClose || +r.last, rawPct:+r.percentChange || 0, todayOpen:+r.open || +r.last,
-    todayHigh:+r.high || +r.last, todayLow:+r.low || +r.last, todayVol:0, changeBasis:'previousClose', basisTime:null, source:'NSE' };
+    todayHigh:+r.high || +r.last, todayLow:+r.low || +r.last, todayVol:0, changeBasis:'previousClose', basisTime:null, source:'NSE',
+    marketTime: NSE_ALLIDX?.at || null };
 }
 const NSE_PROXY_RATIO = {};   /* index / ETF price, learned whenever NSE answered (apiQuote) */
 async function getIndexFallbackPrice(sym, ticker) {
@@ -611,12 +642,14 @@ async function getIndexFallbackPrice(sym, ticker) {
       return { ...y, liveRaw: y.liveRaw * k, prevRaw: y.prevRaw * k, todayOpen: y.todayOpen * k, todayHigh: y.todayHigh * k, todayLow: y.todayLow * k, source: 'ETFxRatio' };
     }
   }
-  try { return await getPriceAndChange(ticker, sym); }
-  catch (e) {
-    if (!NSE_INDEX_NAME[sym]) throw e;
-    /* Yahoo failed or is paused: NSE's own value instead of an error. */
-    try { return await withTimeout(nseIndexPrice(sym), 15000, 'NSE index fallback'); } catch { throw e; }
+  /* NSE indices: NSE's own value and previous close first. Yahoo's daily bars skip special sessions (the Diwali
+     Muhurat session on Sunday 8 Nov 2026 closed Nifty at 24,986.40; Yahoo went from Friday's 25,030.35 straight to
+     Monday, so the day change showed +14 instead of +58), and some Yahoo index tickers (Fin Service) answer slowly.
+     Yahoo is the backup. */
+  if (NSE_INDEX_NAME[sym]) {
+    try { return await nseIndexPrice(sym); } catch {}
   }
+  return getPriceAndChange(ticker, sym);
 }
 
 
@@ -718,7 +751,8 @@ async function cacheWrap(key, ttl, producer) {
 /* Prevent long-running cache maps in always-on deployments */
 setInterval(() => {
   const now = Date.now();
-  for (const [k, v] of API_CACHE) if (now - v.ts > 30 * 60 * 1000) API_CACHE.delete(k);
+  /* NSE option chains / expiry lists (a handful of keys) are kept for a day: nseSwr serves them when NSE fails. */
+  for (const [k, v] of API_CACHE) if (now - v.ts > (/^oc(info)?_/.test(k) ? 24 * 3600e3 : 30 * 60 * 1000)) API_CACHE.delete(k);
 }, 5 * 60 * 1000);
 
 /* ── NEWS ENGINE v10 — RSS + GDELT + API backup + scoring ──
@@ -2158,6 +2192,13 @@ async function apiStrategy(req, res, p) {
   }
 
   try {
+    /* The NSE chain is requested first, in parallel with the spot price: both waits together must stay inside the
+       page's 15 s limit (the chain used to wait up to 20 s after the spot, so a cold chain always ended as
+       Black-Scholes estimates). */
+    const wantChain = OC_SYMBOLS[sym] && p.get('live') !== '0';
+    const chainP = wantChain
+      ? withTimeout(getOptionChain(sym, new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10)), 11000, 'option chain').catch(() => null)
+      : Promise.resolve(null);
     /* Fetch live spot if not provided */
     let spot = spotParam;
     if (!spot) {
@@ -2180,13 +2221,9 @@ async function apiStrategy(req, res, p) {
     /* Live NSE premiums for the index option legs (Nifty / Bank Nifty / FinNifty): the NSE expiry closest to the
        chosen days. Strikes, estimates, Greeks and the probability then use THAT expiry too (Bank Nifty has monthly
        expiries only: 7 days asked can mean 18 days priced). */
-    let chain = null;
     const expiryAsked = expiry;
-    if (OC_SYMBOLS[sym] && p.get('live') !== '0') {
-      const want = new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10);
-      chain = await withTimeout(getOptionChain(sym, want), 20000, 'option chain').catch(() => null);
-      if (chain?.expiry) expiry = Math.max(1, Math.round((Date.parse(chain.expiry + 'T15:30:00+05:30') - Date.now()) / 86400000));
-    }
+    const chain = await chainP;
+    if (chain?.expiry) expiry = Math.max(1, Math.round((Date.parse(chain.expiry + 'T15:30:00+05:30') - Date.now()) / 86400000));
     const T   = expiry / 365;
     const si  = getStrikeInterval(sym, spot);
     /* Never guess a lot size: a silent default of 50 made every ₹ figure wrong for unknown symbols. */
@@ -3570,6 +3607,14 @@ function qualifiedMetricsS({C,H,L,V,weekly,marketCapCr,prevIdx}){
    No second Yahoo scan is needed for the confirmation screen. */
 let MY_TRADE_SCREENER_CACHE = null, MY_TRADE_SCREENER_TS = 0;
 const MY_TRADE_SCREENER_TTL = 30 * 60 * 1000; /* 30 min server cache to reduce Yahoo load */
+/* Same rule as the page (scanPredatesClose in app.js): made during the NSE session, and that session is over. */
+function scanPredatesCloseS(at) {
+  const ms = Date.parse(at || ''); if (!Number.isFinite(ms)) return false;
+  const ist = x => { const t = new Date(x + 5.5 * 3600000); return { d: t.toISOString().slice(0, 10), m: t.getUTCHours() * 60 + t.getUTCMinutes(), wd: t.getUTCDay() }; };
+  const s = ist(ms), n = ist(Date.now());
+  if (!(s.wd >= 1 && s.wd <= 5 && s.m >= 555 && s.m < 930)) return false;
+  return n.d !== s.d || n.m >= 930;
+}
 
 function softScreenerGateReasonsS(reasons) {
   /* Final alignment fix: Screener Match must not be presented as final trade confirmation.
@@ -3579,7 +3624,7 @@ function softScreenerGateReasonsS(reasons) {
 }
 
 /* Setups that can be shown and alerted on, but are never a READY (buy-now) signal. */
-const WATCH_ONLY_SETUPS = new Set(['Pre-Breakout Watch', 'Momentum Continuation', 'Breakout with Volume']);   /* = SwingPlan.WATCH_ONLY */
+const WATCH_ONLY_SETUPS = new Set(['Pre-Breakout Watch', 'Momentum Continuation']);   /* = SwingPlan.WATCH_ONLY */
 /* Same wording as the Overview's Ready Gate. */
 const NIFTY_TREND_WHY = 'Nifty not in an uptrend (needs Nifty above its EMA50 and EMA20 above EMA50) - no fresh swing longs';
 /* Daily bars that are complete: today's bar is still forming between 09:15 and 15:35 IST (same rule as the
@@ -4151,8 +4196,10 @@ let MY_TRADE_SCREENER_INFLIGHT = null;
 async function apiMyTradeScreener(req, res) {
   const q = url.parse(req.url, true).query || {};
   /* A forced rescan (~250 Yahoo calls) is allowed at most every 5 minutes; inside that, the fresh result is reused. */
-  const forceRefresh = (q.refresh === '1' || q.force === '1' || q.nocache === '1') && !(MY_TRADE_SCREENER_CACHE && Date.now() - MY_TRADE_SCREENER_TS < 5 * 60 * 1000);
-  if (!forceRefresh && MY_TRADE_SCREENER_CACHE && Date.now() - MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL) return send(res, MY_TRADE_SCREENER_CACHE);
+  /* A scan made while NSE was open is not reused after that session closed (the Overview then uses the final close). */
+  const cacheOk = MY_TRADE_SCREENER_CACHE && !scanPredatesCloseS(MY_TRADE_SCREENER_CACHE.generatedAt);
+  const forceRefresh = (q.refresh === '1' || q.force === '1' || q.nocache === '1') && !(cacheOk && Date.now() - MY_TRADE_SCREENER_TS < 5 * 60 * 1000);
+  if (!forceRefresh && cacheOk && Date.now() - MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL) return send(res, MY_TRADE_SCREENER_CACHE);
   /* A full scan is ~150 Yahoo calls. Concurrent requests (several tabs, refresh clicks) now share the
      scan already running instead of each starting another one. */
   if (!MY_TRADE_SCREENER_INFLIGHT) {
@@ -4695,8 +4742,15 @@ async function getSectorQuoteLight(ticker) {
   return { liveRaw: live, rawChg: live - prev, rawPct: (live - prev) / prev * 100,
            marketTime: Number(meta.regularMarketTime) || b.T[b.n - 1] };
 }
+const SECTOR_SYM = t => Object.keys(YF_MAP).find(k => k.startsWith('NSE:') && YF_MAP[k] === t);
 async function getSectorPriceAndChange(s) {
-  /* Direct-only Yahoo index ticker. No synthetic stock basket calculation. */
+  /* NSE's own index list first (one shared call for all sectors, correct previous close), then the direct Yahoo
+     index ticker. No synthetic stock basket calculation. */
+  const sym = SECTOR_SYM(s.ticker);
+  if (sym && NSE_INDEX_NAME[sym]) {
+    try { const n = await nseIndexPrice(sym); return { ...n, rawChg: n.liveRaw - n.prevRaw, rawPct: n.prevRaw > 0 ? (n.liveRaw - n.prevRaw) / n.prevRaw * 100 : 0, usedTicker:s.ticker, source:'NSE' }; }
+    catch {}
+  }
   try { return { ...(await getSectorQuoteLight(s.ticker)), usedTicker:s.ticker }; }
   catch { const val = await getPriceAndChange(s.ticker); return { ...val, usedTicker:s.ticker }; }
 }
@@ -4757,7 +4811,7 @@ function assembleSectors(results) {
       return {
         ...s, ticker: usedTicker || s.ticker, price:+liveRaw.toFixed(2),
         chg:+rawChg.toFixed(2), pct:+rawPct.toFixed(2), isUp:rawPct>=0,
-        source: 'Direct Yahoo index ticker',
+        source: results[i].value.source === 'NSE' ? 'NSE index value' : 'Direct Yahoo index ticker',
       };
     });
     /* Sort by % change — top performers first */
@@ -4823,26 +4877,38 @@ function istMarketHoursS() {
   const t = new Date(Date.now() + 5.5 * 3600000), d = t.getUTCDay(), m = t.getUTCHours() * 60 + t.getUTCMinutes();
   return d >= 1 && d <= 5 && m >= 9 * 60 && m <= 15 * 60 + 35;
 }
+/* Stale-while-revalidate for NSE: a cold NSE fetch takes 10-20 s (cookie page + contract list + chain) and often
+   fails from cloud hosts. Once one answer is in, it is returned at once while a refresh runs in the background,
+   and kept (up to maxAge) when NSE fails - before, every 3 minutes a request waited on the slow refetch, hit the
+   15 s page timeout or an NSE error, and the premiums flipped back to Black-Scholes estimates. */
+async function nseSwr(key, ttl, maxAge, producer) {
+  const old = API_CACHE.get(key);
+  /* "saved quote" on the page once the copy is more than 10 minutes old */
+  const aged = o => Date.now() - o.ts > 10 * 60e3 ? { ...o.value, stale: true, staleAgeSec: Math.round((Date.now() - o.ts) / 1000) } : o.value;
+  if (old && Date.now() - old.ts >= ttl && Date.now() - old.ts < maxAge) {
+    if (!INFLIGHT.has(key)) cacheWrap(key, 0, producer).catch(() => {});
+    return aged(old);
+  }
+  try { const r = await cacheWrap(key, ttl, producer); return r.value; }
+  catch (e) { if (old && Date.now() - old.ts < maxAge) return aged(old); throw e; }
+}
 async function getOptionChain(sym, want = '') {
   const name = OC_SYMBOLS[sym];
   if (!name) throw new Error('Option chain only for NSE:NIFTY, NSE:BANKNIFTY, NSE:FINNIFTY');
   {
     /* Expiry list cached 30 min on its own; the chain is cached per NSE expiry, so different "days" that land on
        the same expiry share one fetch (each new key used to cost two NSE calls in a one-at-a-time queue). */
-    const info = (await cacheWrap(`ocinfo_${name}`, 1800e3, () => nseOcGet(`/api/option-chain-contract-info?symbol=${name}`))).value;
-    const exps0 = (info.expiryDates || []).map(e => ({ nse: e, key: nseExpKey(e) })).filter(e => e.key);
-    const today0 = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
+    const info = await nseSwr(`ocinfo_${name}`, 1800e3, 24 * 3600e3, () => nseOcGet(`/api/option-chain-contract-info?symbol=${name}`));
+    /* After 15:30 IST an expiry dated today is finished: the default and nearest picks move to the next one. */
+    const istNow = new Date(Date.now() + 5.5 * 3600000), afterClose = istNow.getUTCHours() * 60 + istNow.getUTCMinutes() >= 15 * 60 + 30;
+    const today0 = istNow.toISOString().slice(0, 10);
+    const exps0 = (info.expiryDates || []).map(e => ({ nse: e, key: nseExpKey(e) })).filter(e => e.key && (e.key > today0 || (e.key === today0 && !afterClose)));
     const dd0 = (a, b) => Math.abs(Date.parse(a) - Date.parse(b));
-    const pick0 = exps0.find(e => e.key === want) || (want ? exps0.slice().sort((a, b) => dd0(a.key, want) - dd0(b.key, want))[0] : exps0.find(e => e.key >= today0)) || exps0[0];
+    const pick0 = exps0.find(e => e.key === want) || (want ? exps0.slice().sort((a, b) => dd0(a.key, want) - dd0(b.key, want))[0] : exps0[0]);
     if (!pick0) throw new Error('No expiry dates from NSE');
-    const { value } = await cacheWrap(`oc_${name}_${pick0.key}`, istMarketHoursS() ? 180e3 : 1800e3, async () => {
-      const exps = exps0;
-      const today = new Date(Date.now() + 5.5 * 3600000).toISOString().slice(0, 10);
-      /* The app's expiry calendar is generated by rule; NSE's list is the truth (holiday shifts). Exact date,
-         else the closest NSE expiry to the one asked for, else the nearest one from today. */
-      const dd = (a, b) => Math.abs(Date.parse(a) - Date.parse(b));
-      const pick = exps.find(e => e.key === want) || (want ? exps.slice().sort((a, b) => dd(a.key, want) - dd(b.key, want))[0] : exps.find(e => e.key >= today)) || exps[0];
-      if (!pick) throw new Error('No expiry dates from NSE');
+    const fresh = istMarketHoursS() ? 180e3 : 1800e3;
+    const value = await nseSwr(`oc_${name}_${pick0.key}`, fresh, 12 * 3600e3, async () => {
+      const exps = exps0, pick = pick0;
       const j = await nseOcGet(`/api/option-chain-v3?type=Indices&symbol=${name}&expiry=${encodeURIComponent(pick.nse)}`);
       const rec = j.records || {}, spot = +rec.underlyingValue;
       const side = o => o ? { ltp: +o.lastPrice || 0, bid: +o.buyPrice1 || 0, ask: +o.sellPrice1 || 0, oi: +o.openInterest || 0,
@@ -4981,7 +5047,7 @@ async function apiQuote(req,res,p){
         monthly:monthly?{T:monthly.T||[],C:cv(monthly.C),O:cv(monthly.O),H:cv(monthly.H),L:cv(monthly.L),V:monthly.V}:null,
         intra: intra ?{T:intra.T||[],C:cv(intra.C), O:cv(intra.O), H:cv(intra.H), L:cv(intra.L), V:intra.V }:null,
         dataSource: {
-          provider: priceData.source === 'NSE' ? (proxyScale ? `NSE index value · history from Yahoo ${ticker} scaled ×${proxyScale.toFixed(2)}` : 'NSE (Yahoo unavailable) · history Yahoo') : 'Yahoo Finance',
+          provider: priceData.source === 'NSE' ? (proxyScale ? `NSE index value · history from Yahoo ${ticker} scaled ×${proxyScale.toFixed(2)}` : 'NSE index value · history Yahoo') : 'Yahoo Finance',
           mappedFrom: sym,
           ticker,
           mode: DATA_SOURCE_NOTES[sym] ? 'direct-yahoo-note' : 'direct',
@@ -5190,8 +5256,19 @@ async function apiGlobal(req,res){
        loading - and the options idea then had no VIX for the 5 min the result was cached. */
     const vixHistP = withTimeout(safeFetch(() => yfChart('^INDIAVIX', '1d', '1y'), 1), 20000, 'India VIX history');
     vixHistP.catch(() => {});
+    /* Nifty, Bank Nifty and India VIX from NSE's index list when it answers (correct previous close), else Yahoo. */
+    const GLOBAL_NSE = { '^NSEI':'NIFTY 50', '^NSEBANK':'NIFTY BANK', '^INDIAVIX':'INDIA VIX' };
+    const globalPrice = async s => {
+      if (GLOBAL_NSE[s.ticker]) {
+        try {
+          const r = (await nseAllIndices()).get(GLOBAL_NSE[s.ticker]);
+          if (r && +r.last > 0 && +r.previousClose > 0) return { liveRaw:+r.last, prevRaw:+r.previousClose, rawChg:+r.last - +r.previousClose, rawPct:(+r.last - +r.previousClose) / +r.previousClose * 100 };
+        } catch {}
+      }
+      return safeFetch(() => getPriceAndChange(s.ticker), 1);
+    };
     const resultsP = Promise.allSettled(
-      SYMBOLS.map(s => withTimeout(safeFetch(() => getPriceAndChange(s.ticker), 1), 20000, s.ticker))
+      SYMBOLS.map(s => withTimeout(globalPrice(s), 20000, s.ticker))
     );
     const breadthP = globalBreadth();
     const results = await resultsP;
@@ -5481,6 +5558,9 @@ function loginPage(error) {
   return `<!DOCTYPE html><html lang="en"><head>
 <meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
 <title>TradeDesk — Login</title>
+<link rel="manifest" href="/manifest.webmanifest"><link rel="icon" type="image/png" href="/icon-192.png">
+<link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png"><meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="TradeDesk"><meta name="theme-color" content="#0e0e0e">
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
   body{background:#0a0a12;display:flex;align-items:center;justify-content:center;min-height:100vh;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif}
@@ -5842,6 +5922,13 @@ async function handleRequest(req,res){
     });
     res.end();
     return;
+  }
+
+  /* App icon, web-app manifest and service worker are public (no data in them). Phones fetch the manifest and
+     the home-screen icon WITHOUT the login cookie, so behind the login they got the login page and the
+     "Add to Home screen" shortcut had no logo. */
+  if (req.method === 'GET' && (pn === '/icon-192.png' || pn === '/icon-512.png' || pn === '/apple-touch-icon.png' || pn === '/manifest.webmanifest' || pn === '/sw.js')) {
+    return staticFile(req, res, path.join(__dirname, 'public', pn.slice(1)));
   }
 
   /* ── AUTH GUARD — all other routes require session ── */

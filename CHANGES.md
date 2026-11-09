@@ -544,3 +544,43 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **Rebalance alert:** on the first trading day of the month, the 09:25 push adds the sells and buys.
 - **Checked:** the app's list matches the backtest code's list on the same date (19 of 20; the one difference is the stock at exactly #100 by market cap, because the live universe has a few more stocks). It uses the same cached charts as the swing scan.
 - **Momentum Continuation (the 1-10 day swing setup)** was tested on 9 years: −0.025R a trade, profitable in 3 of 10 years, so it stays watch-only.
+
+## Index prices, option premiums, day change, mobile app (9 Nov 2026)
+
+- **Index values and day change come from NSE first.** One NSE call returns every index, so it is shared and cached for 60 seconds. Yahoo is the backup.
+  - Yahoo's daily bar for the last session was stale. On 9 Nov it had Nifty's 6 Nov close at 25,030.35, but NSE closed it at 24,986.40, so Nifty showed +14 (+0.06%) instead of +58 (+0.23%).
+  - About half of the 26 indices were wrong the same way.
+  - The sidebar, Overview, sectors and the top market bar (Nifty, Bank Nifty, India VIX) now all agree with NSE.
+  - On the chart, the previous session's bar is set to NSE's close.
+- **FIN SERVICE no longer stays on "loading", and sectors show for all 26 indices.**
+  - Each sector used to wait on its own Yahoo request, and Fin Service's was slow.
+  - Fin Services Ex-Bank now shows the real index (~31,470) instead of the ETF price (~32).
+  - If NSE fails, NSE is skipped for 5 minutes and Yahoo serves the indices.
+- **MCX day change uses Yahoo's daily bars.** Yahoo's "previous close" for futures was not stable. For NG=F it said 3.533 in one answer and 2.998 a few minutes later, so natural gas showed −11% on a +4.5% day. Gold, silver, crude, natural gas and copper now take the previous close from the daily bars. USD/INR keeps its current source.
+- **Stocks were already correct.** 13 checked against NSE's official end-of-day file for 6 Nov: every previous close matched exactly.
+- **Option premiums stay on NSE prices.**
+  - A cold NSE fetch takes 10-20 s. It used to run after the spot price, so the page gave up at 15 s and showed Black-Scholes estimates. Every 3 minutes the cache expired and that happened again.
+  - Now the chain and the spot price are fetched together.
+  - Once one chain is in, it is returned at once while a refresh runs in the background.
+  - If NSE fails, the last good chain is kept for up to 12 hours, marked "saved quote" after 10 minutes.
+  - After 15:30 on expiry day, the default expiry moves to the next one.
+- **Screener vs Overview check.**
+  - A scan made while NSE was open is no longer reused after the close. The phone used to keep it for 24 hours, so an evening check compared a 15:00 scan with closing prices.
+  - When a stock differs only because its price moved since the scan, the check now says so.
+  - Checked: 20 of 20 match after the fix.
+- **Breakout with Volume is a READY setup again.** This was asked for: the one-year backtest had it at 33% wins and −0.21R. Its gate still applies: close above the 7-day high on 1.1x+ volume, and R:R 1.25 or better.
+- **Mobile app.**
+  - The app icon, manifest and service worker are no longer behind the login. Phones fetch them without the login cookie, so "Add to Home screen" had no logo.
+  - Added a 512 px icon and a 180 px Apple touch icon. The login page links them too.
+  - On phones the bottom menu now sits directly under the page body, not inside the scrolling content, so it cannot scroll away in the installed app.
+
+## Diwali Muhurat session, GAIL (9 Nov 2026, night)
+
+- **Correction to the entry above:** Yahoo's index bars were not stale. NSE held the **Diwali Muhurat session on Sunday 8 Nov**, and Yahoo's daily bars skip it, going from Friday 6 Nov straight to Monday 9 Nov. The real previous close for 9 Nov was the Muhurat close: Nifty 24,986.40, GAIL 184.72, RELIANCE 1,324.00. NSE-first indices already gave the right change.
+- **Stocks now count the Muhurat session too.**
+  - Every stock's day change on 9 Nov was measured from Friday's close: GAIL showed +2.21 (+1.19%) instead of NSE's +3.28 (+1.78%), and SUNPHARMA +2.4% instead of −0.55%.
+  - Yahoo's previousClose has the special sessions: 20 of 20 stocks matched NSE's 8 Nov file.
+  - The app now uses it, unless it is the lagging kind seen on 29 Oct (equal to the close one session before the bars' last one) or more than 15% away from the bars.
+- Removed the 9 Nov change that overwrote the previous daily bar of an index with NSE's close. It had replaced Friday's correct close with the Muhurat close.
+- GAIL's WAIT is correct: the screener and Overview agree. It closed at 188 on its high, 0.5% under the 52-week high of 188.90, but RSI is 73 and price is 7.2% above EMA20. The pre-breakout and breakout setups allow at most RSI 72 and 6.5% above EMA20, so this counts as chasing.
+- README: keep-awake runs around the clock (about 744 of the 750 free Render hours), so this must be the only free Render web service.

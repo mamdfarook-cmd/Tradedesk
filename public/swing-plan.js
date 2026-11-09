@@ -257,9 +257,10 @@
 
   /* Which long setup the price is actually in. Same rules for Overview and screener.
      Pullbacks/bounces rank first (nearest entry wins), then breakout, then momentum (watch-only). */
-  /* Watch-only: shown and alerted, never READY. Breakout with Volume joined on 7 Nov 2026 - over the last year it
-     won 33% of trades for -0.21R on average (108 trades), with or without a market filter. */
-  const WATCH_ONLY = new Set(['Pre-Breakout Watch', 'Momentum Continuation', 'Breakout with Volume']);
+  /* Watch-only: shown and alerted, never READY. Breakout with Volume was watch-only from 7 Nov 2026 (one-year
+     backtest: 33% wins, -0.21R over 108 trades) and is a READY setup again from 9 Nov 2026 at the user's request;
+     its own gate (close above the 7-day high on 1.1x+ volume, R:R >= 1.25) still applies. */
+  const WATCH_ONLY = new Set(['Pre-Breakout Watch', 'Momentum Continuation']);
   function pickLongSetup({ price, e20, e50, e200, sr, rsi, macd, adx, volBlend, C, L, rrOf }) {
     const supportRef = swingSupport(sr, price);
     const distPct = level => Number.isFinite(+level) && +level > 0 ? Math.abs(+price - +level) / Math.max(Math.abs(+level), 1) * 100 : 999;
