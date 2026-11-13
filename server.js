@@ -582,7 +582,10 @@ async function getPriceAndChange(ticker, symForBasis=null) {
     || 0;
 
   const marketTime = Number(dailyMeta.regularMarketTime) || null;
-  return { liveRaw, prevRaw, rawChg, rawPct, todayOpen, todayHigh, todayLow, todayVol, changeBasis, basisTime, marketTime };
+  /* Last few daily closes for the list's mini chart (already fetched: no extra call). */
+  const spark = daily.C.slice(-6).map(Number).filter(v => v > 0);
+  if (spark.length && liveRaw > 0) { if (sameMarketDate(daily.T?.[dn - 1], marketTime, dailyMeta.exchangeTimezoneName || 'Asia/Kolkata')) spark[spark.length - 1] = liveRaw; else spark.push(liveRaw); }
+  return { liveRaw, prevRaw, rawChg, rawPct, todayOpen, todayHigh, todayLow, todayVol, changeBasis, basisTime, marketTime, spark: spark.slice(-6) };
 }
 
 
@@ -2908,7 +2911,7 @@ const NSE_VOLUME_CURVE = [[0,0],[15,0.08],[30,0.14],[60,0.22],[120,0.35],[180,0.
 function nseSessionShare(nowMs = Date.now()) {
   const ist = new Date(nowMs + 330 * 60000);
   const dow = ist.getUTCDay();
-  if (dow === 0 || dow === 6) return 1;
+  if (dow === 0 || dow === 6 || isNseHoliday(ist.toISOString().slice(0, 10))) return 1;
   const mins = ist.getUTCHours() * 60 + ist.getUTCMinutes() - (9 * 60 + 15);
   if (mins <= 0 || mins >= 375) return 1; /* before open or after close: nothing to project */
   for (let i = 1; i < NSE_VOLUME_CURVE.length; i++) {
@@ -4128,7 +4131,7 @@ function tradingDaysUntil(fromKey, toKey) {
   while ((step > 0 && d < end) || (step < 0 && d > end)) {
     d += step * 86400000;
     const dow = new Date(d).getUTCDay();
-    if (dow !== 0 && dow !== 6) count += step;
+    if (dow !== 0 && dow !== 6 && !isNseHoliday(new Date(d).toISOString().slice(0, 10))) count += step;
   }
   /* Results on a weekend are priced in on the next session, so count that session. */
   const endDow = new Date(end).getUTCDay();
@@ -4245,7 +4248,7 @@ async function runMyTradeScreenerScan() {
   const [niftyTrend, resultsCal] = await Promise.all([getNiftyRegime(), getResultsCalendar()]);
   const niftyCloses = NIFTY_CLOSES;
   const todayKey = istDateKey();
-  let resultsBlockedCount = 0, regimeBlockedCount = 0;
+  let resultsBlockedCount = 0, regimeBlockedCount = 0, eventBlockedCount = 0;
 
   const universe = screenerEligibleUniverseS();
   const universeInfo = universeSummary();
@@ -4326,13 +4329,17 @@ async function runMyTradeScreenerScan() {
           gateReasons: selected?.gateReasons || [], limit: m.limit || null, dsLimit: m.decisionScoreAtLimit, rs3m: rs.rs3m, volOk, highSell: !!m.highSellingVolume, baseTrendOk, weeklyOk, readyCore });
         const resultsInfo = resultsCheckFor(ticker.replace(/\.(NS|BO)$/,''), resultsCal, todayKey);
         const resultsBlock = !!resultsInfo?.block;
+        /* Bonus / split / rights / demerger ex-date within 10 trading days, or an ASM / GSM listing (same check as the Overview). */
+        const evChk = stockEventCheckS(ticker, todayKey), eventBlock = evChk.block;
         const regimeBlock = false; /* decided after the scan, once breadth is known */
-        const readyOk = readyCore && !resultsBlock;
+        const readyOk = readyCore && !resultsBlock && !eventBlock;
         if (readyCore && resultsBlock) resultsBlockedCount++;
+        if (readyCore && eventBlock && !resultsBlock) eventBlockedCount++;
         const extra = {
           resultsDate: resultsInfo?.date || null,
           resultsTradingDays: resultsInfo ? resultsInfo.tradingDays : null,
           resultsBlock, resultsRecent: !!resultsInfo?.recent,
+          eventBlock, eventReasons: evChk.reasons, eventNotes: evChk.notes, surveillance: evChk.surveillance,
           regimeBlock, readyCore,
           pickedSetup: m.picked || null,
           plan: m.plan, rs3m: rs.rs3m, rs6m: rs.rs6m, stock3m: rs.stock3m, nifty3m: rs.nifty3m,
@@ -4343,6 +4350,7 @@ async function runMyTradeScreenerScan() {
         };
         const blockReasons = [];
         if (resultsBlock) blockReasons.push(resultsInfo.date === todayKey ? `Results today (${resultsInfo.date})` : `Results in ${resultsInfo.tradingDays} trading day${resultsInfo.tradingDays===1?'':'s'} (${resultsInfo.date}) - avoid fresh swing entry`);
+        blockReasons.push(...evChk.reasons);
 
         const rankScore = (
           (selected?.score || m.finalQualification || 0) * 1.0 +
@@ -4362,7 +4370,7 @@ async function runMyTradeScreenerScan() {
            from here is under 1.25 (and / or it is late from EMA20). Buying at the limit fixes exactly that; every
            other rule (trend, bounce candle, volume, weekly, results, and the strength gate after the scan)
            must pass as for READY. */
-        const limitOk = chk.limitCore && !resultsBlock;
+        const limitOk = chk.limitCore && !resultsBlock && !eventBlock;
         if (limitOk) {
           const why = `Ready on limit: buy at ₹${m.limit.price} (R:R ${m.limit.rr.toFixed(2)}) - price is above the pullback zone`;
           return {...screenerCardPayloadS({ticker, m, selected, status:'WATCH', reason: why, rankScore: rankScore + 500, emaGap, resistanceRoom, slRisk}),
@@ -4402,7 +4410,7 @@ async function runMyTradeScreenerScan() {
           if (m.volRatio < 0.8) blockers.push('Needs volume');
           if (blockers.length) reason = blockers.slice(0,3).join(' · ');
         }
-        if (resultsBlock) reason = `${blockReasons[0]} · ${reason}`;
+        if (resultsBlock || eventBlock) reason = `${blockReasons[0]} · ${reason}`;
         return {...screenerCardPayloadS({ticker, m, selected, status:'WATCH', reason, rankScore: rankScore - 25, emaGap, resistanceRoom, slRisk}), ...extra};
       } catch(e) { failedTickers.push(`${ticker} (${String(e && e.message || e).slice(0, 60)})`); return null; }
     }));
@@ -4487,12 +4495,12 @@ async function runMyTradeScreenerScan() {
   const quickBounce = !niftyOk200 ? [] : quickCands
     .filter(q => !readySymsAll.has(q.ticker.replace(/\.(NS|BO)$/, '').toUpperCase()))
     .map(q => {
-      const sym = q.ticker.replace(/\.(NS|BO)$/, ''), ri = resultsCheckFor(sym, resultsCal, todayKey);
+      const sym = q.ticker.replace(/\.(NS|BO)$/, ''), ri = resultsCheckFor(sym, resultsCal, todayKey), ev = stockEventCheckS(sym, todayKey);
       const sec = sectorInfoFor(sym)?.sector || null;
       return { sym, ticker: q.ticker, price: q.price, ...q.qb, sector: sec, resultsDate: ri?.date || null, resultsBlock: !!ri?.block,
-        resultsTradingDays: ri ? ri.tradingDays : null, resultsRecent: !!ri?.recent };
+        resultsTradingDays: ri ? ri.tradingDays : null, resultsRecent: !!ri?.recent, eventBlock: ev.block, eventNotes: ev.notes };
     })
-    .filter(q => !q.resultsBlock)
+    .filter(q => !q.resultsBlock && !q.eventBlock)
     .sort((a, b) => a.rsi2 - b.rsi2).slice(0, 15);
   const quickBounceNote = !niftyOk200 ? `Quick Bounce paused: Nifty is below its 200-day average (${marketTrend.sma200})` : '';
   LAST_SCAN_DIAG = { ts: Date.now(), rows: scanDiag };
@@ -4515,7 +4523,8 @@ async function runMyTradeScreenerScan() {
     marketTrend,
     universe: universeInfo,
     resultsCalendar: { source: resultsCal.source, ok: resultsCal.ok, error: resultsCal.error, fetchedAt: resultsCal.fetchedAt,
-      blockWindowTradingDays: RESULTS_BLOCK_TRADING_DAYS, readyBlockedByResults: resultsBlockedCount, readyBlockedByRegime: regimeBlockedCount },
+      blockWindowTradingDays: RESULTS_BLOCK_TRADING_DAYS, readyBlockedByResults: resultsBlockedCount, readyBlockedByRegime: regimeBlockedCount,
+      readyBlockedByEvents: eventBlockedCount, eventsChecked: !!NSE_CAL.ts.corp, surveillanceChecked: !!NSE_CAL.ts.surv },
     universeStats: {
       ...universeStatsBase,
       attempted: scannedAttempted,
@@ -4587,6 +4596,90 @@ function daysBetweenKeys(a, b) { return Math.round((Date.parse(b + 'T00:00:00Z')
 const NSE_FIXED_HOLIDAYS_MD = new Set(['01-26', '04-14', '05-01', '08-15', '10-02', '12-25']);
 const NSE_DATED_HOLIDAYS = new Set((process.env.NSE_HOLIDAYS || '2026-11-24').split(',').map(s => s.trim()).filter(Boolean));
 function isNseHoliday(key) { return NSE_DATED_HOLIDAYS.has(key) || NSE_FIXED_HOLIDAYS_MD.has(key.slice(5)); }
+
+/* ── NSE calendar data, refreshed once a day (free NSE APIs, the option-chain session):
+   - trading holidays: the list above only had fixed dates, so 10 Nov 2026 (Diwali Balipratipada) ran the scans
+     and alerts as a normal day. Days marked "*" by NSE (Diwali Laxmi Pujan) have a special Muhurat session.
+   - corporate actions: a bonus, split, rights or demerger inside a 1-10 day swing changes the price overnight, so it
+     blocks a fresh entry like results do; a dividend is a note (price drops by it on the ex-date).
+   - surveillance lists (ASM / GSM): higher margins, trade limits, sometimes trade-for-trade - no fresh entry.
+   Kept in data/nse-calendar.json so a restart does not need NSE; a failed refresh keeps the last copy. */
+const NSE_CAL_FILE = require('path').join(__dirname, 'data', 'nse-calendar.json');   /* local requires: path / fs are declared further down */
+let NSE_CAL = { holidays: [], corp: {}, surv: {}, ts: {} };
+try { const j = JSON.parse(require('fs').readFileSync(NSE_CAL_FILE, 'utf8')); NSE_CAL = { holidays: j.holidays || [], corp: j.corp || {}, surv: j.surv || {}, ts: j.ts || {} }; } catch {}
+/* Every listed day is closed for the normal session; "*" only says a special (Muhurat) session is held. */
+function applyNseHolidays() { for (const h of NSE_CAL.holidays) NSE_DATED_HOLIDAYS.add(h.date); }
+applyNseHolidays();
+const nseDdMmmToKey = s => { const m = /^(\d{2})-([A-Za-z]{3})-(\d{4})/.exec(String(s || '').trim()); const mon = { Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06', Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12' }; return m && mon[m[2]] ? `${m[3]}-${mon[m[2]]}-${m[1]}` : null; };
+const nseDateParamS = ms => { const t = new Date(ms + 5.5 * 3600e3); return `${String(t.getUTCDate()).padStart(2, '0')}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${t.getUTCFullYear()}`; };
+function corpKind(subject) {
+  const s = String(subject || '');
+  if (/split|sub-?division/i.test(s)) return 'split';
+  if (/bonus/i.test(s)) return 'bonus';
+  if (/rights/i.test(s)) return 'rights';
+  if (/demerger|scheme of arrangement|spin/i.test(s)) return 'demerger';
+  if (/dividend|distribution/i.test(s)) return 'dividend';
+  return 'other';
+}
+let NSE_CAL_INFLIGHT = null;
+async function refreshNseCalendar(force = false) {
+  if (NSE_CAL_INFLIGHT) return NSE_CAL_INFLIGHT;
+  const stale = k => force || !NSE_CAL.ts[k] || Date.now() - NSE_CAL.ts[k] > 20 * 3600e3;
+  if (!stale('hol') && !stale('corp') && !stale('surv')) return NSE_CAL;
+  NSE_CAL_INFLIGHT = (async () => {
+    let changed = false;
+    if (stale('hol')) try {
+      const j = await withTimeout(nseOcGet('/api/holiday-master?type=trading'), 15000, 'NSE holidays');
+      const list = (j.CM || j.FO || []).map(h => ({ date: nseDdMmmToKey(h.tradingDate), name: String(h.description || '').replace(/\*$/, '').trim(), special: /\*\s*$/.test(String(h.description || '')) })).filter(h => h.date);
+      if (list.length >= 5) { NSE_CAL.holidays = list; NSE_CAL.ts.hol = Date.now(); applyNseHolidays(); changed = true; }
+    } catch (e) { console.warn('NSE holidays:', e.message); }
+    if (stale('corp')) try {
+      const j = await withTimeout(nseOcGet(`/api/corporates-corporateActions?index=equities&from_date=${nseDateParamS(Date.now() - 2 * 86400e3)}&to_date=${nseDateParamS(Date.now() + 30 * 86400e3)}`), 15000, 'NSE corporate actions');
+      const corp = {};
+      for (const r of (Array.isArray(j) ? j : j.data || [])) {
+        const date = nseDdMmmToKey(r.exDate), sym = String(r.symbol || '').toUpperCase();
+        if (!date || !sym || (r.series && r.series !== 'EQ')) continue;
+        (corp[sym] = corp[sym] || []).push({ date, subject: String(r.subject || '').replace(/\s+/g, ' ').trim(), kind: corpKind(r.subject) });
+      }
+      NSE_CAL.corp = corp; NSE_CAL.ts.corp = Date.now(); changed = true;
+    } catch (e) { console.warn('NSE corporate actions:', e.message); }
+    if (stale('surv')) try {
+      const [asm, gsm] = await Promise.all([withTimeout(nseOcGet('/api/reportASM'), 15000, 'NSE ASM'), withTimeout(nseOcGet('/api/reportGSM'), 15000, 'NSE GSM')]);
+      const surv = {};
+      for (const r of [...(asm?.longterm?.data || []), ...(asm?.shortterm?.data || [])]) if (r.symbol) surv[String(r.symbol).toUpperCase()] = `ASM ${String(r.survDesc || '').match(/Long Term|Short Term/i)?.[0] || ''} ${r.asmSurvIndicator || ''}`.replace(/\s+/g, ' ').trim();
+      for (const r of (Array.isArray(gsm) ? gsm : gsm?.data || [])) if (r.symbol) surv[String(r.symbol).toUpperCase()] = `GSM stage ${r.gsmStage || ''}`.trim();
+      if (Object.keys(surv).length) { NSE_CAL.surv = surv; NSE_CAL.ts.surv = Date.now(); changed = true; }
+    } catch (e) { console.warn('NSE ASM/GSM:', e.message); }
+    if (changed) { try { require('fs').mkdirSync(require('path').dirname(NSE_CAL_FILE), { recursive: true }); require('fs').writeFileSync(NSE_CAL_FILE, JSON.stringify(NSE_CAL)); } catch (e) { console.warn('NSE calendar save:', e.message); } }
+    return NSE_CAL;
+  })().finally(() => { NSE_CAL_INFLIGHT = null; });
+  return NSE_CAL_INFLIGHT;
+}
+setTimeout(() => refreshNseCalendar().catch(() => {}), 20 * 1000);
+setInterval(() => refreshNseCalendar().catch(() => {}), 60 * 60 * 1000);   /* each part refetches only when 20 h old */
+const STOCK_EVENT_BLOCK_DAYS = 10;   /* the longest swing hold */
+/* Bonus / split / rights / demerger with an ex-date in the next 10 trading days, or an ASM / GSM listing, blocks a
+   fresh entry (screener READY and the Overview gate alike); a dividend is only a note. */
+function stockEventCheckS(code, todayKey = istDateKey()) {
+  const sym = String(code || '').replace(/^NSE:/, '').replace(/\.(NS|BO)$/, '').toUpperCase();
+  const reasons = [], notes = [], items = [];
+  const surv = NSE_CAL.surv[sym];
+  if (surv) reasons.push(`On the NSE surveillance list (${surv}) - higher margins and trade limits, no fresh swing entry`);
+  for (const a of NSE_CAL.corp[sym] || []) {
+    if (a.date < todayKey) continue;
+    const td = tradingDaysUntil(todayKey, a.date);
+    if (td > STOCK_EVENT_BLOCK_DAYS) continue;
+    const when = a.date === todayKey ? 'today' : `${a.date} (${td} trading day${td === 1 ? '' : 's'})`;
+    items.push({ ...a, tradingDays: td });
+    if (a.kind === 'dividend' || a.kind === 'other') notes.push(`${a.subject} - ex-date ${when}: the price drops by the payout that morning`);
+    else reasons.push(`${a.subject} - ex-date ${when}: the price adjusts overnight, no fresh swing entry`);
+  }
+  return { block: reasons.length > 0, reasons, notes, items, surveillance: surv || null };
+}
+function upcomingSpecialSession(todayKey = istDateKey()) {
+  return NSE_CAL.holidays.filter(h => h.date >= todayKey).sort((a, b) => a.date.localeCompare(b.date))
+    .map(h => ({ ...h, tradingDays: tradingDaysUntil(todayKey, h.date) })).slice(0, 3);
+}
 function previousNseTradingDay(d) {
   let x = new Date(d.getTime());
   do { x = new Date(x.getTime() - 86400000); } while ([0, 6].includes(x.getUTCDay()) || isNseHoliday(x.toISOString().slice(0, 10)));
@@ -4875,7 +4968,7 @@ const NSE_MON = { Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06', Ju
 const nseExpKey = e => { const m = /^(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(e || ''); return m ? `${m[3]}-${NSE_MON[m[2]]}-${m[1]}` : null; };
 function istMarketHoursS() {
   const t = new Date(Date.now() + 5.5 * 3600000), d = t.getUTCDay(), m = t.getUTCHours() * 60 + t.getUTCMinutes();
-  return d >= 1 && d <= 5 && m >= 9 * 60 && m <= 15 * 60 + 35;
+  return d >= 1 && d <= 5 && !isNseHoliday(t.toISOString().slice(0, 10)) && m >= 9 * 60 && m <= 15 * 60 + 35;
 }
 /* Stale-while-revalidate for NSE: a cold NSE fetch takes 10-20 s (cookie page + contract list + chain) and often
    fails from cloud hosts. Once one answer is in, it is returned at once while a refresh runs in the background,
@@ -4962,6 +5055,7 @@ async function apiSwingContext(req, res, p) {
       rs,
       resultsSoon: r && r.block ? { date: r.date, tradingDaysUntil: r.tradingDays, purpose: r.purpose } : null,
       resultsCheck: cal?.ok ? (cal.source || 'NSE event calendar') : 'unavailable',
+      events: stockEventCheckS(code, istDateKey()),   /* bonus / split / rights / ASM / GSM - the screener's same check */
       sector: sectorInfoFor(code),
       sectorStrength: sectorStrengthFor(code),
       updatedAt: new Date().toISOString()
@@ -4970,14 +5064,10 @@ async function apiSwingContext(req, res, p) {
 }
 
 /* ── /api/quote ── */
-async function apiQuote(req,res,p){
-  const sym=p.get('sym')||'NSE:NIFTY';
-  const key=`quote:${sym}`;
-  const mcxReq=isMCX(sym);
-  /* MCX used to force a fresh fetch on EVERY request (no cache, no de-dupe). A short TTL keeps it
-     near-live while letting several tabs/pollers share one fetch. */
-  const force=p.get('force')==='1'||p.get('fresh')==='1';
-  const producer = async () => {
+/* The full quote (price, change, daily/weekly/hourly/monthly history) for one symbol - used by /api/quote and by
+   the server's own alerts (Gold Petal plan), through the same cache key. */
+async function buildQuotePayload(sym) {
+  const mcxReq = isMCX(sym);
       const mcx=mcxReq;
       const fxBasis=mcx?await getRateBasis():{live:1,prev:1};
       const rate=fxBasis.live;
@@ -5068,7 +5158,15 @@ async function apiQuote(req,res,p){
         marketTime: dailyR.status === 'fulfilled' ? (Number(dailyR.value?.meta?.regularMarketTime) || null) : null,
         updatedAt:new Date().toISOString(),
       };
-  };
+  }
+async function apiQuote(req,res,p){
+  const sym=p.get('sym')||'NSE:NIFTY';
+  const key=`quote:${sym}`;
+  const mcxReq=isMCX(sym);
+  /* MCX used to force a fresh fetch on EVERY request (no cache, no de-dupe). A short TTL keeps it
+     near-live while letting several tabs/pollers share one fetch. */
+  const force=p.get('force')==='1'||p.get('fresh')==='1';
+  const producer = () => buildQuotePayload(sym);
   try{
     if(force){
       const payload=await producer();
@@ -5108,12 +5206,13 @@ async function quickProducer(sym){
   const rate=fxBasis.live;
   const prevRate=fxBasis.prev;
   const ticker=getTicker(sym);
-  const {liveRaw,prevRaw,rawPct,changeBasis,basisTime}=await withTimeout(getIndexFallbackPrice(sym, ticker), 20000, ticker + ' quick price');
+  const {liveRaw,prevRaw,rawPct,changeBasis,basisTime,spark}=await withTimeout(getIndexFallbackPrice(sym, ticker), 20000, ticker + ' quick price');
   const price=conv(sym,liveRaw,rate);
   const pc   =conv(sym,prevRaw,mcx?prevRate:rate);
   const chg  =+(price-pc).toFixed(2);
   const pct  =+(pc && pc>0 ? (chg/pc)*100 : rawPct).toFixed(2);
-  return {sym,price,pc,chg,pct,isUp:pct>=0,usdInr:mcx?rate:null,prevUsdInr:mcx?prevRate:null,changeBasis:mcx?changeBasis:'previousClose',basisTime:mcx?basisTime:null,updatedAt:new Date().toISOString()};
+  return {sym,price,pc,chg,pct,isUp:pct>=0,usdInr:mcx?rate:null,prevUsdInr:mcx?prevRate:null,changeBasis:mcx?changeBasis:'previousClose',basisTime:mcx?basisTime:null,
+    spark: Array.isArray(spark) ? spark.map(v => conv(sym, v, rate)) : null, updatedAt:new Date().toISOString()};
 }
 
 
@@ -5161,20 +5260,23 @@ function mcxDriverVote(key, st, commodityKey) {
 /* Full result kept 15 min; one with a missing driver only 30 s, so a start-up timeout (the Yahoo queue is
    busiest when the app opens) is retried on the next request instead of showing "not loaded" for 15 min. */
 const MCX_DRV_CACHE = new Map(), MCX_DRV_INFLIGHT = new Map();
+/* Cached driver set for one MCX symbol (15 min; 30 s when a driver failed) - the page and the alerts share it. */
+async function mcxDriversFor(sym) {
+  const set = MCX_DRIVER_SET[sym];
+  if (!set) throw new Error('unknown MCX symbol');
+  const hit = MCX_DRV_CACHE.get(sym);
+  if (hit && Date.now() - hit.ts < hit.ttl) return { ...hit.value, cached:true };
+  if (!MCX_DRV_INFLIGHT.has(sym)) MCX_DRV_INFLIGHT.set(sym, buildMcxDrivers(sym, set).finally(() => MCX_DRV_INFLIGHT.delete(sym)));
+  const value = await MCX_DRV_INFLIGHT.get(sym);
+  /* Nothing loaded but an older full result exists: serve that (marked stale) rather than an empty card. */
+  if (!value.total && hit?.value?.total) return { ...hit.value, stale:true, cached:true };
+  MCX_DRV_CACHE.set(sym, { value, ts:Date.now(), ttl: value.total === value.drivers.length ? 15 * 60e3 : 30e3 });
+  return { ...value, cached:false };
+}
 async function apiMcxDrivers(req, res, p) {
   const sym = String(p.get('sym') || '').toUpperCase();
-  const set = MCX_DRIVER_SET[sym];
-  if (!set) return err(res, 'unknown MCX symbol', 400);
-  const hit = MCX_DRV_CACHE.get(sym);
-  if (hit && Date.now() - hit.ts < hit.ttl) return send(res, { ...hit.value, cached:true });
-  try {
-    if (!MCX_DRV_INFLIGHT.has(sym)) MCX_DRV_INFLIGHT.set(sym, buildMcxDrivers(sym, set).finally(() => MCX_DRV_INFLIGHT.delete(sym)));
-    const value = await MCX_DRV_INFLIGHT.get(sym);
-    /* Nothing loaded but an older full result exists: serve that (marked stale) rather than an empty card. */
-    if (!value.total && hit?.value?.total) return send(res, { ...hit.value, stale:true, cached:true });
-    MCX_DRV_CACHE.set(sym, { value, ts:Date.now(), ttl: value.total === value.drivers.length ? 15 * 60e3 : 30e3 });
-    send(res, { ...value, cached:false });
-  } catch (e) { err(res, e.message); }
+  if (!MCX_DRIVER_SET[sym]) return err(res, 'unknown MCX symbol', 400);
+  try { send(res, await mcxDriversFor(sym)); } catch (e) { err(res, e.message); }
 }
 async function buildMcxDrivers(sym, set) {
   const own = set[0];
@@ -5194,7 +5296,13 @@ async function buildMcxDrivers(sym, set) {
       text:`${r.toFixed(1)} (${ch >= 0 ? '+' : ''}${ch.toFixed(2)}% in 5 days) - ${v > 0 ? 'falling: silver is outperforming gold' : v < 0 ? 'rising: silver is lagging gold' : 'steady'}` });
   }
   const ok = drivers.filter(d => !d.error);
-  return { sym, drivers, bull: ok.filter(d => d.vote > 0).length, bear: ok.filter(d => d.vote < 0).length, total: ok.length, updatedAt: new Date().toISOString() };
+  /* Gold: the tested buy filter (dollar, US yield, rupee vs their 50-day EMA), shared with the page. */
+  let goldRule = null;
+  if (SwingPlan.BUY_ONLY_MCX.has(sym)) {
+    const closes = k => { const i = set.indexOf(k); return i >= 0 && got[i].status === 'fulfilled' ? parseBars(got[i].value).C : null; };
+    goldRule = SwingPlan.goldDriverRule({ dxy: closes('dxy'), tnx: closes('us10y'), inr: closes('usdinr') });
+  }
+  return { sym, drivers, goldRule, bull: ok.filter(d => d.vote > 0).length, bear: ok.filter(d => d.vote < 0).length, total: ok.length, updatedAt: new Date().toISOString() };
 }
 
 async function apiVix(req,res){
@@ -5649,10 +5757,10 @@ const STATIC_CACHE = new Map();
 ══════════════════════════════════════════════════════════════════ */
 const nodeCrypto = require('crypto');
 const STORE_FILE = path.join(__dirname, 'data', 'user-store.json');
-const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
+const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const STORE_MAX_BYTES = 1500000;
-let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {} };
-try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {} }; } catch {}
+let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {}, flags: {}, telegram: null };
+try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {}, flags: j.flags || {}, telegram: j.telegram || null }; } catch {}
 let STORE_SAVE_TIMER = null;
 function saveStore() {
   clearTimeout(STORE_SAVE_TIMER);
@@ -5729,7 +5837,8 @@ function webPush(sub, payload) {
   });
 }
 async function pushAll(payload) {
-  if (!VAPID || !USER_STORE.subs.length) return { sent: 0, devices: 0 };
+  const tg = await sendTelegram(payload);   /* Telegram too, when a bot is linked */
+  if (!VAPID || !USER_STORE.subs.length) return { sent: tg, devices: 0, telegram: tg };
   let sent = 0;
   const keep = [];
   for (const sub of USER_STORE.subs) {
@@ -5738,7 +5847,7 @@ async function pushAll(payload) {
     if (st !== 404 && st !== 410) keep.push(sub); else console.warn('Push subscription expired - removed');
   }
   if (keep.length !== USER_STORE.subs.length) { USER_STORE.subs = keep; saveStore(); }
-  return { sent, devices: USER_STORE.subs.length };
+  return { sent: sent + tg, devices: USER_STORE.subs.length, telegram: tg };
 }
 async function apiPush(req, res, pn) {
   if (pn === '/api/push/key') return send(res, { enabled: !!VAPID, publicKey: VAPID ? VAPID.pub : null, devices: USER_STORE.subs.length });
@@ -5800,8 +5909,25 @@ async function serverAlertTick() {
   } finally { ALERT_TICK_RUNNING = false; }
 }
 
-/* ── Scheduled screener scans: 09:25 (after the opening noise) and 15:15 (before the close) IST ── */
-const SCAN_TIMES_IST = [9 * 60 + 25, 15 * 60 + 15];
+/* ── Scheduled screener scans (IST): 09:25 and 15:15 send the summary; 11:30 and 13:30 send only stocks that
+   NEWLY turned READY / ready-on-limit / quick bounce since the day's earlier scans (with entry, stop, target and the
+   quantity for the user's capital and risk %). ── */
+const SCAN_TIMES_IST = [9 * 60 + 25, 11 * 60 + 30, 13 * 60 + 30, 15 * 60 + 15];
+const SCAN_SUMMARY_SLOTS = new Set([9 * 60 + 25, 15 * 60 + 15]);
+function sizingLine(entry, stop) {
+  const num = k => { try { return +JSON.parse(USER_STORE.keys[k]?.v || 'null'); } catch { return NaN; } };
+  const cap = num('td_pos_capital'), rp = num('td_pos_risk_pct');
+  if (!(cap > 0) || !(rp > 0) || !(entry > stop)) return '';
+  const qty = Math.floor(cap * rp / 100 / (entry - stop));
+  return qty > 0 ? ` · qty ${qty} (risk ${rp}% of ${inr(cap, 0)})` : ' · stop too wide for your risk %';
+}
+function scanSignals(data) {
+  const out = [];
+  for (const x of data.picks || []) { const pl = x.plan || {}; out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy})${x.pickedSetup === 'Breakout with Volume' ? ' · half size' : ''}: entry ${inr(pl.entry ?? x.price)} · stop ${inr(pl.stop)} · target ${inr(pl.target)}${sizingLine(pl.entry ?? x.price, pl.stop)}` }); }
+  for (const x of (data.watchlist || []).filter(x => x.limitReady && x.limitEntry)) out.push({ id: `limit|${x.sym}`, text: `Ready on limit ${x.sym}: buy limit ${inr(x.limitEntry.price)} · stop ${inr(x.limitEntry.stop)} · target ${inr(x.limitEntry.target)}${sizingLine(x.limitEntry.price, x.limitEntry.stop)}` });
+  for (const x of (data.quickBounce || []).slice(0, 6)) out.push({ id: `quick|${x.sym}`, text: `Quick bounce ${x.sym} (small size): buy next open ~${inr(x.price)} · stop ${inr(x.stop)} · sell on a close above ${inr(x.sma5)}` });
+  return out;
+}
 async function scheduledScanTick() {
   const { d, m, key } = istNowParts();
   if (d < 1 || d > 5 || isNseHoliday(key)) return;
@@ -5814,23 +5940,271 @@ async function scheduledScanTick() {
     if (!MY_TRADE_SCREENER_INFLIGHT) MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { MY_TRADE_SCREENER_INFLIGHT = null; });
     data = await MY_TRADE_SCREENER_INFLIGHT;
   }
-  const ready = (data.picks || []).map(x => x.sym), limits = (data.watchlist || []).filter(x => x.limitReady && x.limitEntry);
-  const body = [ready.length ? `READY: ${ready.join(', ')}` : 'No READY stock',
-    limits.length ? `Ready on limit: ${limits.map(x => `${x.sym} ₹${x.limitEntry.price}`).join(', ')}` : '',
-    (data.quickBounce || []).length ? `Quick bounce: ${data.quickBounce.slice(0, 6).map(x => x.sym).join(', ')}` : ''].filter(Boolean).join(' · ');
-  await pushAll({ title: `TradeDesk ${slot < 12 * 60 ? 'morning' : 'closing'} scan`, body, tag: 'td-scan', url: '/' });
-  if (slot < 12 * 60 && key === firstTradingDayOfMonth(key)) {
+  const sig = scanSignals(data), fresh = sig.filter(x => flagOnce(`seen|${key}|${x.id}`));
+  if (SCAN_SUMMARY_SLOTS.has(slot)) {
+    const body = sig.length ? sig.map(x => x.text).join('\n') : 'No READY stock, no buy limit, no quick bounce.';
+    await pushAll({ title: `TradeDesk ${slot < 12 * 60 ? 'morning' : 'closing'} scan`, body, tag: 'td-scan', url: '/?view=screener' });
+  } else if (fresh.length) {
+    await pushAll({ title: `🟢 New since the last scan (${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')})`, body: fresh.map(x => x.text).join('\n'), tag: 'td-scan-new', url: '/?view=screener' });
+  }
+  if (slot === SCAN_TIMES_IST[0] && key === firstTradingDayOfMonth(key)) {
     try {
       const mo = await computeMomentumS();
-      await pushAll({ title: `Momentum rebalance - ${mo.month}`, tag: 'td-momentum', url: '/',
+      await pushAll({ title: `Momentum rebalance - ${mo.month}`, tag: 'td-momentum', url: '/?view=screener',
         body: `Sell: ${mo.sells.map(x => x.sym).join(', ') || 'none'} · Buy: ${mo.buys.join(', ') || 'none'}${mo.niftyFilter.aboveSma200 === false ? ' · Nifty below its 200-day average (tested version holds cash)' : ''}` });
     } catch (e) { console.warn('Momentum push:', e.message); }
   }
 }
 
+/* ══════════════════════════════════════════════════════════════════
+   TRADE ASSISTANT - every alert also goes to Telegram when a bot is linked (free, no limits):
+   - 08:45 morning brief (NSE trading days): market regime, holidays / special sessions, high-impact events,
+     open trades with results / corporate actions close, Gold Petal plan and expiry.
+   - 09:05 and 17:00 Gold Petal plan (buy-only, 2 of 3 drivers), plus an instant alert when price reaches the
+     planned buy level. 09:30 Nifty options: the user's credit-spread rule on the live chain.
+   - Scans at 09:25 / 11:30 / 13:30 / 15:15: the morning and closing summaries, and between them only stocks that
+     NEWLY turned READY / ready-on-limit / quick bounce.
+   - Open-trade watcher (trades the user marked "I took this trade"): stop hit, target 1 hit, day-10 exit,
+     results / ex-date within 2 trading days, Gold Petal expiry, Nifty through the short strike.
+══════════════════════════════════════════════════════════════════ */
+const TG_TOKEN = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
+const TG_API = String(process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/$/, '');
+const APP_URL = String(process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
+function tgCall(method, body) {
+  return new Promise(resolve => {
+    try {
+      const u = new URL(`${TG_API}/bot${TG_TOKEN}/${method}`), data = Buffer.from(JSON.stringify(body || {})), mod = u.protocol === 'http:' ? http : https;
+      const r = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'http:' ? 80 : 443), path: u.pathname + u.search, method: 'POST', timeout: 12000,
+        headers: { 'Content-Type': 'application/json', 'Content-Length': data.length } }, x => {
+        const c = []; x.on('data', d => c.push(d));
+        x.on('end', () => { countOutbound(u.hostname, x.statusCode); try { resolve(JSON.parse(Buffer.concat(c).toString('utf8'))); } catch { resolve({ ok: false, description: 'bad reply' }); } });
+      });
+      r.on('timeout', () => { r.destroy(); resolve({ ok: false, description: 'timeout' }); });
+      r.on('error', e => resolve({ ok: false, description: e.message }));
+      r.end(data);
+    } catch (e) { resolve({ ok: false, description: e.message }); }
+  });
+}
+const tgEsc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+async function sendTelegram(payload) {
+  const chatId = USER_STORE.telegram?.chatId;
+  if (!TG_TOKEN || !chatId) return 0;
+  const body = { chat_id: chatId, text: `<b>${tgEsc(payload.title)}</b>${payload.body ? '\n' + tgEsc(payload.body) : ''}`.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true };
+  /* Telegram buttons need an https address: on Render the app's own; locally none. */
+  if (/^https:\/\//.test(APP_URL)) body.reply_markup = { inline_keyboard: [[{ text: 'Open TradeDesk', url: APP_URL + (payload.url && payload.url.startsWith('/') ? payload.url : '/') }]] };
+  const r = await tgCall('sendMessage', body);
+  if (!r.ok) console.warn('Telegram send failed:', r.description);
+  return r.ok ? 1 : 0;
+}
+async function apiTelegram(req, res, pn) {
+  const tg = USER_STORE.telegram || {};
+  if (pn === '/api/telegram/status') return send(res, { configured: !!TG_TOKEN, linked: !!tg.chatId, linkedAt: tg.linkedAt || null, name: tg.name || null });
+  if (req.method !== 'POST') return err(res, 'Use POST', 405);
+  if (!TG_TOKEN) return err(res, 'Telegram is not set up: add TELEGRAM_BOT_TOKEN in Render → Environment, then redeploy', 400);
+  if (pn === '/api/telegram/link') {
+    const r = await tgCall('getUpdates', { timeout: 0, allowed_updates: ['message'] });
+    if (!r.ok) return err(res, 'Telegram: ' + (r.description || 'no answer'), 502);
+    const msg = (r.result || []).map(u => u.message).filter(m => m && m.chat && m.chat.type === 'private').pop();
+    if (!msg) return err(res, 'No message found: open your bot in Telegram, send /start, then press Link again', 400);
+    USER_STORE.telegram = { chatId: msg.chat.id, name: [msg.chat.first_name, msg.chat.last_name].filter(Boolean).join(' ') || msg.chat.username || 'you', linkedAt: new Date().toISOString() };
+    saveStore();
+    const last = (r.result || []).slice(-1)[0];
+    if (last) tgCall('getUpdates', { offset: last.update_id + 1, timeout: 0 });   /* clear the queue */
+    await sendTelegram({ title: 'TradeDesk linked ✓', body: 'Alerts, the morning brief, Gold Petal and Nifty option signals will arrive here.' });
+    return send(res, { ok: true, linked: true, name: USER_STORE.telegram.name });
+  }
+  if (pn === '/api/telegram/unlink') { delete USER_STORE.telegram; saveStore(); return send(res, { ok: true, linked: false }); }
+  if (pn === '/api/telegram/test') { const n = await sendTelegram({ title: 'TradeDesk test', body: 'Telegram alerts work.' }); return n ? send(res, { ok: true }) : err(res, 'Not sent - link Telegram first', 400); }
+  err(res, 'Not found', 404);
+}
+
+/* One-time markers (event key -> time), kept 4 days, so each alert fires once. */
+function flagOnce(k) {
+  const f = USER_STORE.flags || (USER_STORE.flags = {});
+  if (f[k]) return false;
+  f[k] = Date.now();
+  for (const [kk, t] of Object.entries(f)) if (Date.now() - t > 4 * 86400e3) delete f[kk];
+  saveStore();
+  return true;
+}
+function storeJournal() { try { const a = JSON.parse(USER_STORE.keys.td_journal?.v || '[]'); return Array.isArray(a) ? a.filter(t => t && t.id && t.sym) : []; } catch { return []; } }
+const inr = (n, d = 2) => '₹' + (+n).toLocaleString('en-IN', { maximumFractionDigits: d });
+const symShort = s => String(s || '').replace(/^(NSE|MCX):/, '');
+
+/* Gold Petal plan on the server - the page's own function (SwingPlan.commodityPlan) on the same quote, with the
+   user's saved MCX calibration (synced key) and the same drivers. */
+async function goldPlanS() {
+  const sym = 'MCX:GOLDPETAL';
+  const q = (await cacheWrap(`quote:${sym}`, TTL.mcx, () => buildQuotePayload(sym))).value;
+  let k = 1;
+  try { const c = JSON.parse(USER_STORE.keys['td_mcx_cal2_' + sym]?.v || 'null'); if (c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3 * 86400e3) { const kk = c.mcx / c.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } } catch {}
+  const d = q.daily, n = d.C.length;
+  if (n < 60 || !(q.price > 0)) throw new Error('Gold Petal history too short');
+  const C = d.C.map(v => v * k), H = d.H.map(v => v * k), L = d.L.map(v => v * k), price = q.price * k;
+  /* Same live candle rule as the page: today's bar is replaced when Yahoo already has it, else appended. */
+  const tz = q.dataSource?.timezone || 'America/New_York';
+  const sameDay = sameMarketDate(d.T[n - 1], q.marketTime, tz);
+  if (sameDay) { C[n - 1] = price; H[n - 1] = Math.max(H[n - 1], price); L[n - 1] = Math.min(L[n - 1], price); }
+  else { C.push(price); H.push(price); L.push(price); }
+  const sr = SwingPlan.srLevels({ H, L, C, i: C.length - 2, price });
+  let drivers = null; try { drivers = (await mcxDriversFor(sym)).goldRule; } catch {}
+  const plan = SwingPlan.commodityPlan(sym, { C, H, L, price, sr }, { minRR: 1.25, drivers });
+  return { ...plan, calibrated: k !== 1, calK: k, drivers, expiry: SwingPlan.goldPetalExpiry(istDateKey(), isNseHoliday) };
+}
+function goldPlanText(p) {
+  const head = p.side === 'BUY' && !p.driverBlock ? `BUY · ${p.action}` : p.side === 'BUY' ? `WAIT · ${p.action}` : p.side === 'AVOID' ? `AVOID · ${p.action}` : `WAIT · ${p.why}`;
+  const lv = p.side === 'BUY' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · T1 ${inr(p.t1)} · T2 ${inr(p.t2)} · R:R ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
+  const drv = p.drivers?.known ? `\nDrivers ${p.drivers.count}/3: ${p.drivers.text}` : '';
+  const exp = p.expiry && p.expiry.tradingDaysLeft <= 5 ? `\n⚠ Contract expires ${p.expiry.date} (${p.expiry.tradingDaysLeft} trading days) - roll or exit` : '';
+  return `${head}${lv}${drv}${exp}\nNow ${inr(p.price)}${p.calibrated ? ' (your MCX calibration)' : ' (proxy - calibrate in the app for exact MCX levels)'}`;
+}
+/* Nifty options: the user's rule on the next weekly expiry after today (an expiry-day chain has no time left). */
+async function niftyRuleS() {
+  let chain = await withTimeout(getOptionChain('NSE:NIFTY', ''), 25000, 'Nifty chain');
+  /* Same expiry as the page: the first one at least 3 days away. */
+  const today = istDateKey(), nextExp = (chain.expiries || []).find(e => daysBetweenKeys(today, e) >= 3) || (chain.expiries || []).find(e => e > today);
+  if (nextExp && nextExp !== chain.expiry) chain = await withTimeout(getOptionChain('NSE:NIFTY', nextExp), 25000, 'Nifty chain');
+  const reg = await getNiftyRegime();
+  const spot = +chain.spot || +reg.nifty;
+  const days = Math.max(1, Math.round((Date.parse(chain.expiry + 'T15:30:00+05:30') - Date.now()) / 86400e3));
+  const rule = SwingPlan.creditSpreadRule(chain, { spot, trendUp: reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown: reg.nifty < reg.ema20 && reg.ema20 < reg.ema50, daysToExpiry: days, step: 50, wing: 200,
+    monthly: SwingPlan.isMonthlyExpiry(chain.expiry, chain.expiries) });
+  return { rule, chain, reg };
+}
+function niftyRuleText({ rule, chain }) {
+  const p = rule.pick;
+  const lines = [`${rule.ok ? '✅ ' : ''}${rule.verdict}`, `Expiry ${chain.expiry} (${rule.daysToExpiry} days) · Nifty ${(+rule.spot).toFixed(0)}${chain.stale ? ' · saved NSE quote' : ''}`];
+  if (p && !p.none) {
+    lines.push(`Sell ${p.sell} ${p.ty === 'P' ? 'PE' : 'CE'} ${p.sellPx} / buy ${p.buy} ${p.ty === 'P' ? 'PE' : 'CE'} ${p.buyPx} · credit ${p.credit} pts (${inr(p.credit * 65, 0)}/lot) · max loss ${inr(p.maxLoss * 65, 0)}/lot`);
+    lines.push(p.checks.map(c => `${c.pass ? '✓' : c.need ? '✗' : 'ℹ'} ${c.name}`).join('\n'));
+    if (rule.ok) lines.push('Stop when the loss reaches 2× the credit.');
+  }
+  return lines.join('\n');
+}
+
+/* Open-trade watcher. Prices come from the same cached quick price the sidebar uses. */
+let WATCH_RUNNING = false;
+async function openTradeWatchTick() {
+  if (WATCH_RUNNING) return;
+  const open = storeJournal().filter(t => t.status === 'open');
+  if (!open.length) return;
+  WATCH_RUNNING = true;
+  try {
+    const today = istDateKey();
+    for (const t of open) {
+      const sym = String(t.sym).toUpperCase(), name = symShort(sym), long = t.side !== 'SELL';
+      if (t.kind === 'option') {
+        /* Credit spread: alert when Nifty closes through the short strike, and on the expiry morning. */
+        if (!symMarketOpenS('NSE:NIFTY')) continue;
+        let q; try { q = await quickPriceFor('NSE:NIFTY'); } catch { continue; }
+        const p = +q?.price, k = +t.shortStrike;
+        if (p > 0 && k > 0 && (t.optType === 'P' ? p < k : p > k) && flagOnce(`j|${t.id}|tested|${today}`))
+          await pushAll({ title: `⚠ Nifty through your short ${k} ${t.optType === 'P' ? 'PE' : 'CE'}`, body: `Nifty ${p.toFixed(0)}. ${t.label || 'Credit spread'}: check the spread value - exit at 2× the credit loss.`, tag: `j-${t.id}`, url: '/?view=trades' });
+        if (t.expiry === today && flagOnce(`j|${t.id}|expiry`)) await pushAll({ title: `Expiry today: ${t.label || 'credit spread'}`, body: 'Close it before 15:15 or let it expire if both strikes are safely out of the money.', tag: `j-${t.id}`, url: '/?view=trades' });
+        continue;
+      }
+      if (!symMarketOpenS(sym)) continue;
+      let q; try { q = await quickPriceFor(sym); } catch { continue; }
+      let p = +q?.price;
+      if (!(p > 0)) continue;
+      if (sym.startsWith('MCX:') && +t.calK > 0) p *= +t.calK;   /* levels were saved in calibrated MCX terms */
+      const stop = +t.stop, t1 = +t.t1;
+      if (stop > 0 && (long ? p <= stop : p >= stop) && flagOnce(`j|${t.id}|stop`))
+        await pushAll({ title: `🛑 ${name} hit your stop ${inr(stop)}`, body: `Now ${inr(p)}. Exit as planned and mark the trade closed in My trades.`, tag: `j-${t.id}`, url: '/?view=trades' });
+      else if (t1 > 0 && (long ? p >= t1 : p <= t1) && flagOnce(`j|${t.id}|t1`))
+        await pushAll({ title: `🎯 ${name} reached target 1 ${inr(t1)}`, body: `Now ${inr(p)}. Book half and move the stop to your entry ${inr(t.entry)}.`, tag: `j-${t.id}`, url: '/?view=trades' });
+    }
+  } finally { WATCH_RUNNING = false; }
+}
+/* Once a day (09:20): time exits, results / corporate actions close to an open trade, Gold Petal expiry. */
+async function openTradeDailyChecks() {
+  const open = storeJournal().filter(t => t.status === 'open'), today = istDateKey(), msgs = [];
+  if (!open.length) return msgs;
+  let cal = null; try { cal = await getResultsCalendar(); } catch {}
+  for (const t of open) {
+    const sym = String(t.sym).toUpperCase(), name = symShort(sym);
+    if (t.kind === 'stock') {
+      const held = t.openedAt ? tradingDaysUntil(t.openedAt, today) : 0;
+      if (held >= 10 && flagOnce(`j|${t.id}|day10|${today}`)) msgs.push(`${name}: day ${held} - the plan's time exit (10 trading days) is due`);
+      const r = cal ? resultsCheckFor(name, cal, today) : null;
+      if (r && r.tradingDays >= 0 && r.tradingDays <= 2 && flagOnce(`j|${t.id}|results|${r.date}`)) msgs.push(`${name}: results ${r.date === today ? 'today' : `on ${r.date}`} - gap risk, consider booking or tightening the stop`);
+      for (const a of stockEventCheckS(name, today).items.filter(a => a.tradingDays <= 2))
+        if (flagOnce(`j|${t.id}|ca|${a.date}|${a.kind}`)) msgs.push(`${name}: ${a.subject}, ex-date ${a.date} - the price adjusts that morning`);
+    }
+    if (sym === 'MCX:GOLDPETAL') {
+      const e = SwingPlan.goldPetalExpiry(today, isNseHoliday);
+      if (e.tradingDaysLeft <= 3 && flagOnce(`j|${t.id}|gpexp|${e.date}|${today}`)) msgs.push(`Gold Petal: contract expires ${e.date} (${e.tradingDaysLeft} trading days) - roll to next month or exit`);
+    }
+  }
+  return msgs;
+}
+
+async function morningBrief() {
+  const today = istDateKey(), lines = [];
+  try { const reg = marketRegime(await getNiftyRegime()); lines.push(`Market: ${reg.status} - ${reg.note}`); } catch {}
+  const next = upcomingSpecialSession(today).filter(h => h.tradingDays <= 3);
+  for (const h of next) lines.push(`${h.date === today ? 'Today' : h.date}: NSE holiday - ${h.name}${h.special ? ' (special Muhurat session - check NSE timing)' : ''}`);
+  try {
+    const tom = istDateKey(Date.now() + 86400e3);
+    const ev = ECON_CALENDAR.concat(generatedMacroEvents(today)).filter(e => (e.date === today || e.date === tom) && /HIGH/i.test(e.impact || '') && ['RBI', 'FOMC', 'CPI', 'NFP', 'BUDGET', 'GDP'].includes(e.category));
+    for (const e of ev.slice(0, 5)) lines.push(`${e.date === today ? 'Today' : 'Tomorrow'}: ${e.event}${e.time ? ' ' + e.time : ''}`);
+  } catch {}
+  const open = storeJournal().filter(t => t.status === 'open');
+  if (open.length) {
+    const cap = +JSON.parse(USER_STORE.keys.td_pos_capital?.v || '0') || 0, risk = open.reduce((a, t) => a + (+t.riskRs || 0), 0);
+    lines.push(`Open trades: ${open.length} (${open.map(t => symShort(t.sym)).join(', ')}) · open risk ${inr(risk, 0)}${cap > 0 ? ` = ${(risk / cap * 100).toFixed(1)}% of capital` : ''}`);
+  }
+  try { lines.push(...await openTradeDailyChecks()); } catch {}
+  try { const g = await goldPlanS(); lines.push(`Gold Petal: ${goldPlanText(g).split('\n')[0]}`); if (g.expiry.tradingDaysLeft <= 5) lines.push(`Gold Petal contract expires ${g.expiry.date} (${g.expiry.tradingDaysLeft} trading days)`); } catch (e) { lines.push('Gold Petal: plan not available (' + e.message + ')'); }
+  lines.push('Nifty options check follows at 09:30, the first scan at 09:25.');
+  return lines.join('\n');
+}
+
+/* Schedule (IST). NSE jobs skip weekends and NSE holidays; Gold Petal runs on weekdays (MCX). */
+let ASSIST_RUNNING = false;
+async function assistantTick() {
+  if (ASSIST_RUNNING) return;
+  const { d, m, key } = istNowParts();
+  if (d < 1 || d > 5) return;
+  const nseDay = !isNseHoliday(key);
+  ASSIST_RUNNING = true;
+  try {
+    const at = (min, id) => m >= min && m < min + 20 && flagOnce(`job|${id}|${key}`);
+    if (nseDay && at(8 * 60 + 45, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
+    else if (!nseDay && at(8 * 60 + 45, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; the Gold Petal plan still follows at 09:05.`, tag: 'td-brief', url: '/' });
+    for (const [min, id] of [[9 * 60 + 5, 'gold-am'], [17 * 60, 'gold-pm']]) {
+      if (at(min, id)) {
+        try { const g = await goldPlanS(); GOLD_PLAN_LAST = { plan: g, ts: Date.now() }; await pushAll({ title: `🟡 Gold Petal · ${min < 12 * 60 ? 'morning' : 'evening'} plan`, body: goldPlanText(g), tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' }); }
+        catch (e) { console.warn('Gold plan:', e.message); }
+      }
+    }
+    if (nseDay && at(9 * 60 + 30, 'nifty-opt')) {
+      try { const r = await niftyRuleS(); await pushAll({ title: `📊 Nifty options · your rule`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
+      catch (e) { await pushAll({ title: '📊 Nifty options · your rule', body: `NSE option chain not reachable (${e.message}) - check it in the app.`, tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
+    }
+    if (nseDay && at(9 * 60 + 20, 'trade-checks')) {
+      const msgs = await openTradeDailyChecks().catch(() => []);
+      if (msgs.length) await pushAll({ title: '📋 Your open trades', body: msgs.join('\n'), tag: 'td-trades', url: '/?view=trades' });
+    }
+    /* Gold Petal: price reached the planned buy level (a "wait for a dip" plan), once a day, MCX hours. */
+    if (m >= 9 * 60 && m <= 23 * 60 + 30) {
+      if (!GOLD_PLAN_LAST || Date.now() - GOLD_PLAN_LAST.ts > 30 * 60e3) { try { GOLD_PLAN_LAST = { plan: await goldPlanS(), ts: Date.now() }; } catch {} }
+      const g = GOLD_PLAN_LAST?.plan;
+      if (g && g.side === 'BUY' && !g.driverBlock && g.entry < g.price * 0.999) {
+        let q; try { q = await quickPriceFor('MCX:GOLDPETAL'); } catch {}
+        const p = q?.price ? q.price * (g.calK || 1) : null;   /* the plan's levels are in calibrated MCX terms */
+        if (p && p <= g.entry && flagOnce(`gold-buyzone|${key}`)) await pushAll({ title: `🟡 Gold Petal at your buy level ${inr(g.entry)}`, body: `Now ${inr(p)}. Stop ${inr(g.sl)} · T1 ${inr(g.t1)}. Check the MCX quote before ordering.`, tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
+      }
+    }
+  } finally { ASSIST_RUNNING = false; }
+}
+let GOLD_PLAN_LAST = null;
+
 setInterval(() => {
   serverAlertTick().catch(e => console.warn('Alert engine:', e.message));
   scheduledScanTick().catch(e => console.warn('Scheduled scan:', e.message));
+  openTradeWatchTick().catch(e => console.warn('Trade watcher:', e.message));
+  assistantTick().catch(e => console.warn('Assistant:', e.message));
 }, 60 * 1000);
 
 /* Render free sleeps after ~15 idle minutes, which stops the alert engine and the scheduled scans - and a sleeping
@@ -5946,6 +6320,12 @@ async function handleRequest(req,res){
   /* ── PROTECTED ROUTES ── */
   if(pn==='/api/quote')            return apiQuote(req,res,ps);
   if(pn==='/api/quickprice')       return apiQuick(req,res,ps);
+  if(pn.startsWith('/api/telegram/')) return apiTelegram(req,res,pn);
+  if(pn==='/api/market-calendar') {
+    const today = istDateKey();
+    return send(res, { holidays: NSE_CAL.holidays, upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
+      goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today });
+  }
   if(pn==='/api/news')             return apiNews(req,res,ps);
   if(pn==='/api/vix')              return apiVix(req,res);
   if(pn==='/api/mcx-drivers')      return apiMcxDrivers(req,res,ps);

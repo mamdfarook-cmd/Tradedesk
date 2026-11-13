@@ -316,5 +316,147 @@
     return null;
   }
 
-  return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY };
+  /* ── MCX futures plan (Overview card AND the server's Gold Petal alerts use this one function) ── */
+  function emaArr(d, p) { if (d.length < p) return d.map(() => null); const k = 2 / (p + 1); let e = d.slice(0, p).reduce((a, b) => a + b, 0) / p; const o = new Array(p - 1).fill(null); o.push(e); for (let i = p; i < d.length; i++) { e = d[i] * k + e * (1 - k); o.push(e); } return o; }
+  const emaLast = (d, p) => { const a = emaArr(d, p); return a[a.length - 1]; };
+  function rsi14(C, p = 14) { if (C.length < p + 2) return null; const d = C.slice(1).map((c, i) => c - C[i]); let g = d.slice(0, p).reduce((a, b) => a + Math.max(0, b), 0) / p, l = d.slice(0, p).reduce((a, b) => a + Math.max(0, -b), 0) / p; for (let i = p; i < d.length; i++) { g = (g * (p - 1) + Math.max(0, d[i])) / p; l = (l * (p - 1) + Math.max(0, -d[i])) / p; } if (g === 0 && l === 0) return 50; if (l === 0) return 100; if (g === 0) return 0; return 100 - 100 / (1 + g / l); }
+  /* Gold is traded BUY-ONLY: over 10 years the app's gold sells made about 0R a trade and its buys +0.35R
+     (+0.43R when 2 of the 3 drivers below agreed), in a market where gold rose 362%. A downtrend is therefore
+     "no new buys / exit a long", never a short. */
+  const BUY_ONLY_MCX = new Set(['MCX:GOLDPETAL', 'MCX:GOLD']);
+  function commodityPlan(sym, { C, H, L, price, sr }, opts = {}) {
+    const minRR = opts.minRR || 1.25, fmt = v => Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+    const e20 = emaLast(C, 20), e50 = emaLast(C, 50), rsi = rsi14(C);
+    const atr = atrWilder(C, H, L, price, sr.r1, sr.s1);
+    const up = price > e50 && e20 > e50, down = price < e50 && e20 < e50;
+    const res = [sr.r1, sr.r2, sr.r3].map(Number).filter(v => v > 0).sort((a, b) => a - b);
+    const sup = [sr.s1, sr.s2, sr.s3].map(Number).filter(v => v > 0).sort((a, b) => b - a);
+    const buyOnly = BUY_ONLY_MCX.has(sym);
+    let side = 'WAIT', entry = null, sl = null, t1 = null, t2 = null, action = '', why = '';
+    if (up) {
+      side = 'BUY';
+      const extended = price - e20 > 1.5 * atr;
+      entry = extended ? e20 : price;
+      action = extended ? `Wait for a dip to EMA20 ${fmt(e20)} - price is ${((price - e20) / atr).toFixed(1)} ATR above it` : `Buy now / near ${fmt(price)}`;
+      if (rsi > 72) { action = `RSI ${fmt(rsi.toFixed(1))} is stretched - wait for a dip to EMA20 ${fmt(e20)}`; entry = e20; }
+      sl = calcAtrStopLoss({ side: 'long', price: entry, structuralStop: Math.min(e20, sup.find(v => v < entry) || e20) - 0.5 * atr, atr });
+      t1 = res.find(v => v > entry + atr) || entry + 2 * atr; t2 = res.find(v => v > t1 + 0.5 * atr) || t1 + atr * 1.5;
+      why = `Uptrend: price above EMA50 ${fmt(e50)} and EMA20 above EMA50.`;
+    } else if (down && buyOnly) {
+      side = 'AVOID';
+      action = `No new buys. If you hold a long, exit it - or at the latest on a daily close below your stop`;
+      why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold is traded buy-only here (the backtest found no edge in selling it), so a downtrend means stay out until price is back above EMA50 with EMA20 above it.`;
+    } else if (down) {
+      side = 'SELL';
+      const extended = e20 - price > 1.5 * atr;
+      entry = extended ? e20 : price;
+      action = extended ? `Wait for a rise to EMA20 ${fmt(e20)} - price is ${((e20 - price) / atr).toFixed(1)} ATR below it` : `Sell now / near ${fmt(price)}`;
+      if (rsi < 28) { action = `RSI ${fmt(rsi.toFixed(1))} is oversold - wait for a rise to EMA20 ${fmt(e20)}`; entry = e20; }
+      sl = calcAtrStopLoss({ side: 'short', price: entry, structuralStop: Math.max(e20, res.find(v => v > entry) || e20) + 0.5 * atr, atr });
+      t1 = sup.find(v => v < entry - atr) || entry - 2 * atr; t2 = sup.find(v => v < t1 - 0.5 * atr) || t1 - atr * 1.5;
+      why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50.`;
+    } else {
+      why = `No trend: price ${price > e50 ? 'above' : 'below'} EMA50 ${fmt(e50)} but EMA20 ${e20 > e50 ? 'above' : 'below'} it. ${buyOnly ? 'Wait for the uptrend (price and EMA20 above EMA50) before buying.' : 'Trade only from the range edges - see the buy / sell zones below.'}`;
+    }
+    let risk = entry != null ? Math.abs(entry - sl) : null, rr = risk ? Math.abs(t1 - entry) / risk : null;
+    /* Below 1.25 R:R the trade waits for a better price: entry where R:R = 1.25 is (T1 + 1.25 x SL) / 2.25. */
+    if (rr != null && rr < minRR) {
+      const better = (t1 + minRR * sl) / (1 + minRR);
+      if (side === 'BUY' ? better < entry && better > sl : better > entry && better < sl) {
+        action = `R:R ${rr.toFixed(2)} at ${fmt(entry)} is below ${minRR} - wait to ${side === 'BUY' ? 'buy nearer' : 'sell nearer'} ${fmt(better)}`;
+        entry = better; risk = Math.abs(entry - sl); rr = Math.abs(t1 - entry) / risk;
+      } else action = `R:R ${rr.toFixed(2)} is below ${minRR} - no trade at these levels`;
+    }
+    /* Gold buys also need 2 of the 3 drivers (dollar index, US 10-year yield, rupee) - the tested filter. */
+    let driverBlock = false;
+    if (side === 'BUY' && buyOnly && opts.drivers && opts.drivers.known >= 2) {
+      if (opts.drivers.count < 2) { driverBlock = true; action = `Wait: only ${opts.drivers.count} of 3 drivers support gold (${opts.drivers.text}) - buy when 2 of 3 agree`; }
+    }
+    return { sym, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, buyOnly, driverBlock };
+  }
+  /* Gold drivers as tested: dollar index below its 50-day EMA, US 10-year yield below its 50-day EMA, USD/INR
+     above its 50-day EMA - each supports a rise in INR gold. count = how many of the 3 agree. */
+  function goldDriverRule({ dxy, tnx, inr }) {
+    const one = (C, wantAbove, name) => { const c = (C || []).map(Number).filter(v => v > 0); if (c.length < 55) return { name, known: false }; const e = emaLast(c, 50), last = c[c.length - 1]; return { name, known: true, ok: wantAbove ? last > e : last < e, last, ema50: e }; };
+    const items = [one(dxy, false, 'dollar index'), one(tnx, false, 'US 10-year yield'), one(inr, true, 'USD/INR')];
+    const known = items.filter(x => x.known).length, count = items.filter(x => x.known && x.ok).length;
+    const text = items.map(x => !x.known ? `${x.name} n/a` : `${x.name} ${x.ok ? '✓' : '✗'}`).join(', ');
+    return { items, known, count, text };
+  }
+  /* Gold Petal contract expiry: the last calendar day of the month, moved back to the previous working day when
+     that is a weekend or holiday (MCX contract rule). isHoliday(key) is optional. */
+  function goldPetalExpiry(todayKey, isHoliday) {
+    const hol = k => typeof isHoliday === 'function' && isHoliday(k);
+    const work = d => { const w = d.getUTCDay(); return w !== 0 && w !== 6 && !hol(d.toISOString().slice(0, 10)); };
+    const expOf = (y, m) => { const d = new Date(Date.UTC(y, m + 1, 0)); while (!work(d)) d.setUTCDate(d.getUTCDate() - 1); return d; };
+    const t = new Date(todayKey + 'T00:00:00Z');
+    let e = expOf(t.getUTCFullYear(), t.getUTCMonth());
+    if (e.toISOString().slice(0, 10) < todayKey) e = expOf(t.getUTCFullYear(), t.getUTCMonth() + 1);
+    let left = 0; for (const d = new Date(t); d < e; ) { d.setUTCDate(d.getUTCDate() + 1); if (work(d)) left++; }
+    return { date: e.toISOString().slice(0, 10), tradingDaysLeft: left };
+  }
+
+  /* ── The user's credit-spread rule on the live NSE option chain (Option builder card AND the 09:30 alert) ──
+     Sell strike: at least 2% from spot and |delta| < 0.20; buy the strike `wing` points further. Bull put only in a
+     Nifty uptrend, bear call only in a downtrend (real-data backtest 2019-2026: puts in an uptrend were the only
+     profitable version; iron condors and bear calls lost). Credit at least 6 points weekly / 20 monthly, else the
+     charges eat it. "Highest OI in front of the strike" is shown but not required: it made results worse. */
+  const ncdf = x => { const a1 = 0.254829592, a2 = -0.284496736, a3 = 1.421413741, a4 = -1.453152027, a5 = 1.061405429, p = 0.3275911, s = x < 0 ? -1 : 1, z = Math.abs(x) / Math.SQRT2, t = 1 / (1 + p * z); return 0.5 * (1 + s * (1 - (((((a5 * t + a4) * t) + a3) * t + a2) * t + a1) * t * Math.exp(-z * z))); };
+  const bsD1 = (S, K, T, s, r) => (Math.log(S / K) + (r + s * s / 2) * T) / (s * Math.sqrt(T));
+  const bsPx = (S, K, T, s, ty, r) => { const a = bsD1(S, K, T, s, r), b = a - s * Math.sqrt(T); return ty === 'C' ? S * ncdf(a) - K * Math.exp(-r * T) * ncdf(b) : K * Math.exp(-r * T) * ncdf(-b) - S * ncdf(-a); };
+  function optionDelta(S, K, T, px, ty, ivPct) {
+    const r = 0.065;
+    let s = ivPct > 0 ? ivPct / 100 : null;
+    if (!s) {   /* implied from the option's own price */
+      const intr = Math.max(0, ty === 'C' ? S - K * Math.exp(-r * T) : K * Math.exp(-r * T) - S);
+      if (!(px > intr + 0.01)) return ty === 'C' ? (S > K ? 1 : 0) : (S < K ? -1 : 0);
+      let lo = 0.01, hi = 3; for (let k = 0; k < 60; k++) { const m = (lo + hi) / 2; bsPx(S, K, T, m, ty, r) > px ? hi = m : lo = m; } s = (lo + hi) / 2;
+    }
+    const d = ncdf(bsD1(S, K, T, s, r)); return ty === 'C' ? d : d - 1;
+  }
+  /* Monthly = the last expiry of its calendar month in NSE's own list. */
+  function isMonthlyExpiry(exp, list) { return !!exp && Array.isArray(list) && list.length > 1 && !list.some(e => e > exp && String(e).slice(0, 7) === String(exp).slice(0, 7)); }
+  function creditSpreadRule(chain, { spot, trendUp, trendDown, daysToExpiry, step = 50, wing = 200, minAway = 0.02, maxDelta = 0.20, monthly: monthlyIn }) {
+    const S = +spot || +chain?.spot, T = Math.max(0.5, +daysToExpiry || 1) / 365, monthly = typeof monthlyIn === 'boolean' ? monthlyIn : (+daysToExpiry || 0) > 10;
+    const minCredit = monthly ? 20 : 6;
+    const px = (k, t) => { const v = ocPremium(chain, k, t); if (v > 0) return v; const row = (chain?.strikes || []).find(r => +r.k === +k), o = row ? (t === 'C' ? row.ce : row.pe) : null; return o && o.ltp > 0 ? +o.ltp : null; };
+    const side = ty => {
+      const rows = (chain?.strikes || []).filter(r => (ty === 'P' ? r.pe : r.ce));
+      const otm = rows.filter(r => ty === 'P' ? r.k < S : r.k > S);
+      const wallRow = otm.reduce((b, r) => ((ty === 'P' ? r.pe.oi : r.ce.oi) || 0) > ((b && (ty === 'P' ? b.pe.oi : b.ce.oi)) || 0) ? r : b, null);
+      const wall = wallRow ? wallRow.k : null;
+      const cand = rows.map(r => +r.k).filter(k => k % step === 0 && (ty === 'P' ? k <= S * (1 - minAway) : k >= S * (1 + minAway))).sort((a, b) => ty === 'P' ? b - a : a - b);
+      for (const k of cand) {
+        const p = px(k, ty); if (!(p > 0)) continue;
+        const row = rows.find(r => +r.k === k), o = ty === 'P' ? row.pe : row.ce;
+        const delta = optionDelta(S, k, T, p, ty, o && o.iv);
+        if (Math.abs(delta) >= maxDelta) continue;
+        const w = ty === 'P' ? k - wing : k + wing, pw = px(w, ty);
+        if (!(pw >= 0) || pw == null) continue;
+        const credit = R2(p - pw), away = Math.abs(k - S) / S * 100;
+        const wallOk = wall != null && (ty === 'P' ? wall >= k : wall <= k);
+        const trendOk = ty === 'P' ? !!trendUp : !!trendDown;
+        const checks = [
+          { name: ty === 'P' ? 'Nifty uptrend' : 'Nifty downtrend', pass: trendOk, need: true },
+          { name: `Sell strike ${away.toFixed(1)}% from spot (2%+)`, pass: away >= minAway * 100, need: true },
+          { name: `Delta ${Math.abs(delta).toFixed(2)} (under ${maxDelta})`, pass: Math.abs(delta) < maxDelta, need: true },
+          { name: `Credit ${credit} pts (${minCredit}+ ${monthly ? 'monthly' : 'weekly'})`, pass: credit >= minCredit, need: true },
+          { name: `Highest OI ${wall != null ? wall : '--'} ${wallOk ? 'in front of' : 'behind'} the strike`, pass: wallOk, need: false },
+        ];
+        return { type: ty === 'P' ? 'Bull put spread' : 'Bear call spread', ty, sell: k, buy: w, sellPx: R2(p), buyPx: R2(pw), credit, delta: R2(delta), away: R2(away), wall, wallOk,
+          maxLoss: R2(wing - credit), checks, ok: checks.every(c => !c.need || c.pass) };
+      }
+      return { type: ty === 'P' ? 'Bull put spread' : 'Bear call spread', ty, none: true, checks: [], ok: false };
+    };
+    const put = side('P'), call = side('C');
+    const pick = trendUp ? put : trendDown ? call : null;
+    const verdict = !pick ? 'No trade: Nifty has no clear trend - iron condors and range trades lost money in the backtest'
+      : pick.none ? `No ${pick.type.toLowerCase()} strike meets 2% away and delta under ${maxDelta}`
+      : pick.ok ? `${pick.type}: sell ${pick.sell} / buy ${pick.buy} for ${pick.credit} pts`
+      : `No trade: ${pick.checks.filter(c => c.need && !c.pass).map(c => c.name).join(', ')}`;
+    return { spot: S, daysToExpiry: +daysToExpiry, monthly, minCredit, put, call, pick, ok: !!(pick && pick.ok), verdict };
+  }
+
+  return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
+    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX };
 });

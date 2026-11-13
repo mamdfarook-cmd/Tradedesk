@@ -17,3 +17,6 @@ services:
       # Random secret for login cookies and background-alert keys (Render generates it once, free).
       - key: APP_SECRET
         generateValue: true
+      # Optional: Telegram alerts. Paste the token from @BotFather (Render asks once; leave empty to skip).
+      - key: TELEGRAM_BOT_TOKEN
+        sync: false

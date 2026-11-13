@@ -17,8 +17,8 @@ Private Indian market trading terminal for NSE indices/stocks, MCX reference pri
 TradeDesk/
 ├── public/
 │   ├── index.html            page markup only (21 KB)
-│   ├── css/                  14 stylesheets, loaded in their original order
-│   ├── js/app.js             main app script (+ 3 small scripts)
+│   ├── css/                  15 stylesheets, loaded in their original order (td-v27-assist.css = new UI parts)
+│   ├── js/app.js             main app script (+ 3 small scripts, td-journal.js = My trades, td-ui.js = chart / phone UI)
 │   ├── swing-plan.js         shared trading rules (browser + server)
 │   ├── sw.js                 service worker: notifications + background alerts
 │   ├── manifest.webmanifest  "Add to Home Screen" (needed for iPhone alerts)
@@ -70,8 +70,20 @@ Recommended Environment Variable: APP_SECRET = any long random text (32+ charact
 Recommended Environment Variable: NODE_ENV = production
 Optional news API variables: MARKETAUX_KEY, FINNHUB_KEY, NEWSDATA_KEY
 Optional: TRUST_PROXY_HOPS (default 1 in production, 0 locally)
-Optional: NSE_HOLIDAYS = extra trading holidays, comma-separated YYYY-MM-DD
+Optional: NSE_HOLIDAYS = extra trading holidays, comma-separated YYYY-MM-DD (the server also reads NSE's own list daily)
+Optional: TELEGRAM_BOT_TOKEN = your Telegram bot's token, for alerts in Telegram (see below)
 ```
+
+Telegram alerts (free, optional):
+1. In Telegram open @BotFather, send /newbot, pick a name, and copy the token it gives you.
+2. Render → your service → Environment → add TELEGRAM_BOT_TOKEN = that token → Save (Render redeploys).
+3. Open your new bot in Telegram and send /start. In TradeDesk: Screener → My trades → Telegram alerts → Link.
+Every alert then also arrives in Telegram. Schedule (IST, NSE trading days unless noted):
+- 08:45 morning brief: market regime, holidays / special sessions, high-impact events, your open trades, Gold Petal.
+- 09:05 and 17:00 (weekdays) Gold Petal plan (buy-only, 2 of 3 drivers), and an alert when price reaches the buy level.
+- 09:25 and 15:15 scan summary; 11:30 and 13:30 only stocks that NEWLY turned READY / buy-limit / quick bounce.
+- 09:30 Nifty options: your credit-spread rule on the live NSE chain.
+- Any time the market is open: stop or target 1 hit on a trade in My trades (tap 📒 when you take a trade).
 
 Notes for the free plan:
 - The server keeps itself awake around the clock (it calls its own address every 10 minutes), so there is no cold

@@ -584,3 +584,64 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - Removed the 9 Nov change that overwrote the previous daily bar of an index with NSE's close. It had replaced Friday's correct close with the Muhurat close.
 - GAIL's WAIT is correct: the screener and Overview agree. It closed at 188 on its high, 0.5% under the 52-week high of 188.90, but RSI is 73 and price is 7.2% above EMA20. The pre-breakout and breakout setups allow at most RSI 72 and 6.5% above EMA20, so this counts as chasing.
 - README: keep-awake runs around the clock (about 744 of the 750 free Render hours), so this must be the only free Render web service.
+
+## Trade assistant, calendar checks, My trades, phone UI (13 Nov 2026)
+
+**Calendar and risk checks** (free NSE data, refreshed once a day and kept in `data/nse-calendar.json`)
+- **NSE trading holidays** now come from NSE's own list (20 for 2026). 10 Nov (Diwali Balipratipada) had run the scans and alerts as a normal day. Day counts for results now skip holidays too.
+- **Corporate actions:** a bonus, split, rights issue or demerger with an ex-date within 10 trading days blocks a fresh entry, in the screener and the Overview alike, just as results do. A dividend shows as a note.
+- **NSE surveillance lists (ASM / GSM):** a listed stock is blocked.
+- **Gold Petal expiry:** the last day of the month, moved back to the previous working day. It is shown on the MCX card and turns red 5 trading days before.
+
+**Gold Petal is buy-only.**
+- A downtrend now reads AVOID ("no new buys / exit a long") instead of SELL.
+- A buy waits until 2 of the 3 drivers agree. The drivers: dollar index below its 50-day EMA, US 10-year yield below its 50-day EMA, USD/INR above its 50-day EMA.
+- Why: over 10 years, sells made about 0R a trade and buys +0.35R, or +0.43R with the driver filter.
+- The plan is one shared function (`SwingPlan.commodityPlan`), so the page and the server alerts agree.
+
+**Your credit-spread rule (Nifty)**
+- **Where:** a card on the options idea and in the Option Builder, using the live NSE chain.
+- **The rule:**
+  - Sell 2%+ from spot with delta under 0.20; buy 200 points further out.
+  - Bull put only in a Nifty uptrend, bear call only in a downtrend; otherwise no trade.
+  - Credit at least 6 points weekly or 20 monthly.
+  - Expiry: the first one at least 3 days away.
+- "Highest OI in front of the strike" is shown for information only, because it made the backtest worse.
+- PASS / NO TRADE, with every check listed.
+
+**Honest labels**
+- **Quick Bounce:** "small size only". Over 10 years with at most 5 positions it lost money overall.
+- **Breakout with Volume:** "READY · half size", plus a warning on the Overview, from its 33% wins and −0.21R a trade.
+
+**My trades** (Screener → My trades)
+- 📒 "I took this trade" appears on the stock trade plan, Quick Bounce, the Gold Petal idea and the Nifty rule card.
+- The dialog fills itself from the plan and sizes the quantity from your capital and risk %.
+- **Total open risk:** what all open trades lose if every stop is hit, against a limit (default 5%). It also appears under every position calculator.
+- Open trades show live P&L and R. Closing a trade records the result.
+- **Results by setup:** trades, win %, average R and total ₹.
+- Synced between devices like alerts.
+
+**Alerts** (phone notification + Telegram when linked; set `TELEGRAM_BOT_TOKEN`, then Link)
+- **08:45 brief:** market, holidays, events, open trades, Gold Petal.
+- **Gold Petal:** 09:05 and 17:00 plan, plus an alert at the buy level.
+- **09:30 Nifty options:** your rule.
+- **Scans:** 09:25 and 15:15 summary with quantity; 11:30 and 13:30 only new READY / buy-limit / quick bounce.
+- **Open-trade watcher:** stop hit, T1 hit (book half), day-10 exit, results or ex-date within 2 days, Gold Petal expiry, Nifty through your short strike.
+- **Holidays:** a holiday note and no NSE scans.
+- Notifications open the right page: `/?sym=...`, `/?view=trades`.
+
+**UI**
+- **Candle chart** (TradingView Lightweight Charts 4.2.0, from unpkg) with EMA20/50/200, the plan's entry / stop / T1, nearest support / resistance and, on Nifty, the rule's strikes. It can be folded away.
+- **Verdict line** on the stock Overview: "WAIT · R:R 1.12 · Score 72 · 1 check missing". On phones the decision details fold under it.
+- **Phones:**
+  - The header hides while scrolling down, and the price card becomes a sticky strip with the verdict.
+  - Swipe left / right to change tab; pull down at the top to refresh.
+- **Lists:** READY / LIMIT / QUICK chips on stocks, BUY / SELL on MCX, RULE ✓ / NO TRADE on Nifty, and a 5-day mini line on stocks and MCX. Index prices come from NSE, which sends no history, so index rows have no mini line.
+- **Prices:** flash green / red when they tick; loading rows shimmer instead of showing "--".
+
+**Checked**
+- Telegram end to end against a local stand-in for its API: link, test message, a real stop-hit alert from the watcher.
+- Every scheduled job, with a simulated clock: once each, holiday, weekend.
+- The rule and Gold plan on live data, and the journal from add to close to stats.
+- Phone swipe, header and dialog.
+- Full page sweep on phone and desktop widths.

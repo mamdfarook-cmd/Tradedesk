@@ -109,11 +109,26 @@ function jsArg(v){ return escHtml(JSON.stringify(v == null ? '' : v)); }
 let OPT_REQ_SEQ = 0;
 /* Sidebar quote: neutral price + green/red change. The whole line used to be one forced teal colour,
    so falling instruments showed in green. */
-function setSidebarQuote(el, priceTxt, pct){
+function setSidebarQuote(el, priceTxt, pct, spark){
   if(!el) return;
   const p = Number(pct), up = p >= 0;
-  el.innerHTML = `<span class="q-px">${escHtml(priceTxt)}</span><span class="q-chg ${Number.isFinite(p) ? (up ? 'q-up' : 'q-dn') : ''}">${Number.isFinite(p) ? `${up?'▲':'▼'}${Math.abs(p).toFixed(2)}%` : '--'}</span>`;
+  /* Price tick: a short green / red flash when the value changes (not on the first fill). */
+  const prev = el.dataset.px, moved = prev != null && prev !== String(priceTxt);
+  const dir = moved ? (Number(String(priceTxt).replace(/,/g, '')) >= Number(String(prev).replace(/,/g, '')) ? 'up' : 'dn') : '';
+  if(Array.isArray(spark)) el._spark = spark; else spark = el._spark;   /* a price-only update keeps the last mini line */
+  el.innerHTML = `${sparkSvg(spark, up)}<span class="q-px">${escHtml(priceTxt)}</span><span class="q-chg ${Number.isFinite(p) ? (up ? 'q-up' : 'q-dn') : ''}">${Number.isFinite(p) ? `${up?'▲':'▼'}${Math.abs(p).toFixed(2)}%` : '--'}</span>`;
+  el.dataset.px = String(priceTxt);
+  el.classList.remove('q-loading');
+  if(dir){ el.classList.remove('q-flash-up', 'q-flash-dn'); void el.offsetWidth; el.classList.add('q-flash-' + dir); }
   el.style.color = '';
+}
+/* 5-day mini line for list rows (closes the quote already carries). */
+function sparkSvg(v, up){
+  const a = (Array.isArray(v) ? v : []).map(Number).filter(Number.isFinite);
+  if(a.length < 3) return '';
+  const lo = Math.min(...a), hi = Math.max(...a), w = 42, h = 16, sx = w / (a.length - 1), sy = hi > lo ? (h - 2) / (hi - lo) : 0;
+  const pts = a.map((y, i) => `${(i * sx).toFixed(1)},${(h - 1 - (y - lo) * sy).toFixed(1)}`).join(' ');
+  return `<svg class="q-spark" viewBox="0 0 ${w} ${h}" width="${w}" height="${h}" aria-hidden="true"><polyline points="${pts}" fill="none" stroke="${a[a.length - 1] >= a[0] ? 'var(--bull)' : 'var(--bear)'}" stroke-width="1.5" stroke-linejoin="round" stroke-linecap="round"/></svg>`;
 }
 function escHtml(v){
   return String(v ?? '').replace(/[&<>"']/g, ch => ({
@@ -148,7 +163,7 @@ async function apiFetch(path, timeoutMs=15000) {
    Alerts, Track Record, calculator settings, recent stocks and MCX calibrations follow you between devices.
    Every change to one of those keys is time-stamped; the newest copy wins, here or on the server. If the
    server's disk was reset, this browser uploads its copy again. */
-const SYNC_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
+const SYNC_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const SYNC_META_KEY = 'td_sync_meta';
 let SYNC_APPLYING = false, SYNC_TIMER = null, SYNC_INFLIGHT = null, SYNC_STATE = { ok:null, at:null, msg:'' };
 function syncMeta(){ try { return JSON.parse(localStorage.getItem(SYNC_META_KEY) || '{}') || {}; } catch { return {}; } }
@@ -264,8 +279,15 @@ function indiaMarketMinutesNow(){
 }
 function isIndiaMarketHoursNow(){
   const m = indiaMarketMinutesNow();
-  return Number.isFinite(m) && m >= 9*60+15 && m <= 15*60+45;
+  return Number.isFinite(m) && m >= 9*60+15 && m <= 15*60+45 && !NSE_HOL_CLIENT.has(istDateKey());
 }
+/* NSE trading holidays and the Gold Petal expiry, from the server's daily NSE calendar (/api/market-calendar). */
+let MARKET_CAL = null;
+const NSE_HOL_CLIENT = new Set();
+async function loadMarketCalendar(){
+  try{ const d = await apiFetch('/api/market-calendar', 15000); MARKET_CAL = d; (d.holidays || []).forEach(h => h.date && NSE_HOL_CLIENT.add(h.date)); setMarketStatus(); }catch{}
+}
+function goldPetalExpiryNow(){ return SwingPlan.goldPetalExpiry(istDateKey(), k => NSE_HOL_CLIENT.has(k)); }
 function getScreenerUiTtlMs(){
   return isIndiaMarketHoursNow() ? 30 * 60 * 1000 : 24 * 60 * 60 * 1000;
 }
@@ -2187,6 +2209,17 @@ async function buildIndexOptionsIdea(sym){
   /* Live NSE premiums (option chain) replace the estimates; premiums typed in from the broker win over both
      (kept while the same legs are shown). A calendar's far leg is looked up in its own expiry. */
   const chain = await ideaChain(sym, main?.date);
+  /* The user's own credit-spread rule on the same live chain (Nifty only - that is what was backtested). */
+  /* The rule trades the first expiry at least 3 days away (the backtest entered the day after an expiry, ~6 days
+     out; a 1-day contract has almost no premium and the most gamma). The server's 09:30 alert uses the same. */
+  let ruleChain = null;
+  if(sym === 'NSE:NIFTY' && chain?.expiries?.length){
+    const nextExp = chain.expiries.find(e => ideaDaysTo(e) >= 3) || chain.expiries.find(e => e > istDateKey());
+    ruleChain = nextExp && nextExp !== chain.expiry ? await ideaChain(sym, nextExp) : chain;
+  }
+  const rule = ruleChain?.strikes?.length ? SwingPlan.creditSpreadRule(ruleChain, { spot: +ruleChain.spot || spot,
+    trendUp: spot > e20 && e20 > e50, trendDown: spot < e20 && e20 < e50, daysToExpiry: ideaDaysTo(ruleChain.expiry), step: cfg.step, wing: 200,
+    monthly: SwingPlan.isMonthlyExpiry(ruleChain.expiry, ruleChain.expiries) }) : null;
   const farChain = s.far?.date && s.far.date !== main?.date ? await ideaChain(sym, s.far.date) : null;
   s.legs.forEach(l => { const ch = l.exp && farChain && l.exp === s.far?.date ? farChain : chain; l.nse = ch ? SwingPlan.ocPremium(ch, l.k, l.t) : null; });
   const liveKey = `${sym}|${s.id}|${s.legs.map(l => l.t + l.k + (l.exp || '')).join(',')}|${main?.date || ''}`;
@@ -2196,7 +2229,7 @@ async function buildIndexOptionsIdea(sym){
   const today = istDateKey(), until = s.near?.date || main?.date || today;
   const events = (await ideaCalendar()).filter(e => IDX_EVENT_CATS.includes(e.category) && e.date >= today && e.date <= until);
   const nearT = s.near ? ideaDaysTo(s.near.date) : T;
-  const x = { sym, cfg, spot, e20, e50, vix, ivp, ad, trend, breadth, score, view, vol, T, sd, expiry: main?.date || null, s, iv, Ty, liveKey, events, nearT,
+  const x = { sym, cfg, spot, e20, e50, vix, ivp, ad, trend, breadth, score, view, vol, T, sd, expiry: main?.date || null, s, iv, Ty, liveKey, events, nearT, rule, ruleExpiry: ruleChain?.expiry || null,
     oc: chain ? { pcr: chain.pcr, maxPain: chain.maxPain, callWalls: chain.callWalls, putWalls: chain.putWalls, expiry: chain.expiry, stale: !!chain.stale, at: chain.fetchedAt } : null };
   Object.assign(x, ideaOptMetrics(x));
   LAST_IDX_IDEA = x;
@@ -2276,6 +2309,25 @@ function evDay(key){
   return dd === 0 ? 'Today' : dd === 1 ? 'Tomorrow' : new Date(key + 'T00:00:00').toLocaleDateString('en-IN', {weekday:'short', day:'2-digit', month:'short'});
 }
 
+/* Card: the user's rule (sell 2%+ away, delta under 0.20, buy 200 points further; bull put only in an uptrend,
+   bear call only in a downtrend; credit 6+ pts weekly / 20+ monthly) checked on the live NSE chain. */
+function creditRuleHtml(x){
+  const r = x?.rule;
+  if(!x || x.sym !== 'NSE:NIFTY') return '';
+  if(!r) return `<div class="idea-card" data-idx-rule><div class="idea-kicker">Your credit-spread rule · Nifty</div><div class="idea-foot">Needs the live NSE option chain - not reachable right now. Try again in a minute.</div></div>`;
+  const sideHtml = q => q.none ? `<div class="rule-side"><b>${q.type}</b><div class="idea-foot">No strike 2%+ away with delta under 0.20 and a quoted premium.</div></div>`
+    : `<div class="rule-side${r.pick === q ? ' picked' : ''}"><b>${q.type}${r.pick === q ? ' · today' : ''}</b>
+      <div class="rule-legs">Sell ${q.sell} ${q.ty === 'P' ? 'PE' : 'CE'} ₹${fmt(q.sellPx)} · Buy ${q.buy} ${q.ty === 'P' ? 'PE' : 'CE'} ₹${fmt(q.buyPx)}</div>
+      <div class="rule-legs">Credit <b>${fmt(q.credit)} pts</b> (₹${fmt(q.credit * x.cfg.lot, 0)} per lot) · max loss ₹${fmt(q.maxLoss * x.cfg.lot, 0)} · stop at 2× credit</div>
+      <ul class="rule-checks">${q.checks.map(c => `<li class="${c.pass ? 'ok' : c.need ? 'bad' : 'info'}">${c.pass ? '✓' : c.need ? '✗' : 'ℹ'} ${escHtml(c.name)}${c.need ? '' : ' (info only)'}</li>`).join('')}</ul></div>`;
+  return `<div class="idea-card" data-idx-rule style="border-color:${r.ok ? 'var(--bull)' : 'var(--brd)'}">
+    <div class="idea-head"><div><div class="idea-kicker">Your credit-spread rule · Nifty · expiry ${escHtml(ideaDate(x.ruleExpiry || ''))} (${r.daysToExpiry} days)</div><div class="idea-title">${escHtml(r.verdict)}</div></div>
+      <div class="idea-view ${r.ok ? 'bull' : 'neutral'}">${r.ok ? 'PASS' : 'NO TRADE'}</div></div>
+    <div class="rule-grid">${sideHtml(r.put)}${sideHtml(r.call)}</div>
+    ${r.ok ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'option', sym:'NSE:NIFTY', name:'Nifty', setup: r.pick.type, optType: r.pick.ty, shortStrike: r.pick.sell, longStrike: r.pick.buy, credit: r.pick.credit, wing: Math.abs(r.pick.sell - r.pick.buy), lotQty: x.cfg.lot, expiry: x.ruleExpiry})})">📒 I took this trade</button>` : ''}
+    <div class="idea-foot">Backtest on NSE prices 2019-2026: bull put spreads sold only in a Nifty uptrend (price above EMA20, EMA20 above EMA50) were the profitable version; bear calls and iron condors lost, and credits under ${r.minCredit} points ${r.monthly ? '(monthly)' : '(weekly)'} lost to charges. "Highest OI in front" made results worse, so it is shown for information only. Prices: NSE bid/ask middle or last trade.</div>
+  </div>`;
+}
 function indexIdeaHtml(x){
   if(!x) return '';
   if(x.error) return `<div class="idea-card" data-idx-idea-wait><div class="idea-kicker">Today's options idea</div><div class="aib">${escHtml(x.error)}</div></div>`;
@@ -2355,6 +2407,10 @@ const MCX_EVENT_CATS = {
   'MCX:CRUDEOIL':['EIA','FOMC','NFP','CPI'], 'MCX:GOLD':['FOMC','NFP','CPI','RBI'], 'MCX:GOLDPETAL':['FOMC','NFP','CPI','RBI'],
   'MCX:SILVER':['FOMC','NFP','CPI'], 'MCX:NATURALGAS':['NGSTORAGE'], 'MCX:COPPER':['FOMC','NFP','CPI'],
 };
+/* Last /api/mcx-drivers answer per symbol: the gold buy filter (2 of 3 drivers) needs it to build the plan. */
+const MCX_DRIVERS_SEEN = {};
+/* Entry / stop / target of the plan on screen, per symbol - drawn on the candle chart (td-ui.js). */
+const PLAN_LEVELS = {};
 const MCX_ROUND = { 'MCX:GOLD':1000, 'MCX:GOLDPETAL':100, 'MCX:SILVER':1000, 'MCX:CRUDEOIL':100, 'MCX:NATURALGAS':10, 'MCX:COPPER':10 };
 
 /* Calibration: the user's broker price vs the proxy. Every level on the MCX cards is multiplied by
@@ -2449,13 +2505,13 @@ function mcxZones(sym, D){
 function mcxZonesHtml(sym, D, x){
   const z = mcxZones(sym, D);
   if(!z) return '';
-  const a = z.atr, side = x?.side || 'WAIT', b = z.below[0], s = z.above[0];
+  const a = z.atr, side = x?.side || 'WAIT', b = z.below[0], s = z.above[0], buyOnly = !!x?.buyOnly;
   const zr = q => `₹${fmt(q.lo)} - ₹${fmt(q.hi)}`;
   let status, cls;
   if(z.inside){ status = `Price is inside a zone (${zr(z.inside)}). Wait: a daily close above ₹${fmt(z.inside.hi)} turns it into support, a close below ₹${fmt(z.inside.lo)} into resistance.`; cls = 'neutral'; }
-  else if(b && z.price - b.hi <= 0.3*a){ status = side === 'SELL' ? `At a buy zone, but the trend is down: book short profits here - no fresh buying.` : `At a buy zone: buy only if a candle closes back above ₹${fmt(b.lo)} (the zone holds).`; cls = 'bull'; }
-  else if(s && s.lo - z.price <= 0.3*a){ status = side === 'BUY' ? `At a sell zone, but the trend is up: book long profits here - no fresh selling.` : `At a sell zone: sell only if a candle closes back below ₹${fmt(s.hi)} (the zone holds).`; cls = 'bear'; }
-  else { status = `Between zones - the no-trade middle. Wait for price to reach ${b ? `the buy zone ${zr(b)}` : ''}${b && s ? ' or ' : ''}${s ? `the sell zone ${zr(s)}` : ''}.`; cls = 'neutral'; }
+  else if(b && z.price - b.hi <= 0.3*a){ status = side === 'SELL' ? `At a buy zone, but the trend is down: book short profits here - no fresh buying.` : side === 'AVOID' ? `At a buy zone, but the trend is down: no new buys until the uptrend returns.` : `At a buy zone: buy only if a candle closes back above ₹${fmt(b.lo)} (the zone holds).`; cls = side === 'AVOID' ? 'neutral' : 'bull'; }
+  else if(s && s.lo - z.price <= 0.3*a){ status = buyOnly ? `At a profit-taking zone: book part of a long here - no short (buy-only).` : side === 'BUY' ? `At a sell zone, but the trend is up: book long profits here - no fresh selling.` : `At a sell zone: sell only if a candle closes back below ₹${fmt(s.hi)} (the zone holds).`; cls = 'bear'; }
+  else { status = `Between zones - the no-trade middle. Wait for price to reach ${b ? `the buy zone ${zr(b)}` : ''}${b && s ? ' or ' : ''}${s ? `the ${buyOnly ? 'profit-taking' : 'sell'} zone ${zr(s)}` : ''}.`; cls = 'neutral'; }
   const row = (q, dir) => {
     const entry = dir > 0 ? q.hi : q.lo, stop = dir > 0 ? q.lo - 0.5*a : q.hi + 0.5*a;
     /* Target: the first zone in the way, however close - price meets it first. Skipping to the next "strong"
@@ -2464,17 +2520,19 @@ function mcxZonesHtml(sym, D, x){
     const beyond = dir > 0 ? z.all.filter(t => t !== q && t.lo > entry) : [...z.all].reverse().filter(t => t !== q && t.hi < entry);
     const tz = beyond[0];
     const tgt = tz ? (dir > 0 ? tz.lo : tz.hi) : null, rr = tgt ? Math.abs(tgt - entry) / Math.abs(entry - stop) : null;
-    const against = (dir > 0 && side === 'SELL') || (dir < 0 && side === 'BUY'), withT = (dir > 0 && side === 'BUY') || (dir < 0 && side === 'SELL');
-    const note = against ? '<span style="color:var(--neu)">against the trend - use it to book profit, not to enter</span>'
+    const against = (dir > 0 && (side === 'SELL' || side === 'AVOID')) || (dir < 0 && side === 'BUY'), withT = (dir > 0 && side === 'BUY') || (dir < 0 && side === 'SELL');
+    const note = buyOnly && dir < 0 ? '<span style="color:var(--neu)">book long profits here - no short (buy-only)</span>'
+      : buyOnly && side === 'AVOID' ? '<span style="color:var(--neu)">downtrend - no new buys</span>'
+      : against ? '<span style="color:var(--neu)">against the trend - use it to book profit, not to enter</span>'
       : rr != null && rr < SWING_MIN_RR ? '<span style="color:var(--bear)">R:R below 1.25 - skip</span>'
       : withT ? '<span style="color:var(--bull)">with the trend</span>' : '';
     return `<div class="zone-row ${dir > 0 ? 'buy' : 'sell'}">
-      <div class="zone-main"><b>${dir > 0 ? 'Buy zone' : 'Sell zone'} ${zr(q)}</b><span class="zone-tag${q.strength >= 2 ? ' strong' : ''}">${q.strength >= 2 ? 'strong' : 'single level'}</span><span class="zone-dist">${(Math.abs(entry - z.price)/a).toFixed(1)} ATR away</span></div>
-      <div class="zone-sub">${escHtml(q.src.join(' + '))} · stop ${dir > 0 ? 'below' : 'above'} ₹${fmt(stop)}${tgt ? ` · target ₹${fmt(tgt)} · R:R ${rr.toFixed(2)}` : ''}${note ? ' · ' + note : ''}</div>
+      <div class="zone-main"><b>${dir > 0 ? 'Buy zone' : buyOnly ? 'Profit zone' : 'Sell zone'} ${zr(q)}</b><span class="zone-tag${q.strength >= 2 ? ' strong' : ''}">${q.strength >= 2 ? 'strong' : 'single level'}</span><span class="zone-dist">${(Math.abs(entry - z.price)/a).toFixed(1)} ATR away</span></div>
+      <div class="zone-sub">${escHtml(q.src.join(' + '))}${buyOnly && dir < 0 ? '' : ` · stop ${dir > 0 ? 'below' : 'above'} ₹${fmt(stop)}${tgt ? ` · target ₹${fmt(tgt)} · R:R ${rr.toFixed(2)}` : ''}`}${note ? ' · ' + note : ''}</div>
     </div>`;
   };
   return `<div class="idea-card" style="border-color:var(--brd)">
-    <div class="idea-kicker">Buy / sell zones · where</div>
+    <div class="idea-kicker">${buyOnly ? 'Buy / profit zones' : 'Buy / sell zones'} · where</div>
     <div class="idea-comment zone-status ${cls}">${escHtml(status)}</div>
     ${z.above.slice().reverse().map(q => row(q, -1)).join('')}
     <div class="zone-price">${z.inside ? `Now ₹${fmt(z.price)} · inside ${zr(z.inside)}` : `Now ₹${fmt(z.price)}`}</div>
@@ -2495,7 +2553,8 @@ function mcxDriversHtml(d, side){
   const ok = (d?.drivers || []).filter(v => !v.error);
   if(!ok.length) return `<div class="idea-kicker">Global drivers · why</div><div class="idea-foot">Not loaded - try again in a minute.</div>`;
   const net = d.bull - d.bear, lean = net >= 2 ? 'bull' : net <= -2 ? 'bear' : 'neutral';
-  const align = side === 'BUY' ? (lean === 'bear' ? '⚠ The drivers disagree with the BUY plan - wait, or trade half size.' : lean === 'bull' ? '✓ The drivers agree with the BUY plan.' : 'Drivers are mixed - the price trend leads.')
+  const align = side === 'AVOID' ? (lean === 'bull' ? 'The drivers are turning supportive - still wait for the uptrend (price and EMA20 above EMA50) before buying.' : 'Downtrend and the drivers do not support gold - no new buys (buy-only).')
+    : side === 'BUY' ? (lean === 'bear' ? '⚠ The drivers disagree with the BUY plan - wait, or trade half size.' : lean === 'bull' ? '✓ The drivers agree with the BUY plan.' : 'Drivers are mixed - the price trend leads.')
     : side === 'SELL' ? (lean === 'bull' ? '⚠ The drivers disagree with the SELL plan - wait, or trade half size.' : lean === 'bear' ? '✓ The drivers agree with the SELL plan.' : 'Drivers are mixed - the price trend leads.')
     : lean === 'neutral' ? 'No price trend and no driver push - range trade only.' : `No price trend yet, but the drivers ${lean === 'bull' ? 'support a rise' : 'point to a fall'} - watch for a breakout ${lean === 'bull' ? 'up' : 'down'}.`;
   return `<div class="idea-head"><div><div class="idea-kicker">Global drivers · why</div><div class="idea-title">${d.bull} of ${d.total} support a rise · ${d.bear} a fall</div></div>
@@ -2503,6 +2562,15 @@ function mcxDriversHtml(d, side){
     <div class="idea-comment"><b>${escHtml(align)}</b></div>
     <div class="drv-list">${d.drivers.map(v => `<div class="drv-row"><span class="drv-ic ${v.vote > 0 ? 'bull' : v.vote < 0 ? 'bear' : 'neutral'}">${v.vote > 0 ? '▲' : v.vote < 0 ? '▼' : '•'}</span><b>${escHtml(v.label)}</b><span>${escHtml(v.text)}</span></div>`).join('')}</div>
     <div class="idea-foot">▲ pushes the MCX price up, ▼ down. From daily closes (5-day change and the 20-day average); refreshed every 15 min.</div>`;
+}
+/* Gold Petal: the current contract's expiry (last day of the month, back to the previous working day). Inside 5
+   trading days the warning turns red - roll to next month or exit before the delivery period. */
+function goldExpiryHtml(sym){
+  if(sym !== 'MCX:GOLDPETAL') return '';
+  const e = goldPetalExpiryNow(), d = new Date(e.date + 'T00:00:00Z').toLocaleDateString('en-IN', { weekday:'short', day:'2-digit', month:'short', timeZone:'UTC' });
+  return e.tradingDaysLeft <= 5
+    ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ Gold Petal expiry ${escHtml(d)} - ${e.tradingDaysLeft === 0 ? 'today' : `${e.tradingDaysLeft} trading day${e.tradingDaysLeft === 1 ? '' : 's'} left`}.</b> Roll to next month or exit before then: in the last days MCX delivery rules apply. Check the exact date with your broker.</div>`
+    : `<div class="drv-row"><span class="drv-ic neutral">•</span><b>Expiry ${escHtml(d)}</b><span>${e.tradingDaysLeft} trading days left on the current contract (last day of the month; check with your broker)</span></div>`;
 }
 function mcxEventsHtml(sym, cal){
   const cats = MCX_EVENT_CATS[sym] || [], t = istDateKey(), dayKey = ms => new Date(ms + 330*60000).toISOString().slice(0, 10);
@@ -2513,6 +2581,7 @@ function mcxEventsHtml(sym, cal){
     ${soon.length ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ ${escHtml(soon.map(e => `${e.event} ${evDay(e.date).toLowerCase()}${e.time ? ' ' + e.time : ''}`).join('; '))}</b> - no fresh entry in the hour before; keep the stop-loss order in place.</div>` : ''}
     <div class="drv-list">${ev.length ? ev.map(e => `<div class="drv-row"><span class="drv-ic ${e.impact === 'HIGH' ? 'bear' : 'neutral'}">${e.impact === 'HIGH' ? '!' : '•'}</span><b>${escHtml(evDay(e.date))}${e.time ? ' · ' + escHtml(e.time) : ''}</b><span>${escHtml(e.event)}</span></div>`).join('')
       : '<div class="drv-row"><span class="drv-ic neutral">•</span><span>No scheduled event in the next 7 days.</span></div>'}</div>
+    ${goldExpiryHtml(sym)}
     <ul class="idea-why"><li><b>Contract:</b> ${escHtml(MCX_CONTRACT_NOTE[sym] || 'Check the expiry date with your broker.')}</li><li><b>Session:</b> ${escHtml(MCX_SESSION_NOTE)}</li></ul>
     <div class="idea-foot">US weekly data follows its usual weekday; Fed / RBI / CPI dates come from the app calendar. Verify before trading.</div>`;
 }
@@ -2529,7 +2598,17 @@ function mcxFillAsync(sym){
   const side = document.querySelector('[data-mcx-drivers]')?.dataset.side || 'WAIT';
   const put = (sel, html) => { const el = document.querySelector(sel); if(el && CUR_SYM === sym) el.innerHTML = html; };
   apiFetch('/api/mcx-drivers?sym=' + encodeURIComponent(sym), 30000)
-    .then(d => put('[data-mcx-drivers]', mcxDriversHtml(d, side)))
+    .then(d => {
+      const first = !MCX_DRIVERS_SEEN[sym]?.goldRule;
+      MCX_DRIVERS_SEEN[sym] = d;
+      let sd = side;
+      /* Gold: the plan depends on the drivers, so rebuild the card once they are in. */
+      if(first && d?.goldRule && SwingPlan.BUY_ONLY_MCX.has(sym) && CUR_SYM === sym){
+        const x = buildCommodityIdea(sym), el = document.querySelector('[data-cidea]');
+        if(x && el){ el.outerHTML = commodityIdeaHtml(sym, x); sd = x.side === 'BUY' && !x.driverBlock ? 'BUY' : x.side === 'AVOID' ? 'AVOID' : 'WAIT'; }
+      }
+      put('[data-mcx-drivers]', mcxDriversHtml(d, sd));
+    })
     .catch(e => put('[data-mcx-drivers]', `<div class="idea-kicker">Global drivers · why</div><div class="idea-foot">Not loaded: ${escHtml(e.message || 'error')}</div>`));
   ideaCalendar().then(cal => put('[data-mcx-events]', mcxEventsHtml(sym, cal)));
   const key = `news_${sym}`, st = sym.replace(/NSE:|MCX:|CRYPTO:/g, '');
@@ -2547,44 +2626,11 @@ function buildCommodityIdea(sym, D){
   const cfg = MCX_IDEA[sym];
   if(!cfg || !CUR_DATA?.daily?.C?.length) return null;
   D = D || mcxData(sym);
-  const {C, H, L, price, sr} = D;
-  const e20 = emaLast(C,20), e50 = emaLast(C,50), rsi = calcRSI(C);
-  const atr = SwingPlan.atrWilder(C, H, L, price, sr.r1, sr.s1);
-  const up = price > e50 && e20 > e50, down = price < e50 && e20 < e50;
-  const res = [sr.r1, sr.r2, sr.r3].map(Number).filter(v => v > 0).sort((a,b) => a-b);
-  const sup = [sr.s1, sr.s2, sr.s3].map(Number).filter(v => v > 0).sort((a,b) => b-a);
-  let side = 'WAIT', entry = null, sl = null, t1 = null, t2 = null, action = '', why = '';
-  if(up){
-    side = 'BUY';
-    const extended = price - e20 > 1.5*atr;
-    entry = extended ? e20 : price;
-    action = extended ? `Wait for a dip to EMA20 ${fmt(e20)} - price is ${((price-e20)/atr).toFixed(1)} ATR above it` : `Buy now / near ${fmt(price)}`;
-    if(rsi > 72){ action = `RSI ${fmt(rsi,1)} is stretched - wait for a dip to EMA20 ${fmt(e20)}`; entry = e20; }
-    sl = SwingPlan.calcAtrStopLoss({side:'long', price:entry, structuralStop: Math.min(e20, sup.find(v => v < entry) || e20) - 0.5*atr, atr});
-    t1 = res.find(v => v > entry + atr) || entry + 2*atr; t2 = res.find(v => v > t1 + 0.5*atr) || t1 + atr*1.5;
-    why = `Uptrend: price above EMA50 ${fmt(e50)} and EMA20 above EMA50.`;
-  } else if(down){
-    side = 'SELL';
-    const extended = e20 - price > 1.5*atr;
-    entry = extended ? e20 : price;
-    action = extended ? `Wait for a rise to EMA20 ${fmt(e20)} - price is ${((e20-price)/atr).toFixed(1)} ATR below it` : `Sell now / near ${fmt(price)}`;
-    if(rsi < 28){ action = `RSI ${fmt(rsi,1)} is oversold - wait for a rise to EMA20 ${fmt(e20)}`; entry = e20; }
-    sl = SwingPlan.calcAtrStopLoss({side:'short', price:entry, structuralStop: Math.max(e20, res.find(v => v > entry) || e20) + 0.5*atr, atr});
-    t1 = sup.find(v => v < entry - atr) || entry - 2*atr; t2 = sup.find(v => v < t1 - 0.5*atr) || t1 - atr*1.5;
-    why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50.`;
-  } else {
-    why = `No trend: price ${price > e50 ? 'above' : 'below'} EMA50 ${fmt(e50)} but EMA20 ${e20 > e50 ? 'above' : 'below'} it. Trade only from the range edges - see the buy / sell zones below.`;
-  }
-  let risk = entry != null ? Math.abs(entry - sl) : null, rr = risk ? Math.abs(t1 - entry) / risk : null;
-  /* Same minimum as the stock plans: below 1.25 R:R the trade waits for a better price. Entry where R:R = 1.25
-     (stop and target unchanged): e = (T1 + 1.25 x SL) / 2.25. */
-  if(rr != null && rr < SWING_MIN_RR){
-    const better = (t1 + SWING_MIN_RR * sl) / 2.25;
-    if(side === 'BUY' ? better < entry && better > sl : better > entry && better < sl){
-      action = `R:R ${rr.toFixed(2)} at ${fmt(entry)} is below 1.25 - wait to ${side === 'BUY' ? 'buy nearer' : 'sell nearer'} ${fmt(better)}`;
-      entry = better; risk = Math.abs(entry - sl); rr = Math.abs(t1 - entry) / risk;
-    } else action = `R:R ${rr.toFixed(2)} is below 1.25 - no trade at these levels`;
-  }
+  const {C} = D;
+  /* Shared engine (public/swing-plan.js): the server's Gold Petal alerts use the same plan. Gold is buy-only and
+     its buys wait for 2 of 3 drivers once they have loaded (MCX_DRIVERS_SEEN, filled by mcxFillAsync). */
+  const p = SwingPlan.commodityPlan(sym, D, { minRR: SWING_MIN_RR, drivers: MCX_DRIVERS_SEEN[sym]?.goldRule || null });
+  const {price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, driverBlock} = p;
   let hedge = null;
   if(cfg.hedge && entry != null){
     const hv = Math.max(ideaHistVol(C, 20) || 0, (ideaHistVol(C, 60) || 0) * 0.8) || 0.35;
@@ -2595,22 +2641,29 @@ function buildCommodityIdea(sym, D){
     hedge = { type, K, prem, hv, worst, be: side === 'SELL' ? entry - prem : entry + prem };
   }
   const lossPerLot = entry == null ? null : (hedge ? hedge.worst : risk) * cfg.lotQty;   /* with the hedge: the capped loss */
-  return { sym, cfg, k:D.k, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, hedge, lossPerLot };
+  PLAN_LEVELS[sym] = entry != null && !driverBlock ? { entry, stop: sl, t1, label: side === 'BUY' ? 'Buy' : 'Sell', k: D.k || 1 } : null;
+  return { sym, cfg, k:D.k, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, hedge, lossPerLot, driverBlock, buyOnly: p.buyOnly, driversKnown: !!MCX_DRIVERS_SEEN[sym]?.goldRule };
 }
 function commodityIdeaHtml(sym, x){
   x = x || buildCommodityIdea(sym);
   if(!x) return '';
   const {cfg} = x, q = cfg.lotQty, u = cfg.unit;
   const src = x.k !== 1 ? `Levels calibrated to your MCX price (${x.k >= 1 ? '+' : ''}${((x.k - 1)*100).toFixed(2)}% vs the proxy).` : 'Prices are a proxy (international futures × USD/INR) - calibrate with your MCX price below / check the MCX quote before ordering.';
-  const head = `<div class="idea-head"><div><div class="idea-kicker">Today's futures idea · ${escHtml(cfg.name)}</div><div class="idea-title">${x.side === 'WAIT' ? 'No trend - range trade only' : `${x.side} ${escHtml(cfg.name)} future`}</div></div>
-    <div class="idea-view ${x.side === 'BUY' ? 'bull' : x.side === 'SELL' ? 'bear' : 'neutral'}">${x.side}</div></div>`;
-  if(x.side === 'WAIT') return `<div class="idea-card">${head}<div class="idea-comment">${escHtml(x.why)}</div><div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)}</div></div>`;
+  /* Gold (buy-only): a downtrend is AVOID, and a buy whose drivers disagree is WAIT with the planned levels kept. */
+  const verdict = x.side === 'BUY' && x.driverBlock ? 'WAIT' : x.side;
+  const title = x.side === 'WAIT' ? (x.buyOnly ? 'No uptrend - no buy yet' : 'No trend - range trade only')
+    : x.side === 'AVOID' ? `No new buys - ${escHtml(cfg.name)} is in a downtrend`
+    : x.driverBlock ? `Buy plan on hold - drivers disagree` : `${x.side} ${escHtml(cfg.name)} future`;
+  const head = `<div class="idea-head"><div><div class="idea-kicker">Today's futures idea · ${escHtml(cfg.name)}${x.buyOnly ? ' · buy-only' : ''}</div><div class="idea-title">${title}</div></div>
+    <div class="idea-view ${verdict === 'BUY' ? 'bull' : verdict === 'SELL' || verdict === 'AVOID' ? 'bear' : 'neutral'}">${verdict}</div></div>`;
+  const drvLine = x.buyOnly && x.side === 'BUY' ? `<div class="idea-comment" style="margin-top:6px">${x.driversKnown ? (x.driverBlock ? '⚠ ' : '✓ ') : ''}<b>Driver check (2 of 3 needed):</b> ${x.driversKnown ? escHtml(MCX_DRIVERS_SEEN[sym].goldRule.text) : 'loading…'}</div>` : '';
+  if(x.side === 'WAIT' || x.side === 'AVOID') return `<div class="idea-card" data-cidea>${head}<div class="idea-comment">${escHtml(x.why)}${x.side === 'AVOID' ? ` → <b>${escHtml(x.action)}</b>` : ''}</div><div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)}</div></div>`;
   const h = x.hedge;
   const hedgeHtml = h ? `<div class="idea-hedge"><b>Hedge:</b> buy ${h.K} ${h.type === 'C' ? 'CE (call)' : 'PE (put)'} ≈ ₹${fmt(h.prem)} per ${u} (~3 weeks, volatility ${Math.round(h.hv*100)}% from recent price swings).
       With the hedge the loss is capped near ₹${fmt(h.worst)} per ${u} (₹${fmt(h.worst*q,0)} per Mini lot) even on a gap, and breakeven moves to ${fmt(h.be)}.
       MCX's main crude option is on the 100-barrel contract, so one option covers 10 Mini lots - for fewer Mini lots, check whether your broker offers Mini options or rely on the stop-loss.</div>` : '';
-  return `<div class="idea-card">${head}
-    <div class="idea-comment">${escHtml(cfg.name)} ${fmt(x.price)} · ${escHtml(x.why)} → <b>${escHtml(x.action)}</b></div>
+  return `<div class="idea-card" data-cidea>${head}
+    <div class="idea-comment">${escHtml(cfg.name)} ${fmt(x.price)} · ${escHtml(x.why)} → <b>${escHtml(x.action)}</b></div>${drvLine}
     <div class="idea-grid">
       <div><span>Entry</span><b>${fmt(x.entry)}</b></div>
       <div><span>Stop-loss (order)</span><b>${fmt(x.sl)} · ₹${fmt(x.risk*q,0)} per lot</b></div>
@@ -2621,6 +2674,7 @@ function commodityIdeaHtml(sym, x){
     </div>
     ${ideaSizeHtml(x.lossPerLot, 'stop-loss risk')}
     ${hedgeHtml}
+    ${x.side === 'BUY' && !x.driverBlock ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'mcx', sym, name: cfg.name, setup: x.buyOnly ? 'Gold buy (2 of 3 drivers)' : `${cfg.name} ${x.side}`, side: x.side, entry: x.entry, stop: x.sl, t1: x.t1, t2: x.t2, lotQty: cfg.lotQty, calK: x.k})})">📒 I took this trade</button>` : ''}
     <ul class="idea-why"><li><b>Exit:</b> book half at T1 and move the stop to entry; exit the rest at T2 or on a daily close ${x.side === 'SELL' ? 'above' : 'below'} ${mcxTrailLevel(x)}.</li></ul>
     <div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)} Check margin and circuit limits before ordering.</div>
   </div>`;
@@ -4255,6 +4309,7 @@ async function tabScreener(mode = CURRENT_SCREENER_MODE, force = false) {
   if (mode === 'qualified' || mode === 'picklist' || mode === 'stockweek') mode = 'mytrade';   /* one screener list */
   if (mode === 'backtest') { CURRENT_SCREENER_MODE = mode; await tabBacktest(); return; }
   if (mode === 'momentum') { CURRENT_SCREENER_MODE = mode; await tabMomentum(force); return; }
+  if (mode === 'trades') { CURRENT_SCREENER_MODE = mode; await tabJournal(); return; }
   CURRENT_SCREENER_MODE = mode;
   if (mode === 'mytrade') { await tabMyTradeScreener(force); return; }
   if (mode === 'stockweek') { await tabStockOfWeekScreener(); return; }
@@ -4381,7 +4436,7 @@ function screenerRowGroup(s){
   return 2;
 }
 function screenerRowTag(s, g){
-  if(g === 1) return {t:'READY', c:'ready'};
+  if(g === 1) return {t: (s.pickedSetup || s.selectedStrategy) === 'Breakout with Volume' ? 'READY · half size' : 'READY', c:'ready'};
   if(g === 1.5) return {t:'Ready on limit', c:'ready'};
   const setup = String(s.pickedSetup || s.selectedStrategy || '');
   if(g === 2) return {t: /breakout|momentum/i.test(setup) ? 'Wait breakout' : /pullback|bounce/i.test(setup) ? 'Wait pullback' : 'Watch', c:'watch'};
@@ -4438,7 +4493,7 @@ function renderMyTradeScreener(data, source='server') {
       </div>
     </div>`;
   const qbGroup = `<div class="pl-group bull" id="scrQuickGrid">
-      <div class="pl-head"><div><div class="pl-title">Quick bounce (RSI-2)</div><div class="pl-sub">Short dip in an uptrend: 2-day RSI under 10, price above its 50- and 200-day averages, Nifty above its 200-day average. Hold 1-10 days. Backtest: about 2 in 3 trades win, small gains (+0.3% a trade after costs) - keep the stop.</div></div><div class="pl-count">${qb.length}</div></div>
+      <div class="pl-head"><div><div class="pl-title">Quick bounce (RSI-2)</div><div class="pl-sub">Short dip in an uptrend: 2-day RSI under 10, price above its 50- and 200-day averages, Nifty above its 200-day average. Hold 1-10 days. Backtest: about 2 in 3 trades win with small gains (+0.3% a trade after costs), but over 10 years with at most 5 positions at a time it lost money overall - <b>small size only</b>, and keep the stop.</div></div><div class="pl-count">${qb.length}</div></div>
       ${qb.length ? qb.map(qbRow).join('') : `<div class="pl-empty">${escHtml(data.quickBounceNote || 'None in this scan.')}</div>`}
     </div>`;
   const html = groups.map(G => {
@@ -4822,10 +4877,11 @@ function screenerResultsChip(s) {
 }
 function screenerModeSwitch(active='mytrade') {
   /* Four views of the Screener page; the button on the right refreshes the one that is open. */
-  const tabs = [['mytrade', 'Swing'], ['momentum', 'Monthly momentum'], ['track', 'Track record'], ['backtest', 'Backtest']];
+  const tabs = [['mytrade', 'Swing'], ['trades', 'My trades'], ['momentum', 'Monthly momentum'], ['track', 'Track record'], ['backtest', 'Backtest']];
   const action = active === 'mytrade' ? `<button class="scr-act" onclick="clearMyTradeScreenerCache();tabScreener('mytrade', true)" title="New scan (at most one every 5 minutes)">↻ Refresh</button>`
     : active === 'momentum' ? `<button class="scr-act" onclick="tabScreener('momentum', true)" title="Re-rank with the latest prices">↻ Refresh</button>`
     : active === 'track' ? `<button class="scr-act" onclick="tabScreener('track')">↻ Refresh</button>`
+    : active === 'trades' ? `<button class="scr-act" onclick="tabScreener('trades')">↻ Refresh</button>`
     : `<button class="scr-act" onclick="tabBacktest(true)">↻ Run again</button>`;
   return `<div class="scr-tabs-row scr-tabs-v2">
     ${tabs.map(([id, label]) => `<button class="scr-tab${active === id ? ' active' : ''}" onclick="tabScreener('${id}')">${label}</button>`).join('')}
@@ -5244,6 +5300,8 @@ function updatePositionCalc(id){
   setText('[data-pos-loss]', r.validPlan ? formatINR(r.loss) : '—');
   setText('[data-pos-chg]', r.validPlan ? formatINR(r.charges) : '—');
   setText('[data-pos-rr]', r.rr);
+  const op = root.querySelector('[data-pos-open]');
+  if(op && typeof posOpenRiskLine === 'function') op.innerHTML = posOpenRiskLine(r.validPlan ? r.loss : 0, capital);
 }
 function posQtySub(r, riskPct, price){
   const used = r.qty * (+price || 0);
@@ -5273,6 +5331,7 @@ function buildPositionSizeCalc({id, bias, price, target1, stopLoss, targetLabel=
       <div class="pos-item"><div class="pos-label">Net Loss @ Stop Loss</div><div class="pos-val" style="color:var(--bear)" data-pos-loss>${r.validPlan ? formatINR(r.loss) : '—'}</div><div class="pos-sub" data-pos-limit>${posLimitSub(capital, riskPct)}</div></div>
       <div class="pos-item"><div class="pos-label">Risk–Reward</div><div class="pos-val" style="color:var(--acc)" data-pos-rr>${r.rr}</div><div class="pos-sub">Net of estimated charges</div></div>
     </div>
+    <div class="pos-open" data-pos-open>${typeof posOpenRiskLine === 'function' ? posOpenRiskLine(r.validPlan ? r.loss : 0, capital) : ''}</div>
   </div>`;
 }
 function getVolumePressureSnapshot(sym){
@@ -5754,7 +5813,7 @@ function classifyTradeSetup({bias, price, e20, e50, e200, rsiV, macdD, volRatio,
 /* Simple Ready Gate: runs AFTER Fresh Entry Score.
    It does not duplicate scoring; it only blocks READY when non-negotiable trade rules fail. */
 const NIFTY_TREND_WHY = 'Nifty not in an uptrend (needs Nifty above its EMA50 and EMA20 above EMA50) - no fresh swing longs';
-function buildReadyGate({bias, setupInfo, rrNum, qScore, price, e20, e50, e200, rsiV, adxR, volBlend, dr, wr, r1, s1, r2, s2, priceLocation=null, C=[], H=[], L=[], resultsSoon=null, planSetupName='', regime=null, rs=null, sectorStr=null}){
+function buildReadyGate({bias, setupInfo, rrNum, qScore, price, e20, e50, e200, rsiV, adxR, volBlend, dr, wr, r1, s1, r2, s2, priceLocation=null, C=[], H=[], L=[], resultsSoon=null, planSetupName='', regime=null, rs=null, sectorStr=null, events=null}){
   const reasons=[];
   const add=(txt)=>{ if(txt && !reasons.includes(txt)) reasons.push(txt); };
   /* Pre-Breakout Watch and Momentum Continuation are watch-only: alerts, never a READY entry. */
@@ -5762,6 +5821,8 @@ function buildReadyGate({bias, setupInfo, rrNum, qScore, price, e20, e50, e200, 
   if(watchOnly.test(String(planSetupName || '')) || watchOnly.test(`${setupInfo?.setupDetail || ''} ${setupInfo?.label || ''}`)) add(`${/momentum/i.test(String(planSetupName || setupInfo?.setupDetail || '')) ? 'Momentum Continuation' : 'Pre-Breakout'} is watch-only — wait for an EMA20/EMA50 pullback or support bounce`);
   /* Same rule as the screener: no fresh swing entry with results today or within 5 trading days (gap risk). */
   if(resultsSoon) add(resultsSoon.date === istDateKey() ? `Results today (${resultsSoon.date})` : `Results in ${resultsSoon.tradingDaysUntil} trading day${resultsSoon.tradingDaysUntil===1?'':'s'} (${resultsSoon.date})`);
+  /* Bonus / split / rights / demerger ex-date within 10 trading days, or NSE ASM / GSM listing - the screener's check. */
+  (events?.reasons || []).forEach(add);
   const setupText = `${setupInfo?.setupDetail || ''} ${setupInfo?.label || ''} ${setupInfo?.simple || ''}`.toLowerCase();
   /* Which setup's own rules to check: the active plan's setup for longs (the entry/stop/target shown come
      from it), otherwise the classified setup. Matched by exact kind, so "Deep pullback near 50 EMA" no longer
@@ -6233,7 +6294,11 @@ async function tabOverview(sym) {
   if(newsBear >= 2) warnings.push({t:'News risk',d:`${newsBear} bearish news items loaded`,c:advLong});
   /* RS helps longs when the stock leads Nifty and helps shorts when it lags; only the opposite case is a warning. */
   if(relStrength && Number.isFinite(+relStrength.rs3m) && (bias === 'Bullish' || bias === 'Bearish')) warnings.push({t: relStrength.rs3m > 0 ? (bias === 'Bearish' ? 'Stronger than Nifty' : 'Relative strength') : (bias === 'Bearish' ? 'Weaker than Nifty' : 'Lagging Nifty'), d:`3M: stock ${relStrength.stock3m}% vs Nifty ${relStrength.nifty3m}% (RS ${relStrength.rs3m > 0 ? '+' : ''}${relStrength.rs3m}%)${Number.isFinite(+relStrength.rs6m) ? ` · 6M RS ${relStrength.rs6m > 0 ? '+' : ''}${relStrength.rs6m}%` : ''}`, c: (relStrength.rs3m > 0) === (bias !== 'Bearish') ? 'bull' : 'bear'});
+  /* Breakout with Volume is READY again at the user's request; its one-year backtest was 33% wins, -0.21R a trade. */
+  if(strategyPlan?.setupName === 'Breakout with Volume') warnings.unshift({t:'Breakout: half size', d:'Breakout with Volume won 33% of trades for -0.21R on average in the one-year backtest - trade half size, keep the stop.', c:'neutral'});
   if(bias === 'Bullish' && marketRegime && marketRegime.allowReady === false) warnings.unshift({t:`Market ${marketRegime.status}`, d: marketRegime.note || 'No fresh swing longs', c:'bear'});
+  (swingCtx?.events?.notes || []).forEach(t => warnings.unshift({t:'Dividend ex-date', d:t, c:'neutral'}));
+  (swingCtx?.events?.reasons || []).forEach(t => warnings.unshift({t: /surveillance/i.test(t) ? 'NSE surveillance' : 'Corporate action', d:t, c:'bear'}));
   if(resultsSoon) warnings.unshift({t:'Results soon',d:`Quarterly results ${resultsSoon.date === istDateKey() ? 'today' : `on ${resultsSoon.date} (${resultsSoon.tradingDaysUntil} trading day${resultsSoon.tradingDaysUntil===1?'':'s'})`} — gap risk, avoid a fresh swing entry`,c:'bear'});
   const warnSeen = new Set();
   warnings = warnings.filter(w => { const k = `${w.t}|${w.d}`; if(warnSeen.has(k)) return false; warnSeen.add(k); return true; });
@@ -6274,7 +6339,7 @@ async function tabOverview(sym) {
   else if(volBlend && volBlend < .75) addReject('Volume confirmation is weak', 1);
   /* News stays as a warning only. It should not automatically convert every setup into NO TRADE. */
 
-  const readyGate = buildReadyGate({bias, setupInfo, rrNum, qScore, price, e20, e50, e200, rsiV, adxR, volBlend, dr, wr, r1, s1, r2, s2, priceLocation:priceLocationForSetup, C, H, L, resultsSoon, planSetupName: strategyPlan?.isActive ? strategyPlan.setupName : '', regime: marketRegime, rs: relStrength, sectorStr: swingCtx?.sectorStrength || null});
+  const readyGate = buildReadyGate({bias, setupInfo, rrNum, qScore, price, e20, e50, e200, rsiV, adxR, volBlend, dr, wr, r1, s1, r2, s2, priceLocation:priceLocationForSetup, C, H, L, resultsSoon, planSetupName: strategyPlan?.isActive ? strategyPlan.setupName : '', regime: marketRegime, rs: relStrength, sectorStr: swingCtx?.sectorStrength || null, events: swingCtx?.events || null});
   readyGate.reasons.forEach(r => addReject(`Ready Gate: ${r}`, /sideways|no active strategy trigger|rr not available/i.test(r) ? 2 : 1));
   let setupInfoForDecision = readyGate.passed ? setupInfo : {
     ...setupInfo,
@@ -6343,7 +6408,7 @@ async function tabOverview(sym) {
     const q = SwingPlan.quickBounce({ C: d.C.slice(0, e + 1), H: d.H.slice(0, e + 1), L: d.L.slice(0, e + 1) });
     if(!q?.ok) return null;
     const niftyOk = marketRegime?.aboveSma200 !== false;
-    return { ...q, niftyOk, active: niftyOk && !resultsSoon };
+    return { ...q, niftyOk, active: niftyOk && !resultsSoon && !swingCtx?.events?.block };
   })();
   if(OVERVIEW_VERDICT[sym]) OVERVIEW_VERDICT[sym].quick = !!qbPlan?.active;
   const noActiveTradeText = bias === 'Sideways'
@@ -6417,6 +6482,9 @@ async function tabOverview(sym) {
      the trigger if it is above. The EMA / support level is the zone, not the fill - sizing from it understated
      the risk (e.g. stop 4 away sized as 2 away = 1.6x the chosen Risk %). */
   const plannedEntry = plannedOk ? (limitPlan ? limitPlan.price : rrFromPrice) : null;   /* a limit plan fills at the limit */
+  PLAN_LEVELS[sym] = limitPlan ? { entry: limitPlan.price, stop: limitPlan.stop, t1: limitPlan.target, label: 'Limit' }
+    : activeTradeAllowed ? { entry: price, stop: activeStopLoss, t1: activeTarget, label: 'Entry' }
+    : plannedOk ? { entry: plannedEntry, stop: +strategyPlan.stopLoss, t1: +strategyPlan.target1, label: 'Planned' } : null;
   const positionCalc = buildPositionSizeCalc(activeTradeAllowed
     ? {id:`poscalc_${sym}`, bias, price, target1:activeTarget, stopLoss:activeStopLoss, targetLabel:activeTargetLabel}
     : plannedOk
@@ -6442,8 +6510,9 @@ async function tabOverview(sym) {
     ${qbPlan ? `<div class="tp-limit-card tp-qb-card${qbPlan.active ? '' : ' paused'}">
       <div class="tp-limit-head"><span class="pl-tag ${qbPlan.active ? 'ready' : 'low'}">QUICK BOUNCE · RSI-2 ${qbPlan.rsi2}</span> ${qbPlan.active ? `Buy near <b>₹${fmt(qbPlan.close)}</b>` : 'Paused'}</div>
       <div class="tp-limit-sub">${qbPlan.active
-        ? `Short dip in an uptrend: close above its 50-day (${fmt(qbPlan.sma50)}) and 200-day (${fmt(qbPlan.sma200)}) averages, 2-day RSI ${qbPlan.rsi2} (under 10). Buy at the next open, stop ₹${fmt(qbPlan.stop)} (2.5 × ATR), sell at the first close above the 5-day average (₹${fmt(qbPlan.sma5)} today - it moves every day) or after 10 trading days. Separate from the swing plan below. Backtest: about 2 in 3 trades win, +0.3% a trade after costs, 3-4 days.`
+        ? `Short dip in an uptrend: close above its 50-day (${fmt(qbPlan.sma50)}) and 200-day (${fmt(qbPlan.sma200)}) averages, 2-day RSI ${qbPlan.rsi2} (under 10). Buy at the next open, stop ₹${fmt(qbPlan.stop)} (2.5 × ATR), sell at the first close above the 5-day average (₹${fmt(qbPlan.sma5)} today - it moves every day) or after 10 trading days. Separate from the swing plan below. Backtest: about 2 in 3 trades win, +0.3% a trade after costs, 3-4 days - but over 10 years with at most 5 positions at a time it lost money overall, so small size only.`
         : `RSI-2 is ${qbPlan.rsi2}, but the setup is paused: ${!qbPlan.niftyOk ? 'Nifty is below its 200-day average' : 'results are due within 5 trading days'}.`}</div>
+      ${qbPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup:'Quick Bounce', entry:qbPlan.close, stop:qbPlan.stop, t1: qbPlan.sma5 > qbPlan.close ? qbPlan.sma5 : null})})">📒 I took this trade</button>` : ''}
       ${qbPlan.active ? buildPositionSizeCalc({id:`poscalc_qb_${sym}`, bias:'Bullish', price:qbPlan.close, target1: qbPlan.sma5 > qbPlan.close ? qbPlan.sma5 : qbPlan.close + qbPlan.atr, stopLoss:qbPlan.stop, targetLabel:'5-day avg (est.)', note:'Sized from the Quick Bounce stop (2.5 × ATR). The exit is the first close above the 5-day average, so the gain shown is an estimate.'}) : ''}
     </div>` : ''}
     ${limitPlan ? `<div class="tp-limit-card">
@@ -6476,6 +6545,7 @@ async function tabOverview(sym) {
             <div class="tp-actions">
               <button type="button" class="tp-share-btn tp-alert-btn" onclick="openAlertPopup(${jsArg(sym)}, ${jsArg(isMCXSymbol(sym) ? {} : {limit:limitPlan ? limitPlan.price : null, entry:+strategyPlan?.entryPrice || null, sl:+stopLoss || null, t1:+target1 || null})})" title="Price alert for ${escHtml(name)}" aria-label="Set a price alert">🔔${ALERTS.some(a => a.sym === sym && !a.triggered) ? '<i class="tp-alert-dot"></i>' : ''}</button>
               <a class="tp-share-btn" href="${shareUrl}" target="_blank" rel="noopener" title="Share trade plan on WhatsApp" aria-label="Share trade plan on WhatsApp">💬</a>
+              ${!isMCXSymbol(sym) && bias === 'Bullish' && (activeTradeAllowed || plannedOk || limitPlan) ? `<button type="button" class="tp-share-btn" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup: strategyPlan?.setupName || '', entry: limitPlan ? limitPlan.price : activeTradeAllowed ? price : plannedEntry, stop: limitPlan ? limitPlan.stop : activeTradeAllowed ? activeStopLoss : +strategyPlan.stopLoss, t1: limitPlan ? limitPlan.target : activeTradeAllowed ? activeTarget : +strategyPlan.target1})})" title="I took this trade - add it to My trades (stop / target alerts)" aria-label="I took this trade">📒</button>` : ''}
             </div>
           </div>
           <div class="tp-title">${escHtml(name)}</div>
@@ -6551,7 +6621,7 @@ async function tabAnalysis(sym) {
   /* Market Pulse waits for India VIX, the NSE option chain and breadth (10-20 s on a cold start): show the bar and a
      spinner meanwhile instead of a blank page. */
   if (ANALYSIS_VIEW==='pulse' && live()) tc.innerHTML = btnBar + '<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div><div class="lt">Loading VIX, option chain and market breadth…</div></div>';
-  if      (ANALYSIS_VIEW==='pulse')      { const idea = indexIdeaHtml(await buildIndexOptionsIdea(sym)); if(!live() || CUR_SYM !== sym) return; inner = idea + await tabPulse(sym); }
+  if      (ANALYSIS_VIEW==='pulse')      { const ix = await buildIndexOptionsIdea(sym), idea = indexIdeaHtml(ix) + creditRuleHtml(ix); if(!live() || CUR_SYM !== sym) return; inner = idea + await tabPulse(sym); }
   else if (ANALYSIS_VIEW==='indicators') inner = tabTrend() + tabIndicators();
   else if (ANALYSIS_VIEW==='sr')         inner = tabSR();
   else if (ANALYSIS_VIEW==='decision')   inner = (await tabScore(sym)) + `<div class="td-merged-head">Validation checks</div>` + (await tabValidity(sym, {merged:true}));
@@ -6561,12 +6631,16 @@ async function tabAnalysis(sym) {
     if(!live()) return;
     /* v17 fix: do not rewrite tc.innerHTML after tabStrategy starts loading the option result.
        Rewriting detached #opt-result and left the visible options builder stuck on loading. */
-    tc.insertAdjacentHTML('afterbegin', btnBar);
+    /* Nifty: the user's credit-spread rule above the builder, filled in when the (cached) chain answers. */
+    const slot = sym === 'NSE:NIFTY' ? '<div data-rule-slot><div class="idea-card"><div class="idea-kicker">Your credit-spread rule · Nifty</div><div class="idea-foot">Checking the live option chain…</div></div></div>' : '';
+    tc.insertAdjacentHTML('afterbegin', btnBar + slot);
+    if(slot) buildIndexOptionsIdea(sym).then(ix => { const el = tc.querySelector('[data-rule-slot]'); if(el && live() && CUR_SYM === sym) el.outerHTML = creditRuleHtml(ix); }).catch(() => {});
     return;
   }
 
   if(!live() || CUR_SYM !== sym) return;
   tc.innerHTML = btnBar + inner;
+  if(typeof tdAfterRender === 'function') tdAfterRender('analysis:' + ANALYSIS_VIEW);
 }
 
 async function switchAnalysis(view) {
@@ -6884,6 +6958,7 @@ async function renderTab(tab){
     if(!live()) return;
     tc.innerHTML=html;
     if(tab==='overview' && isMCXSymbol(CUR_SYM) && MCX_IDEA[CUR_SYM]) mcxFillAsync(CUR_SYM);
+    if(typeof tdAfterRender === 'function') tdAfterRender(tab);
   }catch(e){ if(live()) tc.innerHTML=`<div class="eb"><strong>Error:</strong> ${escHtml(e.message)}</div>`; }
 }
 
@@ -7140,8 +7215,8 @@ function renderRecentStocks(){
   const now = Date.now();
   list.forEach(x => {
     const c = RECENT_PX[x.sym];
-    if(c && now - c.ts < 60000){ setSidebarQuote(document.getElementById(`q-${x.sym}`), fmt(c.d.price), c.d.pct); return; }
-    fetchQuickPrice(x.sym).then(d => { RECENT_PX[x.sym] = {d, ts:Date.now()}; setSidebarQuote(document.getElementById(`q-${x.sym}`), fmt(d.price), d.pct); }).catch(()=>{});
+    if(c && now - c.ts < 60000){ setSidebarQuote(document.getElementById(`q-${x.sym}`), fmt(c.d.price), c.d.pct, c.d.spark); return; }
+    fetchQuickPrice(x.sym).then(d => { RECENT_PX[x.sym] = {d, ts:Date.now()}; setSidebarQuote(document.getElementById(`q-${x.sym}`), fmt(d.price), d.pct, d.spark); }).catch(()=>{});
   });
 }
 document.addEventListener('DOMContentLoaded', () => setTimeout(renderRecentStocks, 300));
@@ -7223,7 +7298,7 @@ async function loadSidebarPrices(filterFn=null, retryOf=null){
            the rows in the middle of the list (Private Bank, PSU Bank, IT) used to time out and stay "--". */
         const d=await apiFetch(`/api/quickprice?sym=${encodeURIComponent(sym)}&_=${Date.now()}`, 40000);
         const el=document.getElementById(`q-${sym}`);
-        setSidebarQuote(el, fmt(d.price), d.pct);
+        setSidebarQuote(el, fmt(d.price), d.pct, d.spark);
         if(HIDE_INDEX_IF_QUOTE_FAIL.has(sym)) card.style.display='';
       }catch(e){
         failed.push(card);
@@ -7241,10 +7316,12 @@ async function loadSidebarPrices(filterFn=null, retryOf=null){
 
 /* ── MARKET STATUS ── */
 function setMarketStatus(){
-  const el=document.getElementById('mpill');if(!el)return;
+  const el=document.getElementById('mpill');if(!el)return;el.title='';
   const ist=new Date(Date.now()+(5.5*3600000));
   const h=ist.getUTCHours(),m=ist.getUTCMinutes(),day=ist.getUTCDay(),min=h*60+m;
   if(day===0||day===6){el.textContent='Closed (Weekend)';el.className='mpill closed';return;}
+  const hol = (MARKET_CAL?.holidays || []).find(h => h.date === ist.toISOString().slice(0,10));
+  if(hol){el.textContent='NSE Holiday';el.title=hol.name + (hol.special ? ' - special Muhurat session, check the NSE timing' : '') + '. MCX may still trade - check its holiday list.';el.className='mpill closed';return;}
   if(min>=9*60+15&&min<15*60+30){el.textContent='NSE Open';el.className='mpill open';return;}
   if(min>=9*60&&min<9*60+15){el.textContent='Pre-Open';el.className='mpill pre';return;}
   if(min>=9*60&&min<23*60){el.textContent='MCX Open';el.className='mpill open';return;}
@@ -7328,6 +7405,7 @@ function closeCompactPickers(){
 document.addEventListener('DOMContentLoaded',()=>{
   setupCompactPickers();
   setMarketStatus();
+  loadMarketCalendar();
   /* Throttle startup calls. Without this, sidebar + global breadth requests compete with the first stock load. */
   /* The visible list's prices go first; the heavy market context (global markets, 50-stock breadth, VIX
      history, sectors - about 110 Yahoo calls) starts once they are in, or after 12 s at most. Started together,
