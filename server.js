@@ -35,6 +35,17 @@ const PORT  = process.env.PORT || 3000;
     `index.html, swing-plan.js, sw.js and the css/ and js/ folders inside it, then redeploy.\n`);
   process.exit(1);
 })();
+/* Files uploaded through the GitHub web page land at the TOP of the repository (its file picker cannot keep
+   folders), while the page keeps loading the old copies in public/ - on 13 Nov 2026 the phone kept the old header
+   and pull-to-refresh after an "upload". List such loose copies; the page shows a warning while any exist. */
+const STRAY_PUBLIC_FILES = (() => {
+  const fs0 = require('fs'), p0 = require('path'), names = new Set();
+  const walk = d => { try { for (const e of fs0.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) walk(p0.join(d, e.name)); else names.add(e.name); } } catch {} };
+  walk(p0.join(__dirname, 'public'));
+  let top = []; try { top = fs0.readdirSync(__dirname).filter(f => names.has(f) && fs0.statSync(p0.join(__dirname, f)).isFile()); } catch {}
+  if (top.length) console.warn(`Deploy warning: ${top.length} page files are at the top of the repository instead of in public/ (${top.slice(0, 8).join(', ')}${top.length > 8 ? ' ...' : ''}). The app serves the copies in public/. Upload with upload-to-github.ps1.`);
+  return top;
+})();
 const SwingPlan = require('./public/swing-plan.js');
 const SETUP_KEY = { 'EMA20 Pullback':'emaPullback', 'EMA50 Deep Pullback':'ema50DeepPullback', 'Support Bounce':'supportBounce',
   'Pre-Breakout Watch':'preBreakoutWatch', 'Breakout with Volume':'breakoutVolume', 'Momentum Continuation':'momentumContinuation' };
@@ -5340,6 +5351,21 @@ const NIFTY50_STOCKS = [
 ];
 
 const GLOBAL_LAST_GOOD = {};
+/* FII / DII provisional cash-market figures from NSE (one call, cached 3 h; NSE publishes after the close). */
+let FII_DII_CACHE = null, FII_DII_INFLIGHT = null;
+function refreshFiiDii() {
+  if (FII_DII_INFLIGHT) return FII_DII_INFLIGHT;
+  FII_DII_INFLIGHT = withTimeout(nseOcGet('/api/fiidiiTradeReact'), 15000, 'NSE FII/DII').then(j => {
+    const rows = Array.isArray(j) ? j : [];
+    const pick = re => { const r = rows.find(x => re.test(String(x.category || ''))); return r ? { buy: +r.buyValue, sell: +r.sellValue, net: +r.netValue } : null; };
+    const fii = pick(/FII|FPI/i), dii = pick(/DII/i);
+    if (!fii && !dii) throw new Error('NSE FII/DII empty');
+    FII_DII_CACHE = { value: { date: nseDdMmmToKey(rows[0]?.date) || null, fii, dii }, ts: Date.now() };
+    return FII_DII_CACHE.value;
+  }).catch(e => { FII_DII_CACHE = { value: FII_DII_CACHE?.value || null, ts: Date.now() }; throw e; })
+    .finally(() => { FII_DII_INFLIGHT = null; });
+  return FII_DII_INFLIGHT;
+}
 async function apiGlobal(req,res){
   try {
     const { value: payload, cached } = await cacheWrap('global:all', TTL.global, async () => {
@@ -5364,6 +5390,16 @@ async function apiGlobal(req,res){
     { key:'brent',      ticker:'BZ=F',      label:'Brent Crude',     cat:'macro'  },
     { key:'usdInr',     ticker:'USDINR=X',  label:'USD/INR',         cat:'macro'  },
     { key:'usvix',      ticker:'^VIX',      label:'CBOE VIX',        cat:'macro'  },
+    /* US index FUTURES trade almost round the clock: during Indian hours the cash S&P / Nasdaq / Dow above are
+       the previous night's close, the futures are what the US is doing now - the overnight cue for Nifty. */
+    { key:'spFut',      ticker:'ES=F',      label:'S&P 500 futures', cat:'usfut'  },
+    { key:'nqFut',      ticker:'NQ=F',      label:'Nasdaq futures',  cat:'usfut'  },
+    /* Europe opens at 13:30 IST and often moves Nifty in the afternoon. */
+    { key:'dax',        ticker:'^GDAXI',    label:'DAX',             cat:'europe' },
+    { key:'ftse',       ticker:'^FTSE',     label:'FTSE 100',        cat:'europe' },
+    /* Gold / silver: the drivers of Gold Petal. */
+    { key:'gold',       ticker:'GC=F',      label:'COMEX Gold',      cat:'metal'  },
+    { key:'silver',     ticker:'SI=F',      label:'COMEX Silver',    cat:'metal'  },
   ];
 
     /* All requests are queued at once, India VIX first: the Yahoo queue runs 4 at a time, so the time
@@ -5378,7 +5414,7 @@ async function apiGlobal(req,res){
       if (GLOBAL_NSE[s.ticker]) {
         try {
           const r = (await nseAllIndices()).get(GLOBAL_NSE[s.ticker]);
-          if (r && +r.last > 0 && +r.previousClose > 0) return { liveRaw:+r.last, prevRaw:+r.previousClose, rawChg:+r.last - +r.previousClose, rawPct:(+r.last - +r.previousClose) / +r.previousClose * 100 };
+          if (r && +r.last > 0 && +r.previousClose > 0) return { liveRaw:+r.last, prevRaw:+r.previousClose, rawChg:+r.last - +r.previousClose, rawPct:(+r.last - +r.previousClose) / +r.previousClose * 100, marketTime: NSE_ALLIDX?.at || null };
         } catch {}
       }
       return safeFetch(() => getPriceAndChange(s.ticker), 1);
@@ -5392,17 +5428,29 @@ async function apiGlobal(req,res){
     const data = {};
     SYMBOLS.forEach((s, i) => {
       if (results[i].status === 'fulfilled' && results[i].value && Number.isFinite(results[i].value.liveRaw)) {
-        const { liveRaw, prevRaw, rawChg, rawPct } = results[i].value;
+        const { liveRaw, prevRaw, rawChg, rawPct, marketTime } = results[i].value;
         data[s.key] = {
           label:s.label, cat:s.cat, ticker:s.ticker,
           price:+liveRaw.toFixed(2), prev:+prevRaw.toFixed(2),
           chg:+rawChg.toFixed(2), pct:+rawPct.toFixed(2), isUp:rawPct>=0,
+          at: Number(marketTime) || null,   /* time of the last trade (unix s): the page shows Live / Closed */
         };
       } else {
         const reason = results[i].status === 'rejected' ? results[i].reason?.message : 'invalid price payload';
         data[s.key] = { label:s.label, cat:s.cat, ticker:s.ticker, error:true, reason };
       }
     });
+
+    /* Gold in rupees per gram, the Gold Petal proxy (COMEX gold x USD/INR x the MCX factor), and its change
+       including the rupee's move - the number a Gold Petal trader actually watches. */
+    if (data.gold && !data.gold.error && data.usdInr && !data.usdInr.error) {
+      const now = conv('MCX:GOLDPETAL', data.gold.price, data.usdInr.price), prev = conv('MCX:GOLDPETAL', data.gold.prev, data.usdInr.prev);
+      if (now > 0 && prev > 0) data.goldInr = { label:'Gold ₹/g (Gold Petal proxy)', cat:'metal', price:+now.toFixed(2), prev:+prev.toFixed(2), chg:+(now - prev).toFixed(2), pct:+((now / prev - 1) * 100).toFixed(2), isUp: now >= prev, at: data.gold.at };
+    }
+    /* FII / DII net cash buying (NSE, published each evening): served from a day cache, never blocks the page. */
+    if (!FII_DII_CACHE?.value && (!FII_DII_CACHE || Date.now() - FII_DII_CACHE.ts > 20 * 60e3)) await Promise.race([refreshFiiDii().catch(() => {}), new Promise(r => setTimeout(r, 4000))]);
+    else if (FII_DII_CACHE && Date.now() - FII_DII_CACHE.ts > (FII_DII_CACHE.value ? 3 * 3600e3 : 20 * 60e3)) refreshFiiDii().catch(() => {});
+    data.fiiDii = FII_DII_CACHE?.value || null;
 
     /* IV Percentile: % of trading days in past year where VIX was BELOW current VIX
        Formula: daysBelow / totalDays × 100
@@ -5546,7 +5594,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){send(res,{status:'ok',v:'1.0',time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,outbound:outboundStats()});}
+function apiHealth(req,res){send(res,{status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -6332,7 +6380,8 @@ async function handleRequest(req,res){
   if(pn==='/api/market-calendar') {
     const today = istDateKey();
     return send(res, { holidays: NSE_CAL.holidays, upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
-      goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today });
+      goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today,
+      deployWarning: STRAY_PUBLIC_FILES.length ? `${STRAY_PUBLIC_FILES.length} files (${STRAY_PUBLIC_FILES.slice(0, 4).join(', ')}${STRAY_PUBLIC_FILES.length > 4 ? ' ...' : ''}) are at the top of your GitHub repository instead of inside public/ - the web-page upload cannot keep folders, so the phone still gets the OLD page. Upload with upload-to-github.ps1.` : null });
   }
   if(pn==='/api/news')             return apiNews(req,res,ps);
   if(pn==='/api/vix')              return apiVix(req,res);

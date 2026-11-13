@@ -1,10 +1,13 @@
 /* ══════════════════════════════════════════════════════════════════════
    UI layer (no extra data calls): candle chart with the plan drawn on it, verdict line on top of the
-   Overview, auto-hiding header with a compact price strip on phones, swipe between tabs, pull to refresh,
-   READY / LIMIT chips in the lists, price-tick flash. Loaded after app.js; tdAfterRender(tab) is called by
+   Overview, READY / LIMIT chips in the lists, price-tick flash. Loaded after app.js; tdAfterRender(tab) is called by
    renderTab / tabAnalysis after they write the page.
 ══════════════════════════════════════════════════════════════════════ */
+/* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
+   latest upload. Bump it with every page change. */
+const TD_UI_VERSION = '13 Nov 2026 · 4';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
+document.addEventListener('DOMContentLoaded', () => { const el = document.createElement('div'); el.className = 'td-version'; el.textContent = 'Page version ' + TD_UI_VERSION; document.querySelector('.ip')?.appendChild(el); });
 
 /* ── Candle chart (TradingView Lightweight Charts, open source, loaded once from the CDN) ── */
 const LWC_URL = 'https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js';
@@ -118,67 +121,8 @@ function tdAfterRender(tab){
   refreshListChips();
 }
 
-/* ── Phones: header hides while scrolling down, comes back on the way up; the price card shrinks to a strip ── */
-(function autoHideHeader(){
-  let last = 0, scroller = null;
-  const pick = () => { const ml = document.querySelector('.ml'); if(!ml) return window; const oy = getComputedStyle(ml).overflowY; return /(auto|scroll)/.test(oy) ? ml : window; };
-  const y = () => scroller === window ? window.scrollY : scroller.scrollTop;
-  const onScroll = () => {
-    if(!TD_PHONE() || document.getElementById('j-modal')){ document.body.classList.remove('hdr-hidden'); return; }
-    const cur = y();
-    if(cur > 90 && cur > last + 6) document.body.classList.add('hdr-hidden');
-    else if(cur < last - 6 || cur < 40) document.body.classList.remove('hdr-hidden');
-    last = cur;
-  };
-  const bind = () => {
-    const hdr = document.querySelector('.hdr'); if(hdr) document.documentElement.style.setProperty('--td-hdr-h', hdr.offsetHeight + 'px');
-    if(scroller) (scroller === window ? window : scroller).removeEventListener('scroll', onScroll);
-    scroller = pick(); last = y(); (scroller === window ? window : scroller).addEventListener('scroll', onScroll, { passive: true });
-    if(!TD_PHONE()) document.body.classList.remove('hdr-hidden');
-  };
-  const start = () => { bind(); try{ window.matchMedia('(max-width:820px)').addEventListener('change', bind); }catch{} window.addEventListener('resize', () => { const hdr = document.querySelector('.hdr'); if(hdr && !document.body.classList.contains('hdr-hidden')) document.documentElement.style.setProperty('--td-hdr-h', hdr.offsetHeight + 'px'); }, { passive: true }); };
-  if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
-  /* A new page or menu always starts with the header visible. */
-  document.addEventListener('click', e => { if(e.target.closest('.nbtn, #tbar .tbt')) { document.body.classList.remove('hdr-hidden'); last = 0; } }, true);
-})();
-
-/* ── Phones: swipe left / right on the page to change tab; pull down at the top to refresh ── */
-(function touchNav(){
-  let x0 = null, y0 = null, t0 = 0, top0 = false, pulling = false;
-  const ind = () => { let el = document.getElementById('td-ptr'); if(!el){ el = document.createElement('div'); el.id = 'td-ptr'; el.textContent = '↻'; document.body.appendChild(el); } return el; };
-  const scrollerTop = () => { const ml = document.querySelector('.ml'); return ml && /(auto|scroll)/.test(getComputedStyle(ml).overflowY) ? ml.scrollTop : window.scrollY; };
-  const skip = el => !!el.closest('.td-chart-card, .analysis-bar, .scr-tabs-row, .j-table-wrap, .ft-table, table, input, select, textarea, .tnav, .tb, #j-modal, .idea-live, .mkt-strip');
-  document.addEventListener('touchstart', e => {
-    if(!TD_PHONE() || e.touches.length !== 1 || skip(e.target)) { x0 = null; return; }
-    x0 = e.touches[0].clientX; y0 = e.touches[0].clientY; t0 = Date.now(); top0 = scrollerTop() <= 0; pulling = false;
-  }, { passive: true });
-  document.addEventListener('touchmove', e => {
-    if(x0 == null || !top0) return;
-    const dy = e.touches[0].clientY - y0, dx = Math.abs(e.touches[0].clientX - x0);
-    if(dy > 20 && dy > dx * 1.5){ pulling = true; const el = ind(); el.style.opacity = Math.min(1, dy / 90); el.style.transform = `translate(-50%, ${Math.min(70, dy * 0.6)}px) rotate(${dy * 2}deg)`; }
-  }, { passive: true });
-  document.addEventListener('touchend', e => {
-    if(x0 == null) return;
-    const t = e.changedTouches[0], dx = t.clientX - x0, dy = t.clientY - y0, fast = Date.now() - t0 < 600;
-    const el = document.getElementById('td-ptr'); if(el){ el.style.opacity = 0; el.style.transform = 'translate(-50%, 0)'; }
-    if(pulling && dy > 90) { tdPullRefresh(); }
-    else if(fast && Math.abs(dx) > 70 && Math.abs(dy) < 45) {
-      const bar = document.getElementById('tbar');
-      if(bar && getComputedStyle(bar).display !== 'none' && document.getElementById('tc')?.contains(e.target)){
-        const btns = [...bar.querySelectorAll('.tbt')].filter(b => getComputedStyle(b).display !== 'none');
-        const i = btns.findIndex(b => b.classList.contains('active')), j = i + (dx < 0 ? 1 : -1);
-        if(i >= 0 && btns[j]) btns[j].click();
-      }
-    }
-    x0 = null; pulling = false;
-  }, { passive: true });
-})();
-function tdPullRefresh(){
-  const rb = document.getElementById('rb'), ih = document.getElementById('ih');
-  if(document.body.classList.contains('screener-mode') && typeof tabScreener === 'function') return tabScreener(CURRENT_SCREENER_MODE);
-  if(rb && ih && getComputedStyle(ih).display !== 'none') return rb.click();
-  if(typeof loadViewPrices === 'function' && typeof activeViewId === 'function') loadViewPrices(activeViewId()).catch(() => {});
-}
+/* (13 Nov 2026: the auto-hiding header, sticky price strip, swipe-to-change-tab and pull-to-refresh were removed at
+   the user's request - the header stays fixed and pages change only from the tab bar.) */
 
 /* ── READY / LIMIT / QUICK chips on the stock list, BUY / WAIT on MCX, PASS on Nifty - from data already on this
    device (the last screener scan, the last plans), so no extra calls. ── */

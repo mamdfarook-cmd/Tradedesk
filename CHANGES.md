@@ -655,3 +655,22 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
   - The server answers at once with the last headlines (up to 6 hours old) while it fetches new ones in the background. Before, every 15 minutes the tab waited for the full source fan-out, up to about 13 s.
   - A refresh that finds nothing keeps the earlier headlines.
   - Each source wait was cut from 6.5 s to 5 s.
+
+## Why the phone kept the old page (13 Nov 2026, late)
+
+- **Cause:** the last upload went through GitHub's "choose your files" box, which cannot keep folders. Every file landed at the top of the repository: the new `server.js` went live (it belongs at the top), but `public/js/td-ui.js`, `public/css/td-v27-assist.css` and `public/js/app.js` stayed the OLD versions. Re-adding the home-screen icon could not help.
+- **The server now warns about a bad upload.** It lists page files sitting at the top of the repository, in the Render log and in `/api/health`, and the app shows a red "Upload problem" box on every device until it is fixed.
+- **Page version label** at the bottom of the instrument list ("Page version 13 Nov 2026 · 3"), so a phone can be checked against the latest upload.
+- **No browser pull-down-to-reload on phones** (`overscroll-behavior-y: none`).
+
+## Global snapshot (14 Nov 2026)
+
+- **US index futures (S&P 500, Nasdaq).** During Indian hours the cash S&P / Nasdaq / Dow are the previous night's close; the futures trade almost round the clock and show what the US is doing now.
+  - The Global Bias now uses the futures, falling back to the cash indices when the futures are missing.
+  - DAX counts in the bias only while Europe is trading (from 13:30 IST).
+- **Europe:** DAX and FTSE 100.
+- **Gold:** COMEX gold and silver, plus gold in ₹ per gram (the Gold Petal proxy). The ₹ figure includes the rupee's move: on 13 Nov gold was −0.07% in dollars but +0.14% in rupees.
+- **FII / DII** net cash buying from NSE (one call, cached 3 hours), for example FII +₹5,737 Cr, DII −₹2,254 Cr.
+- **Every card shows "● Live"** (traded in the last 30 minutes) or **"Closed · time / date"** in IST, so a last-night close no longer looks like a live move.
+- **Grouped sections:** India · US now · US cash close / Asia / Europe · Gold / currency / rates · Oil.
+- About 6 more data calls per refresh, only while the snapshot is open. Page version 13 Nov 2026 · 4.

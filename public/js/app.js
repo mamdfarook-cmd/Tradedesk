@@ -285,7 +285,15 @@ function isIndiaMarketHoursNow(){
 let MARKET_CAL = null;
 const NSE_HOL_CLIENT = new Set();
 async function loadMarketCalendar(){
-  try{ const d = await apiFetch('/api/market-calendar', 15000); MARKET_CAL = d; (d.holidays || []).forEach(h => h.date && NSE_HOL_CLIENT.add(h.date)); setMarketStatus(); }catch{}
+  try{
+    const d = await apiFetch('/api/market-calendar', 15000); MARKET_CAL = d; (d.holidays || []).forEach(h => h.date && NSE_HOL_CLIENT.add(h.date)); setMarketStatus();
+    /* Bad upload (files outside public/): say so on every device, or the user keeps seeing the old page. */
+    if(d.deployWarning && !document.getElementById('td-deploy-warn')){
+      const el = document.createElement('div'); el.id = 'td-deploy-warn';
+      el.innerHTML = `<b>⚠ Upload problem:</b> ${escHtml(d.deployWarning)} <button type="button" onclick="this.parentElement.remove()" aria-label="Close">✕</button>`;
+      document.body.appendChild(el);
+    }
+  }catch{}
 }
 function goldPetalExpiryNow(){ return SwingPlan.goldPetalExpiry(istDateKey(), k => NSE_HOL_CLIENT.has(k)); }
 function getScreenerUiTtlMs(){
@@ -452,11 +460,15 @@ function computeGlobalBiasVerdict(d) {
     else if (pct <= -0.25) { score -= weight; reasons.push(`${name} ${pct.toFixed(2)}%`); }
   };
 
-  add('S&P', d.sp500, 1);
-  add('Nasdaq', d.nasdaq, 1);
-  add('Dow', d.dow, 0.5);
+  /* US: the futures when they are live (round the clock) - during Indian hours the cash indices are last night's
+     close, already priced in at the open. Europe counts only while it is trading (from 13:30 IST). */
+  const liveNow = it => !!it && !it.error && Number(it.at) > 0 && Date.now() / 1000 - Number(it.at) < 1800;
+  if(globalPct(d.spFut) != null) add('S&P fut', d.spFut, 1); else add('S&P', d.sp500, 1);
+  if(globalPct(d.nqFut) != null) add('Nasdaq fut', d.nqFut, 1); else add('Nasdaq', d.nasdaq, 1);
+  if(globalPct(d.spFut) == null) add('Dow', d.dow, 0.5);
   add('Nikkei', d.nikkei, 1);
   add('Hang Seng', d.hangseng, 1);
+  if(liveNow(d.dax)) add('DAX', d.dax, 0.5);
 
   const vix = d.vix?.price != null ? Number(d.vix.price) : null;
   const vixPct = globalPct(d.vix);
@@ -2789,7 +2801,7 @@ async function tabIndexOwnPulse(sym){
   <div class="aib" style="font-size:.72rem">Nifty 50 breadth is not used here - it describes Nifty, not ${name}. It is shown on the Nifty 50 page.</div>`;
 }
 
-async function tabNews(sym){
+async function tabNews(sym, opts = {}){
   /* Use full company name from CLIENT_NAMES for better stock-specific news */
   const rawName = document.getElementById('ihn').textContent;
   const stockSym = sym.replace(/NSE:|MCX:|CRYPTO:/g,'');
@@ -2801,7 +2813,9 @@ async function tabNews(sym){
 
   let result=AI_CACHE[key];
   if(!result){
-    document.getElementById('tc').innerHTML=`<div class="ls" style="display:flex;min-height:120px"><div class="sp"></div><div class="lt">Searching latest <strong>${nameHtml}</strong> news via layered news engine…</div></div>`;
+    /* From the News & Sector tab the caller already shows a spinner under its News / Sector buttons: replacing the
+       whole page here hid those buttons until the news arrived, so the tab felt stuck. */
+    if(!opts.keepBar) document.getElementById('tc').innerHTML=`<div class="ls" style="display:flex;min-height:120px"><div class="sp"></div><div class="lt">Searching latest <strong>${nameHtml}</strong> news via layered news engine…</div></div>`;
     try{result=await fetchLiveNews(sym,name);AI_CACHE[key]=result;}
     catch{result={items:[]};}
   }
@@ -6690,7 +6704,7 @@ async function tabMarketInfo() {
        markets, 50-stock breadth, VIX history), ~15 s on a cold start. That keeps loading in the background. */
     if      (miView==='sectors')     { preloadMarketContext().catch(()=>{}); await tabSectors(); if(!live()) return; tc.innerHTML = btnBar + tc.innerHTML; return; }
     else if (miView==='calendar')    { await tabCalendar();    if(!live()) return; tc.innerHTML = btnBar + tc.innerHTML; return; }
-    else if (miView==='news')        { inner = await tabNews(CUR_SYM || 'NSE:NIFTY'); }
+    else if (miView==='news')        { if(live()) tc.innerHTML = btnBar + '<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div><div class="lt">Loading news…</div></div>'; inner = await tabNews(CUR_SYM || 'NSE:NIFTY', { keepBar: true }); }
     else if (miView==='alerts')      { inner = tabAlerts(); }
     if(!live()) return;
     tc.innerHTML = btnBar + inner;
