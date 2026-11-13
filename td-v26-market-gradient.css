@@ -1,0 +1,81 @@
+/* v26 "Market Gradient" theme - the last style layer (wins over the earlier ones, which use !important too).
+   Deep-navy gradient base; cards tint GREEN when the signal is bullish and RED when bearish, from the classes the
+   app already sets (bull/bear, qualified/reject, buy/sell, q-up/q-dn). CSS only: no fonts, images or scripts.
+   To go back to the grey theme, delete this block (v25 below it in the file takes over again). */
+:root{
+  --bg:#070b14; --bgp:#0a1120; --bgc:#101a2c; --bgi:rgba(255,255,255,.04);
+  --brd:rgba(148,163,184,.15); --brdl:rgba(148,163,184,.30); --ctl:#4b5a70;
+  --acc:#34d399; --acc2:#2dd4bf; --acc-fg:#04130c; --acc-soft:rgba(52,211,153,.13);
+  --bull:#22c55e; --bullb:rgba(34,197,94,.14); --sbull:#4ade80;
+  --bear:#fb5c74; --bearb:rgba(244,63,94,.14); --sbear:#fb923c;
+  --neu:#fbbf24; --neub:rgba(251,191,36,.13);
+  --tx:#eaf0f8; --tx2:#b4c0d0; --tx3:#9aa6b9;
+  --g-card:linear-gradient(160deg,#13203a 0%,#0e1728 55%,#0b1322 100%);
+  --g-bull:linear-gradient(135deg,rgba(34,197,94,.20) 0%,rgba(34,197,94,.06) 45%,rgba(16,26,44,0) 100%);
+  --g-bear:linear-gradient(135deg,rgba(244,63,94,.20) 0%,rgba(244,63,94,.06) 45%,rgba(16,26,44,0) 100%);
+  --g-neu:linear-gradient(135deg,rgba(251,191,36,.14) 0%,rgba(251,191,36,.04) 45%,rgba(16,26,44,0) 100%);
+  --g-active:linear-gradient(135deg,#22c55e 0%,#14b8a6 100%);
+  --td-surface:var(--g-card); --td-panel-bg:var(--g-card); --td-card-bg:var(--g-card);
+}
+
+/* Base: navy gradient with a faint green glow (top left) and red glow (bottom right) */
+html,body{background:#070b14!important}
+body{background:
+  radial-gradient(1100px 600px at -5% -10%,rgba(34,197,94,.10),transparent 60%),
+  radial-gradient(900px 600px at 105% 110%,rgba(244,63,94,.08),transparent 60%),
+  linear-gradient(160deg,#0b1424 0%,#070b14 50%,#0a0f1c 100%)!important;background-attachment:fixed!important}
+.ap,.tc{background:transparent!important}
+
+/* Header and navigation */
+.hdr{background:linear-gradient(90deg,rgba(10,22,38,.96),rgba(8,14,26,.96))!important;border-bottom:1px solid rgba(52,211,153,.18)!important}
+.nbtn.active,.anl-btn.active{background:var(--g-active)!important;border-color:transparent!important;color:#04130c!important;font-weight:700!important}
+.nbtn:hover,.anl-btn:hover{border-color:rgba(52,211,153,.5)!important;color:var(--tx)!important}
+.tbt.active{background:linear-gradient(180deg,rgba(52,211,153,.12),rgba(16,26,44,0))!important;box-shadow:inset 0 -2px 0 var(--acc)!important;color:var(--tx)!important}
+.mpill.open{background:var(--bullb)!important;color:var(--bull)!important;border-color:rgba(34,197,94,.5)!important}
+.mpill.closed{background:var(--bearb)!important;color:#fda4af!important;border-color:rgba(244,63,94,.4)!important}
+
+/* Instrument list: rows, tinted by today's move */
+.ip{background:linear-gradient(180deg,#0b1424,#080d18)!important;border-right:1px solid var(--brd)!important}
+.ic:has(.q-up){background:linear-gradient(90deg,transparent 45%,rgba(34,197,94,.09))!important}
+.ic:has(.q-dn){background:linear-gradient(90deg,transparent 45%,rgba(244,63,94,.09))!important}
+.ic:hover{background:rgba(255,255,255,.04)!important}
+.ic.active{background:linear-gradient(90deg,rgba(52,211,153,.16),rgba(52,211,153,.03))!important;box-shadow:inset 3px 0 0 var(--acc)!important}
+.q-up{color:var(--bull)!important}.q-dn{color:var(--bear)!important}
+
+/* Instrument header tinted by today's move */
+.ih{background:linear-gradient(90deg,rgba(13,22,38,.95),rgba(9,15,27,.95))!important}
+.ih:has(.ihc.up){background:linear-gradient(90deg,rgba(34,197,94,.13),rgba(13,22,38,.95) 55%)!important;border-bottom-color:rgba(34,197,94,.25)!important}
+.ih:has(.ihc.down){background:linear-gradient(90deg,rgba(244,63,94,.13),rgba(13,22,38,.95) 55%)!important;border-bottom-color:rgba(244,63,94,.25)!important}
+
+/* Cards: navy gradient */
+.ov-box,.sc,.strat-hero,.pulse-hero,.candle-card,.lvl-card,.gauge-card,.alert-panel,.scr-header,.scr-card,
+.trade-plan-card,.tp-section,.tp-decision,.pos-calc,.cg-gauge,.market-verdict,.ni,.coin-card,.earn-row,.cal-event,
+.alert-item,.sugg-item,.td-more,.idea-card,.ov-card,.scr-sum-card,.email-section,.td-mtab{
+  background:var(--g-card)!important;border:1px solid var(--brd)!important;box-shadow:0 8px 22px rgba(0,0,0,.28)!important}
+.cp-item,.ov-item,.sbi,.scd,.scr-met,.tp-item,.tp-mini,.tp-detail,.tp-qrow,.lvl-row,.pat-item,.sr,.coin-stat,.zone-row,.idea-grid>div,.strat-cell{
+  background:var(--bgi)!important;border:1px solid rgba(148,163,184,.08)!important;box-shadow:none!important}
+
+/* Green = bullish, red = bearish, amber = wait: gradient tint + coloured edge */
+.tp-decision.qualified,.trade-plan-card.bull,.idea-card:has(.idea-view.bull),.scr-card:has(.bdg.bull){background:var(--g-bull),var(--g-card)!important;border-color:rgba(34,197,94,.38)!important;box-shadow:inset 3px 0 0 var(--bull),0 8px 22px rgba(0,0,0,.28)!important}
+.tp-decision.reject,.trade-plan-card.bear,.idea-card:has(.idea-view.bear){background:var(--g-bear),var(--g-card)!important;border-color:rgba(244,63,94,.38)!important;box-shadow:inset 3px 0 0 var(--bear),0 8px 22px rgba(0,0,0,.28)!important}
+.tp-decision.conditional,.idea-card:has(.idea-view.neutral){background:var(--g-neu),var(--g-card)!important;border-color:rgba(251,191,36,.30)!important;box-shadow:inset 3px 0 0 var(--neu),0 8px 22px rgba(0,0,0,.28)!important}
+.tp-detail.bull,.tp-score-mini.bull,.zone-row.buy,.tp-score-head.bull{background:var(--g-bull)!important;border-color:rgba(34,197,94,.30)!important}
+.tp-detail.bear,.tp-score-mini.bear,.zone-row.sell,.tp-score-head.bear{background:var(--g-bear)!important;border-color:rgba(244,63,94,.30)!important}
+.tp-detail.neutral,.tp-score-mini.neutral{background:var(--g-neu)!important;border-color:rgba(251,191,36,.22)!important}
+.tp-score-mini.bull{border-top:2px solid var(--bull)!important}.tp-score-mini.bear{border-top:2px solid var(--bear)!important}.tp-score-mini.neutral{border-top:2px solid var(--neu)!important}
+.td-mtab:has(.td-mtab-chg[style*="--bull"]){background:var(--g-bull),var(--g-card)!important;border-color:rgba(34,197,94,.28)!important}
+.td-mtab:has(.td-mtab-chg[style*="--bear"]){background:var(--g-bear),var(--g-card)!important;border-color:rgba(244,63,94,.28)!important}
+
+/* Badges: gradient fills */
+.bdg.bull,.bdg.strong-bull{background:linear-gradient(135deg,rgba(34,197,94,.30),rgba(34,197,94,.10))!important;color:#4ade80!important;border-color:rgba(34,197,94,.45)!important}
+.bdg.bear,.bdg.strong-bear{background:linear-gradient(135deg,rgba(244,63,94,.30),rgba(244,63,94,.10))!important;color:#fda4af!important;border-color:rgba(244,63,94,.45)!important}
+.bdg.neutral,.bdg.na{background:linear-gradient(135deg,rgba(251,191,36,.24),rgba(251,191,36,.08))!important;color:#fcd34d!important;border-color:rgba(251,191,36,.38)!important}
+.idea-view.bull{background:linear-gradient(135deg,rgba(34,197,94,.32),rgba(34,197,94,.10))!important;color:#4ade80!important;border-color:rgba(34,197,94,.5)!important}
+.idea-view.bear{background:linear-gradient(135deg,rgba(244,63,94,.32),rgba(244,63,94,.10))!important;color:#fda4af!important;border-color:rgba(244,63,94,.5)!important}
+
+/* Buttons */
+#sgo,.rb:hover,.idea-btn:hover{background:var(--g-active)!important;color:#04130c!important;border-color:transparent!important}
+.selector-toggle{background:linear-gradient(135deg,rgba(52,211,153,.12),rgba(16,26,44,.9))!important;border-color:rgba(52,211,153,.35)!important}
+.tp-decision{border-top-width:1px!important}
+.idea-card{border-left-width:1px!important}
+.aib{border-left-color:var(--acc)!important}

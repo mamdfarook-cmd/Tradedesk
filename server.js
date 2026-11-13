@@ -772,7 +772,7 @@ function pruneNewsCache() {
   const now = Date.now();
   for (const k of Object.keys(NEWS_CACHE)) {
     const v = NEWS_CACHE[k];
-    if (now - v.ts > Math.max(v.ttl || NEWS_TTL, NEWS_TTL) * 2) delete NEWS_CACHE[k];
+    if (now - v.ts > NEWS_STALE_MAX) delete NEWS_CACHE[k];   /* kept 6 h: served at once while a refresh runs */
   }
   const keys = Object.keys(NEWS_CACHE);
   if (keys.length > NEWS_CACHE_MAX) {
@@ -783,6 +783,7 @@ function pruneNewsCache() {
 }
 setInterval(pruneNewsCache, 10 * 60 * 1000);
 const EMPTY_NEWS_TTL = 5 * 60 * 1000;
+const NEWS_STALE_MAX = 6 * 3600 * 1000;
 
 /* Use Render/hosting env vars only. Do not hardcode API keys in GitHub. */
 const MARKETAUX_KEY = process.env.MARKETAUX_KEY || '';
@@ -1284,7 +1285,7 @@ async function gatherAllNews(ctx) {
   let sourceUsed = 'none';
 
   /* Layer 1: RSS/Google RSS/Pulse in parallel. Fast and free. */
-  const rss = await withTimeoutFallback(fetchNewsRSSLayer(ctx), 6500, { items:[], health:[{source:'RSS layer', ok:false, error:'timeout'}] });
+  const rss = await withTimeoutFallback(fetchNewsRSSLayer(ctx), 5000, { items:[], health:[{source:'RSS layer', ok:false, error:'timeout'}] });
   health.push(...(rss.health || []));
   let items = finalizeNews(rss.items || [], ctx);
   if (items.length >= 4) sourceUsed = 'rss';
@@ -1292,10 +1293,10 @@ async function gatherAllNews(ctx) {
   /* Layer 2: only if RSS is weak. Run all backups in parallel so one slow API cannot freeze the tab. */
   if (items.length < 4) {
     const [gdelt, marketaux, newsdata, finnhub] = await Promise.all([
-      withTimeoutFallback(fetchNewsGdelt(ctx), 6500, []),
-      withTimeoutFallback(fetchNewsMarketauxLayer(ctx), 6500, []),
-      withTimeoutFallback(fetchNewsDataLayer(ctx), 6500, []),
-      (ctx.isMacro || ctx.isIndex) ? withTimeoutFallback(fetchFinnhubLayer(ctx), 6500, []) : Promise.resolve([]),
+      withTimeoutFallback(fetchNewsGdelt(ctx), 5000, []),
+      withTimeoutFallback(fetchNewsMarketauxLayer(ctx), 5000, []),
+      withTimeoutFallback(fetchNewsDataLayer(ctx), 5000, []),
+      (ctx.isMacro || ctx.isIndex) ? withTimeoutFallback(fetchFinnhubLayer(ctx), 5000, []) : Promise.resolve([]),
     ]);
     health.push({source:'GDELT', ok:true, found:gdelt.length});
     health.push({source:'Marketaux', ok:true, found:marketaux.length});
@@ -1317,35 +1318,42 @@ async function apiNews(req, res, p) {
   const ctx  = buildNewsContext(name, sym);
   const key  = `news_v13_${sym}_${newsHash(name)}`;
 
-  if (NEWS_CACHE[key] && Date.now() - NEWS_CACHE[key].ts < (NEWS_CACHE[key].ttl || NEWS_TTL)) {
-    return send(res, { ...NEWS_CACHE[key].payload, cached: true, updatedAt: new Date(NEWS_CACHE[key].ts).toISOString() });
+  const hit = NEWS_CACHE[key];
+  if (hit && Date.now() - hit.ts < (hit.ttl || NEWS_TTL)) {
+    return send(res, { ...hit.payload, cached: true, updatedAt: new Date(hit.ts).toISOString() });
   }
-
-  try {
-    /* Concurrent requests for the same key share one fetch instead of each fanning out. */
+  /* Concurrent requests for the same key share one fetch instead of each fanning out. */
+  const refresh = () => {
     let pending = NEWS_INFLIGHT.get(key);
     if (!pending) {
-      pending = gatherAllNews(ctx).finally(() => NEWS_INFLIGHT.delete(key));
+      pending = gatherAllNews(ctx).then(all => {
+        const fresh24 = finalizeNews(filterNewsAge(all.items, 24), ctx, { maxAgeHrs: 24 });
+        const week = finalizeNews(filterNewsAge(all.items, 168), ctx, { maxAgeHrs: 168 });
+        const useFresh = fresh24.length >= 2;
+        const finalItems = useFresh ? fresh24 : week;
+        const sourceUsed = all.sourceUsed === 'none' && finalItems.length ? 'mixed' : all.sourceUsed;
+        const payload = { items: finalItems, sym, source: sourceUsed, window: useFresh ? '24h' : '7d fallback', summary: newsSummary(finalItems, all.health, sourceUsed) };
+        payload.summary.window = payload.window;
+        const ttl = finalItems.length ? (ctx.isMacro ? NEWS_SOURCE_TTL.gold : NEWS_TTL) : EMPTY_NEWS_TTL;
+        /* An empty answer never replaces earlier headlines (a feed blip used to blank the News tab). */
+        if (finalItems.length || !NEWS_CACHE[key]?.payload?.items?.length) NEWS_CACHE[key] = { payload, ts: Date.now(), ttl };
+        else NEWS_CACHE[key].ts = Date.now() - (NEWS_CACHE[key].ttl || NEWS_TTL) + EMPTY_NEWS_TTL;
+        pruneNewsCache();
+        return NEWS_CACHE[key];
+      }).finally(() => NEWS_INFLIGHT.delete(key));
       NEWS_INFLIGHT.set(key, pending);
     }
-    const all = await pending;
-    const fresh24 = finalizeNews(filterNewsAge(all.items, 24), ctx, { maxAgeHrs: 24 });
-    const week = finalizeNews(filterNewsAge(all.items, 168), ctx, { maxAgeHrs: 168 });
-    const useFresh = fresh24.length >= 2;
-    const finalItems = useFresh ? fresh24 : week;
-    const sourceUsed = all.sourceUsed === 'none' && finalItems.length ? 'mixed' : all.sourceUsed;
-    const payload = {
-      items: finalItems,
-      sym,
-      source: sourceUsed,
-      window: useFresh ? '24h' : '7d fallback',
-      summary: newsSummary(finalItems, all.health, sourceUsed)
-    };
-    payload.summary.window = payload.window;
-    const ttl = finalItems.length ? (ctx.isMacro ? NEWS_SOURCE_TTL.gold : NEWS_TTL) : EMPTY_NEWS_TTL;
-    NEWS_CACHE[key] = { payload, ts: Date.now(), ttl };
-    pruneNewsCache();
-    send(res, { ...payload, updatedAt: new Date().toISOString() });
+    return pending;
+  };
+  /* Older than its TTL but under 6 h: answer at once with it and refresh in the background. The News tab used to
+     wait for the full fan-out (up to ~13 s) every 15 minutes, which felt like the page was stuck. */
+  if (hit && Date.now() - hit.ts < NEWS_STALE_MAX) {
+    refresh().catch(e => console.warn('News refresh:', e.message));
+    return send(res, { ...hit.payload, cached: true, refreshing: true, updatedAt: new Date(hit.ts).toISOString() });
+  }
+  try {
+    const c = await refresh();
+    send(res, { ...c.payload, updatedAt: new Date(c.ts).toISOString() });
   } catch(e) {
     console.error('News engine error:', e.message);
     const fallback = NEWS_CACHE[key]?.payload || { items:[], sym, source:'cache', window:'error', summary:newsSummary([], [], 'cache') };

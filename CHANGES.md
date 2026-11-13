@@ -645,3 +645,13 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - The rule and Gold plan on live data, and the journal from add to close to stats.
 - Phone swipe, header and dialog.
 - Full page sweep on phone and desktop widths.
+
+## Phone fixes after the first use (13 Nov 2026, night)
+
+- **Header fixed again.** The auto-hiding header and the sticky price strip are removed. The top menu stays in place, and the Indicators / S&R sub-menu sticks under it while scrolling, as before. The last line of every tab scrolls clear of the bottom menu (checked on all 18 pages at phone size).
+- **Gestures removed.** Pull-to-refresh and swipe-to-change-tab are gone: both could fire while scrolling and reload the page. Pages change only from the tab bar.
+- **News tab no longer feels stuck:**
+  - The News / Sector buttons stay on screen while news loads; before, the whole tab was replaced by a spinner.
+  - The server answers at once with the last headlines (up to 6 hours old) while it fetches new ones in the background. Before, every 15 minutes the tab waited for the full source fan-out, up to about 13 s.
+  - A refresh that finds nothing keeps the earlier headlines.
+  - Each source wait was cut from 6.5 s to 5 s.

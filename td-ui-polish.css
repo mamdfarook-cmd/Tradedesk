@@ -1,0 +1,26 @@
+  /* Children of the scrolling content column must never shrink: sub-tab bars were squeezed to 23px and clipped. */
+  #tc > *{flex-shrink:0}
+  /* Sidebar rows (desktop list and phone picker): name + meta on the left, price over change on the right. */
+  #sidebar .ic:not(.mkt-row) .icp{max-width:none!important;overflow:visible!important;text-overflow:clip!important;white-space:nowrap!important}
+  #sidebar .ic:not(.mkt-row) .icp .q-px,#sidebar .ic:not(.mkt-row) .icp .q-chg{display:block;margin-left:0}
+  @media(max-width:820px){ #sidebar .ic:not(.mkt-row) .icp .q-px{font-size:.72rem} #sidebar .ic:not(.mkt-row) .icp .q-chg{font-size:.66rem} }
+  #sidebar .ic:not(.mkt-row){display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;grid-template-rows:auto auto;column-gap:10px!important;row-gap:2px;align-items:center!important}
+  #sidebar .ic:not(.mkt-row) .icn{grid-column:1;grid-row:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+  #sidebar .ic:not(.mkt-row) .ics{grid-column:1;grid-row:2;margin:0!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #sidebar .ic:not(.mkt-row) .icp{grid-column:2;grid-row:1 / span 2;margin:0!important;text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:1px}
+  .icp .q-px{color:#e8eef8;font-weight:800}
+  .icp .q-chg{font-size:.72rem;font-weight:800;color:var(--tx3)}
+  .icp .q-up{color:var(--bull)!important}
+  .icp .q-dn{color:var(--bear)!important}
+  /* Placeholder plan values ("Wait", "No active trade") are neutral, not buy-green or alarm-red. */
+  .tp-item.is-wait .tp-val{color:var(--tx3)!important}
+  .tp-item.plan-stop .tp-val{color:var(--bear)!important}
+  .tp-item.plan-target .tp-val{color:var(--bull)!important}
+  .tp-item.plan-price .tp-val{color:#e8eef8!important}
+  .cpb-val{color:#e8eef8!important}
+  /* Phone: three screener modes on one row, Refresh wraps under them when space runs out. */
+  @media(max-width:480px){
+    .scr-tabs-row{flex-wrap:wrap!important;gap:6px!important}
+    .scr-tabs-row button{padding:6px 10px!important;font-size:.74rem!important;white-space:nowrap}
+    .scr-ctx-text{font-size:.7rem}
+  }
