@@ -674,3 +674,9 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **Every card shows "● Live"** (traded in the last 30 minutes) or **"Closed · time / date"** in IST, so a last-night close no longer looks like a live move.
 - **Grouped sections:** India · US now · US cash close / Asia / Europe · Gold / currency / rates · Oil.
 - About 6 more data calls per refresh, only while the snapshot is open. Page version 13 Nov 2026 · 4.
+
+## Calmer upload note (14 Nov 2026)
+
+- **The red "Upload problem" box was misleading once the page was current.** GitHub's upload page never deletes files, so the 28 loose copies left by the first web upload stayed after a correct upload, and the box kept saying the phone had the old page.
+- It is now a quiet **Housekeeping** note at the bottom of the Markets page, with a Hide button. It says the loose copies are unused, and that `upload-to-github.ps1` deletes them.
+- The page version label moved from the instrument lists to the bottom of the Markets page ("Page version 14 Nov 2026 · 5").

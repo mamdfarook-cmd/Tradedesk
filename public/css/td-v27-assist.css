@@ -80,9 +80,9 @@
 @keyframes tdShimmer{0%{background-position:-120px 0}100%{background-position:120px 0}}
 .ic .icp:not(:has(span)){color:transparent!important;min-width:64px;min-height:14px;border-radius:6px;background:linear-gradient(90deg,rgba(255,255,255,.05) 0,rgba(255,255,255,.12) 50%,rgba(255,255,255,.05) 100%);background-size:240px 100%;animation:tdShimmer 1.2s linear infinite}
 
-/* Upload-problem banner and page version */
-#td-deploy-warn{position:fixed;left:10px;right:10px;bottom:calc(70px + env(safe-area-inset-bottom));z-index:6000;background:#3b0d14;border:1px solid var(--bear);color:#ffd5dc;border-radius:12px;padding:10px 36px 10px 12px;font-size:.78rem;line-height:1.4;box-shadow:0 10px 30px rgba(0,0,0,.5)}
-#td-deploy-warn button{position:absolute;top:6px;right:8px;background:none;border:none;color:inherit;font-size:1rem;cursor:pointer}
+/* Markets page footer: housekeeping note and page version */
+.td-stray-note{margin-top:12px;border:1px solid var(--brd);border-radius:12px;padding:10px 12px;font-size:.74rem;line-height:1.45;color:var(--tx2);background:rgba(255,255,255,.02)}
+.td-stray-note .idea-btn{margin-top:8px}
 .td-version{font-size:.66rem;color:var(--tx3);text-align:center;padding:10px 0 4px;opacity:.8}
 /* No browser pull-down-to-reload on phones (the page refreshed itself while scrolling up). */
 @media(max-width:820px){html,body{overscroll-behavior-y:none}}

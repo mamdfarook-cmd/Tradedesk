@@ -287,13 +287,18 @@ const NSE_HOL_CLIENT = new Set();
 async function loadMarketCalendar(){
   try{
     const d = await apiFetch('/api/market-calendar', 15000); MARKET_CAL = d; (d.holidays || []).forEach(h => h.date && NSE_HOL_CLIENT.add(h.date)); setMarketStatus();
-    /* Bad upload (files outside public/): say so on every device, or the user keeps seeing the old page. */
-    if(d.deployWarning && !document.getElementById('td-deploy-warn')){
-      const el = document.createElement('div'); el.id = 'td-deploy-warn';
-      el.innerHTML = `<b>⚠ Upload problem:</b> ${escHtml(d.deployWarning)} <button type="button" onclick="this.parentElement.remove()" aria-label="Close">✕</button>`;
-      document.body.appendChild(el);
-    }
+    /* Loose copies of page files in the repository: shown only as a quiet note on the Markets page (deployNoteHtml). */
   }catch{}
+}
+/* Markets page footer: the page version (to check a phone against the latest upload) and, when the repository
+   still holds loose copies of page files from a web-page upload, a housekeeping note that can be hidden. */
+function deployNoteHtml(){
+  const v = typeof TD_UI_VERSION === 'string' ? `<div class="td-version">Page version ${escHtml(TD_UI_VERSION)}</div>` : '';
+  const st = MARKET_CAL?.strayFiles, sig = st ? 'td_hide_stray_' + st.count : '';
+  let hidden = false; try{ hidden = !!sig && localStorage.getItem(sig) === '1'; }catch{}
+  if(!st || hidden) return v;
+  return `<div class="td-stray-note" id="td-stray-note"><b>Housekeeping (no action needed for the app):</b> ${st.count} old copies of app files (${escHtml(st.sample.join(', '))} …) sit at the top of your GitHub repository, left over from an earlier web-page upload. The app does not use them and is up to date. To clean them up, run <b>upload-to-github.ps1</b> once - it deletes them.
+    <button type="button" class="idea-btn ghost" onclick="try{localStorage.setItem('${sig}','1')}catch{};document.getElementById('td-stray-note')?.remove()">Hide</button></div>${v}`;
 }
 function goldPetalExpiryNow(){ return SwingPlan.goldPetalExpiry(istDateKey(), k => NSE_HOL_CLIENT.has(k)); }
 function getScreenerUiTtlMs(){

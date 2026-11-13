@@ -5,9 +5,9 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '13 Nov 2026 · 4';
+const TD_UI_VERSION = '14 Nov 2026 · 5';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
-document.addEventListener('DOMContentLoaded', () => { const el = document.createElement('div'); el.className = 'td-version'; el.textContent = 'Page version ' + TD_UI_VERSION; document.querySelector('.ip')?.appendChild(el); });
+
 
 /* ── Candle chart (TradingView Lightweight Charts, open source, loaded once from the CDN) ── */
 const LWC_URL = 'https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js';

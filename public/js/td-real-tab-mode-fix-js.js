@@ -130,6 +130,7 @@
       </div>
       <div class="td-market-note">Price alerts: open a stock and tap 🔔 next to the WhatsApp button.</div>
       ${typeof dataPanelHtml === 'function' ? dataPanelHtml() : ''}
+      ${typeof deployNoteHtml === 'function' ? deployNoteHtml() : ''}
     </div>`;
   };
 

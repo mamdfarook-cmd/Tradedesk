@@ -43,7 +43,7 @@ const STRAY_PUBLIC_FILES = (() => {
   const walk = d => { try { for (const e of fs0.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) walk(p0.join(d, e.name)); else names.add(e.name); } } catch {} };
   walk(p0.join(__dirname, 'public'));
   let top = []; try { top = fs0.readdirSync(__dirname).filter(f => names.has(f) && fs0.statSync(p0.join(__dirname, f)).isFile()); } catch {}
-  if (top.length) console.warn(`Deploy warning: ${top.length} page files are at the top of the repository instead of in public/ (${top.slice(0, 8).join(', ')}${top.length > 8 ? ' ...' : ''}). The app serves the copies in public/. Upload with upload-to-github.ps1.`);
+  if (top.length) console.warn(`Housekeeping: ${top.length} loose copies of page files at the top of the repository (${top.slice(0, 8).join(', ')}${top.length > 8 ? ' ...' : ''}) - not used; the app serves public/. Remove them with upload-to-github.ps1.`);
   return top;
 })();
 const SwingPlan = require('./public/swing-plan.js');
@@ -6381,7 +6381,9 @@ async function handleRequest(req,res){
     const today = istDateKey();
     return send(res, { holidays: NSE_CAL.holidays, upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
       goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today,
-      deployWarning: STRAY_PUBLIC_FILES.length ? `${STRAY_PUBLIC_FILES.length} files (${STRAY_PUBLIC_FILES.slice(0, 4).join(', ')}${STRAY_PUBLIC_FILES.length > 4 ? ' ...' : ''}) are at the top of your GitHub repository instead of inside public/ - the web-page upload cannot keep folders, so the phone still gets the OLD page. Upload with upload-to-github.ps1.` : null });
+      /* Loose copies are unused leftovers once public/ is current (the page version label shows that): a quiet
+         housekeeping note, not an error. GitHub's upload page never deletes files, so they stay until removed. */
+      strayFiles: STRAY_PUBLIC_FILES.length ? { count: STRAY_PUBLIC_FILES.length, sample: STRAY_PUBLIC_FILES.slice(0, 4) } : null });
   }
   if(pn==='/api/news')             return apiNews(req,res,ps);
   if(pn==='/api/vix')              return apiVix(req,res);
