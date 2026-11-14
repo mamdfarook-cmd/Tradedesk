@@ -680,3 +680,58 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **The red "Upload problem" box was misleading once the page was current.** GitHub's upload page never deletes files, so the 28 loose copies left by the first web upload stayed after a correct upload, and the box kept saying the phone had the old page.
 - It is now a quiet **Housekeeping** note at the bottom of the Markets page, with a Hide button. It says the loose copies are unused, and that `upload-to-github.ps1` deletes them.
 - The page version label moved from the instrument lists to the bottom of the Markets page ("Page version 14 Nov 2026 · 5").
+
+## NSE moved to www.nseindia.in (14 Nov 2026)
+
+- **What broke:** NSE moved its website from www.nseindia.com to **www.nseindia.in**, and every old address answers "301 moved". The app did not follow it, so everything read from NSE failed:
+  - option chain: premiums fell back to estimates
+  - index values: back to Yahoo
+  - results dates
+  - holidays, corporate actions, ASM / GSM
+  - FII / DII
+- **Now:**
+  - The NSE address is a setting (default www.nseindia.in, override with `NSE_WWW`).
+  - When NSE answers with a redirect to another www.nseindia.* address, the app switches to it and retries, so a future move fixes itself. Tested starting from the old address: it switched by itself and all five feeds loaded.
+  - NSE's file archive (nsearchives.nseindia.com) did not move.
+
+## Gold Petal sells + full recheck (14 Nov 2026)
+
+- **Gold Petal SELL (small size)** when all 3 drivers point down: dollar index above its 50-day EMA, US 10-year yield above its 50-day EMA, USD/INR below its 50-day EMA. This was the user's choice.
+  - Backtest for that case: 12 sells in 10 years, 58% wins, +0.04R a trade. The card says so.
+  - Otherwise a downtrend is still AVOID.
+  - The journal, zones and the 09:05 / 17:00 plan follow the same rule.
+- **Independent code review of every change since 8 Nov, then fixes:**
+  - **READY alerts sized from the pullback zone instead of the fill.** The plan's entry for EMA20 / EMA50 / support setups is the zone level, so the alert's quantity overstated the risk (e.g. price 102, zone 100, stop 98: 500 shares instead of 250). Alerts now size from the current price and show the zone separately. Breakout with Volume is now half size in the quantity too, not only in the text.
+  - **The Gold Petal buy-level alert could almost never fire.** The plan is rebuilt every 30 minutes, and at the dip level it says "buy now", so its entry equalled the price. The day's planned level is now remembered, and the alert fires when price reaches it (once a day, and not if it is already below the stop).
+  - **Stop / target alerts on a trade left open could repeat after 4 days.** Trade alert markers are now kept 60 days.
+  - **An empty or odd NSE corporate-action answer could wipe the list for 20 hours.** It is now rejected and the last list kept. NSE text is also stripped of `<>&"` before it reaches the page.
+  - **NSE index values on a busy NSE queue:** wait 25 s instead of 12 s, pause 2 minutes instead of 5 after a failure, and the calendar refresh starts 90 s after boot.
+  - **Small fixes:**
+    - The morning brief survives a bad capital value.
+    - Telegram text is cut before escaping, so an `&amp;` is never split.
+    - The NSE address check accepts only https www.nseindia.com / .in / .co.in / .org.
+    - The Gold card heading no longer says "buy-only" above a SELL.
+- **Checked:**
+  - 28 API endpoints, every page on phone and desktop (19 of 19 each), Screener vs Overview 24 of 24.
+  - All scheduled alerts with a simulated clock, and both fixes with direct tests.
+  - The NSE feeds after the move to www.nseindia.in.
+  - Page version 14 Nov 2026 · 6.
+- **Known, accepted:**
+  - The server's Gold plan builds its live candle and levels slightly differently from the page, so a level can differ by a few rupees.
+  - Gold plans are also sent on NSE holidays (MCX's holiday list is not loaded).
+  - Telegram links the last private chat that messaged the bot.
+
+## Every tab and sub-tab checked (14 Nov 2026, evening)
+
+- **44 tabs and sub-tabs** loaded with no error, blank page or NaN:
+  - stocks HDFCBANK and LGEINDIA: Overview, Indicators, S&R, Strategy, Decision, News, Sector;
+  - Nifty, Bank Nifty and Nifty IT: Market Pulse, Indicators, S&R, Option Builder, News, Sectors;
+  - Gold Petal and Natural Gas: Overview, Indicators, S&R, News;
+  - Markets: snapshot, Sectors, Calendar, News, Alerts.
+- **Numbers recomputed independently** with textbook formulas on the same data (HDFCBANK), all identical:
+  - RSI 73.4; EMA 20 / 50 / 200; MACD and signal; ADX with +DI / −DI; Bollinger bands;
+  - pivot; 7 / 14 / 21-day and 52-week highs and lows.
+- **Price data:** the 28 Oct candle matched NSE's official file.
+- **Tabs agree:** Decision score = Overview score; Strategy says WAIT when the Overview does; Sector maps HDFC Bank to Banking / Nifty Private Bank; News is about the right company.
+- **Fixed, wrong information on Strategy cards:** a conditional card whose zone is far from today's price measured its exit plan from today's price. Example: "buy near EMA20 747.52" but "move SL to your entry 804.00 · T1 0.96R". Cards more than 5% from their zone now say "If filled at 747.52: … T1 (7.36R) … move SL to 747.52". Cards at the zone (the active trade) are unchanged.
+- Page version 14 Nov 2026 · 7.

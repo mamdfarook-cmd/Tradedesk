@@ -332,6 +332,10 @@
     const res = [sr.r1, sr.r2, sr.r3].map(Number).filter(v => v > 0).sort((a, b) => a - b);
     const sup = [sr.s1, sr.s2, sr.s3].map(Number).filter(v => v > 0).sort((a, b) => b - a);
     const buyOnly = BUY_ONLY_MCX.has(sym);
+    /* Gold sells only when all 3 drivers point down (dollar up, US yield up, rupee stronger) - the one sell case the
+       backtest did not lose on: 12 trades in 10 years, 58% wins, +0.04R. Shown as small size (user's choice). */
+    const goldSellOk = buyOnly && !!opts.drivers && opts.drivers.known === 3 && opts.drivers.count === 0;
+    let smallSize = false;
     let side = 'WAIT', entry = null, sl = null, t1 = null, t2 = null, action = '', why = '';
     if (up) {
       side = 'BUY';
@@ -342,10 +346,10 @@
       sl = calcAtrStopLoss({ side: 'long', price: entry, structuralStop: Math.min(e20, sup.find(v => v < entry) || e20) - 0.5 * atr, atr });
       t1 = res.find(v => v > entry + atr) || entry + 2 * atr; t2 = res.find(v => v > t1 + 0.5 * atr) || t1 + atr * 1.5;
       why = `Uptrend: price above EMA50 ${fmt(e50)} and EMA20 above EMA50.`;
-    } else if (down && buyOnly) {
+    } else if (down && buyOnly && !goldSellOk) {
       side = 'AVOID';
       action = `No new buys. If you hold a long, exit it - or at the latest on a daily close below your stop`;
-      why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold is traded buy-only here (the backtest found no edge in selling it), so a downtrend means stay out until price is back above EMA50 with EMA20 above it.`;
+      why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold sells only when all 3 drivers point down (the backtest found no edge in selling otherwise), so stay out until price is back above EMA50 with EMA20 above it.`;
     } else if (down) {
       side = 'SELL';
       const extended = e20 - price > 1.5 * atr;
@@ -355,6 +359,7 @@
       sl = calcAtrStopLoss({ side: 'short', price: entry, structuralStop: Math.max(e20, res.find(v => v > entry) || e20) + 0.5 * atr, atr });
       t1 = sup.find(v => v < entry - atr) || entry - 2 * atr; t2 = sup.find(v => v < t1 - 0.5 * atr) || t1 - atr * 1.5;
       why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50.`;
+      if (buyOnly) { smallSize = true; why += ` All 3 drivers point down (dollar index, US 10-year yield, rupee) - the only case gold is sold here. Backtest: 12 sells in 10 years, 58% wins, about break-even (+0.04R a trade): small size only.`; }
     } else {
       why = `No trend: price ${price > e50 ? 'above' : 'below'} EMA50 ${fmt(e50)} but EMA20 ${e20 > e50 ? 'above' : 'below'} it. ${buyOnly ? 'Wait for the uptrend (price and EMA20 above EMA50) before buying.' : 'Trade only from the range edges - see the buy / sell zones below.'}`;
     }
@@ -372,7 +377,7 @@
     if (side === 'BUY' && buyOnly && opts.drivers && opts.drivers.known >= 2) {
       if (opts.drivers.count < 2) { driverBlock = true; action = `Wait: only ${opts.drivers.count} of 3 drivers support gold (${opts.drivers.text}) - buy when 2 of 3 agree`; }
     }
-    return { sym, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, buyOnly, driverBlock };
+    return { sym, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, buyOnly, driverBlock, smallSize };
   }
   /* Gold drivers as tested: dollar index below its 50-day EMA, US 10-year yield below its 50-day EMA, USD/INR
      above its 50-day EMA - each supports a rise in INR gold. count = how many of the 3 agree. */

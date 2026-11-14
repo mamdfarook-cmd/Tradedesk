@@ -311,7 +311,7 @@ function rawGet(targetUrl, extraHdrs = {}, body = null, method = 'GET') {
       const stream = enc==='gzip' ? res.pipe(zlib.createGunzip())
         : enc==='deflate' ? res.pipe(zlib.createInflate()) : res;
       stream.on('data', c => chunks.push(c));
-      stream.on('end', () => done(resolve, { status: res.statusCode, body: Buffer.concat(chunks).toString('utf8') }));
+      stream.on('end', () => done(resolve, { status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
       stream.on('error', er => done(reject, er));
       /* Errors/aborts on the raw response are not forwarded through pipe(), so listen on it directly. */
       if (stream !== res) res.on('error', er => done(reject, er));
@@ -325,6 +325,19 @@ function rawGet(targetUrl, extraHdrs = {}, body = null, method = 'GET') {
   });
 }
 
+/* NSE's website address. On 14 Nov 2026 NSE moved www.nseindia.com to www.nseindia.in (every old URL answers 301),
+   which stopped the option chain, index values, results / holiday / corporate-action lists and FII / DII. The
+   address is a variable: when NSE answers with a redirect to another www.nseindia.* host, the app switches to it
+   (nseFollowMove) and retries, so a future move does not break it again. NSE_WWW in the environment overrides it. */
+let NSE_WWW = String(process.env.NSE_WWW || 'https://www.nseindia.in').replace(/\/$/, '');
+function nseFollowMove(r) {
+  if (!r || ![301, 302, 307, 308].includes(r.status)) return false;
+  let loc; try { loc = new URL(r.headers?.location || '', NSE_WWW); } catch { return false; }
+  if (!/^www\.nseindia\.(com|in|co\.in|org)$/i.test(loc.hostname) || loc.protocol !== 'https:' || loc.origin === NSE_WWW) return false;
+  console.warn(`NSE moved: ${NSE_WWW} -> ${loc.origin}`);
+  NSE_WWW = loc.origin;
+  return true;
+}
 /* Minimal GET that also returns response headers (used for the NSE cookie warm-up). */
 function getWithHeaders(targetUrl, extraHdrs = {}) {
   const host = new URL(targetUrl).hostname;
@@ -622,7 +635,7 @@ async function nseAllIndices() {
   if (Date.now() < NSE_ALLIDX_DOWN_UNTIL) throw new Error('NSE indices paused after a failure');
   if (NSE_ALLIDX_INFLIGHT) return NSE_ALLIDX_INFLIGHT;
   NSE_ALLIDX_INFLIGHT = (async () => {
-    const j = await withTimeout(nseOcGet('/api/allIndices'), 12000, 'NSE allIndices');
+    const j = await withTimeout(nseOcGet('/api/allIndices'), 25000, 'NSE allIndices');   /* waits behind other NSE calls in the queue */
     const map = new Map((j.data || []).map(r => [String(r.index || '').toUpperCase(), r]));
     if (!map.size) throw new Error('NSE allIndices empty');
     /* "09-Nov-2026 15:30" (IST) -> unix s: the time of the values, used by the sectors' stale-quote check. */
@@ -630,7 +643,7 @@ async function nseAllIndices() {
     const at = m ? Math.round(Date.parse(`${m[3]}-${NSE_MON[m[2]]}-${m[1]}T${m[4]}:${m[5]}:00+05:30`) / 1000) : Math.round(Date.now() / 1000);
     NSE_ALLIDX = { map, ts: Date.now(), at };
     return map;
-  })().catch(e => { NSE_ALLIDX_DOWN_UNTIL = Date.now() + 5 * 60e3; throw e; })
+  })().catch(e => { NSE_ALLIDX_DOWN_UNTIL = Date.now() + 2 * 60e3; throw e; })
     .finally(() => { NSE_ALLIDX_INFLIGHT = null; });
   return NSE_ALLIDX_INFLIGHT;
 }
@@ -1139,7 +1152,7 @@ async function fetchNewsRSSLayer(ctx) {
     { url:'https://www.zeebiz.com/market-news.xml', src:'Zee Business Markets', layer:'rss' },
     { url:'https://pulse.zerodha.com/feed.php', src:'Zerodha Pulse', layer:'rss' },
     { url:'https://www.bseindia.com/data/xml/notices.xml', src:'BSE Notices', layer:'rss', timeout:3200 },
-    { url:'https://www.nseindia.com/rss/announcements.xml', src:'NSE Announcements', layer:'rss', timeout:3200 },
+    { url:'https://www.nseindia.in/rss/announcements.xml', src:'NSE Announcements', layer:'rss', timeout:3200 },   /* NSE moved from .com on 14 Nov 2026 */
   ];
   const googleQueries = ctx.commodity ? COMMODITY_NEWS[ctx.commodity].google : ctx.isGold
     ? ['gold price India MCX COMEX DXY Federal Reserve', 'MCX gold USD INR rupee gold']
@@ -4174,13 +4187,15 @@ async function loadResultsCalendar() {
   };
   let ok = false, source = 'manual list only', error = null;
   try {
-    const u = `https://www.nseindia.com/api/event-calendar?index=equities&from_date=${nseDateParam(Date.now() - 3 * 86400000)}&to_date=${nseDateParam(Date.now() + 12 * 86400000)}`;
-    const hdr = { Accept:'application/json', Referer:'https://www.nseindia.com/companies-listing/corporate-filings-event-calendar', Origin:'https://www.nseindia.com' };
+    const evPath = `/api/event-calendar?index=equities&from_date=${nseDateParam(Date.now() - 3 * 86400000)}&to_date=${nseDateParam(Date.now() + 12 * 86400000)}`;
+    const mk = () => ({ u: NSE_WWW + evPath, hdr: { Accept:'application/json', Referer: NSE_WWW + '/companies-listing/corporate-filings-event-calendar', Origin: NSE_WWW } });
+    let { u, hdr } = mk();
     /* 15 s: the time includes the wait in the NSE queue (one request at a time, 2 s apart). */
     let r = await withTimeout(get(u, hdr), 15000, 'NSE event calendar');
+    if (nseFollowMove(r)) { ({ u, hdr } = mk()); r = await withTimeout(get(u, hdr), 15000, 'NSE event calendar (new address)'); }
     if (r.status === 401 || r.status === 403) {
       /* Some hosts need NSE session cookies: take them from the event-calendar page and retry once. */
-      const page = await withTimeout(getWithHeaders('https://www.nseindia.com/companies-listing/corporate-filings-event-calendar', { Accept:'text/html' }), 15000, 'NSE cookie warm-up');
+      const page = await withTimeout(getWithHeaders(NSE_WWW + '/companies-listing/corporate-filings-event-calendar', { Accept:'text/html' }), 15000, 'NSE cookie warm-up');
       const cookie = (page.headers['set-cookie'] || []).map(c => String(c).split(';')[0]).join('; ');
       if (cookie) r = await withTimeout(get(u, { ...hdr, Cookie: cookie }), 15000, 'NSE event calendar (cookie)');
     }
@@ -4654,11 +4669,14 @@ async function refreshNseCalendar(force = false) {
     } catch (e) { console.warn('NSE holidays:', e.message); }
     if (stale('corp')) try {
       const j = await withTimeout(nseOcGet(`/api/corporates-corporateActions?index=equities&from_date=${nseDateParamS(Date.now() - 2 * 86400e3)}&to_date=${nseDateParamS(Date.now() + 30 * 86400e3)}`), 15000, 'NSE corporate actions');
+      const rows = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : null;
+      if (!rows) throw new Error('unexpected NSE corporate-action answer');
+      if (!rows.length && Object.keys(NSE_CAL.corp || {}).length) throw new Error('NSE returned no corporate actions - keeping the last list');
       const corp = {};
-      for (const r of (Array.isArray(j) ? j : j.data || [])) {
+      for (const r of rows) {
         const date = nseDdMmmToKey(r.exDate), sym = String(r.symbol || '').toUpperCase();
         if (!date || !sym || (r.series && r.series !== 'EQ')) continue;
-        (corp[sym] = corp[sym] || []).push({ date, subject: String(r.subject || '').replace(/\s+/g, ' ').trim(), kind: corpKind(r.subject) });
+        (corp[sym] = corp[sym] || []).push({ date, subject: String(r.subject || '').replace(/[<>&"]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140), kind: corpKind(r.subject) });
       }
       NSE_CAL.corp = corp; NSE_CAL.ts.corp = Date.now(); changed = true;
     } catch (e) { console.warn('NSE corporate actions:', e.message); }
@@ -4674,7 +4692,7 @@ async function refreshNseCalendar(force = false) {
   })().finally(() => { NSE_CAL_INFLIGHT = null; });
   return NSE_CAL_INFLIGHT;
 }
-setTimeout(() => refreshNseCalendar().catch(() => {}), 20 * 1000);
+setTimeout(() => refreshNseCalendar().catch(() => {}), 90 * 1000);   /* after the start-up rush on the NSE queue */
 setInterval(() => refreshNseCalendar().catch(() => {}), 60 * 60 * 1000);   /* each part refetches only when 20 h old */
 const STOCK_EVENT_BLOCK_DAYS = 10;   /* the longest swing hold */
 /* Bonus / split / rights / demerger with an ex-date in the next 10 trading days, or an ASM / GSM listing, blocks a
@@ -4964,22 +4982,25 @@ const OC_SYMBOLS = { 'NSE:NIFTY':'NIFTY', 'NSE:BANKNIFTY':'BANKNIFTY', 'NSE:FINN
 let NSE_OC_COOKIE = null;
 async function nseOptionCookie(force = false) {
   if (!force && NSE_OC_COOKIE && Date.now() - NSE_OC_COOKIE.ts < 10 * 60 * 1000) return NSE_OC_COOKIE.v;
-  const page = await withTimeout(getWithHeaders('https://www.nseindia.com/option-chain', { Accept:'text/html' }), 15000, 'NSE option-chain cookie');
+  let page = await withTimeout(getWithHeaders(NSE_WWW + '/option-chain', { Accept:'text/html' }), 15000, 'NSE option-chain cookie');
+  if (nseFollowMove(page)) page = await withTimeout(getWithHeaders(NSE_WWW + '/option-chain', { Accept:'text/html' }), 15000, 'NSE option-chain cookie');
   const v = (page.headers['set-cookie'] || []).map(c => String(c).split(';')[0]).join('; ');
   if (!v) throw new Error('NSE gave no session cookie');
   NSE_OC_COOKIE = { v, ts: Date.now() };
   return v;
 }
 async function nseOcGet(path) {
-  const hdr = c => ({ Accept:'application/json', Referer:'https://www.nseindia.com/option-chain', Cookie:c });
+  const hdr = c => ({ Accept:'application/json', Referer: NSE_WWW + '/option-chain', Cookie:c });
   let r;
-  try { r = await withTimeout(get('https://www.nseindia.com' + path, hdr(await nseOptionCookie())), 15000, 'NSE option chain'); }
+  try { r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie())), 15000, 'NSE option chain'); }
   catch (e) {
     /* NSE resets the connection when it sees bursts: one retry with a fresh session after a short pause. */
     await new Promise(res => setTimeout(res, 1500));
-    r = await withTimeout(get('https://www.nseindia.com' + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (retry)');
+    r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (retry)');
   }
-  if (r.status === 401 || r.status === 403) r = await withTimeout(get('https://www.nseindia.com' + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (new cookie)');
+  /* NSE moved to another address: new session there, then the same request again. */
+  if (nseFollowMove(r)) r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (new address)');
+  if (r.status === 401 || r.status === 403) r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (new cookie)');
   if (r.status !== 200) throw new Error('NSE HTTP ' + r.status);
   return JSON.parse(r.body);
 }
@@ -5970,16 +5991,21 @@ async function serverAlertTick() {
    quantity for the user's capital and risk %). ── */
 const SCAN_TIMES_IST = [9 * 60 + 25, 11 * 60 + 30, 13 * 60 + 30, 15 * 60 + 15];
 const SCAN_SUMMARY_SLOTS = new Set([9 * 60 + 25, 15 * 60 + 15]);
-function sizingLine(entry, stop) {
+function sizingLine(entry, stop, sizeFactor = 1) {
   const num = k => { try { return +JSON.parse(USER_STORE.keys[k]?.v || 'null'); } catch { return NaN; } };
   const cap = num('td_pos_capital'), rp = num('td_pos_risk_pct');
   if (!(cap > 0) || !(rp > 0) || !(entry > stop)) return '';
-  const qty = Math.floor(cap * rp / 100 / (entry - stop));
-  return qty > 0 ? ` · qty ${qty} (risk ${rp}% of ${inr(cap, 0)})` : ' · stop too wide for your risk %';
+  const qty = Math.floor(cap * rp / 100 * sizeFactor / (entry - stop));
+  return qty > 0 ? ` · qty ${qty} (risk ${+(rp * sizeFactor).toFixed(2)}% of ${inr(cap, 0)}${sizeFactor < 1 ? ', half size' : ''})` : ' · stop too wide for your risk %';
 }
 function scanSignals(data) {
   const out = [];
-  for (const x of data.picks || []) { const pl = x.plan || {}; out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy})${x.pickedSetup === 'Breakout with Volume' ? ' · half size' : ''}: entry ${inr(pl.entry ?? x.price)} · stop ${inr(pl.stop)} · target ${inr(pl.target)}${sizingLine(pl.entry ?? x.price, pl.stop)}` }); }
+  /* READY buys at the current price (the plan's entry is the pullback ZONE, e.g. EMA20 - sizing from it overstated the
+     quantity, the mistake the Overview's calculator avoids). Breakout with Volume is half size, in the quantity too. */
+  for (const x of data.picks || []) {
+    const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
+    out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · target ${inr(pl.target)}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+  }
   for (const x of (data.watchlist || []).filter(x => x.limitReady && x.limitEntry)) out.push({ id: `limit|${x.sym}`, text: `Ready on limit ${x.sym}: buy limit ${inr(x.limitEntry.price)} · stop ${inr(x.limitEntry.stop)} · target ${inr(x.limitEntry.target)}${sizingLine(x.limitEntry.price, x.limitEntry.stop)}` });
   for (const x of (data.quickBounce || []).slice(0, 6)) out.push({ id: `quick|${x.sym}`, text: `Quick bounce ${x.sym} (small size): buy next open ~${inr(x.price)} · stop ${inr(x.stop)} · sell on a close above ${inr(x.sma5)}` });
   return out;
@@ -6045,7 +6071,8 @@ const tgEsc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</
 async function sendTelegram(payload) {
   const chatId = USER_STORE.telegram?.chatId;
   if (!TG_TOKEN || !chatId) return 0;
-  const body = { chat_id: chatId, text: `<b>${tgEsc(payload.title)}</b>${payload.body ? '\n' + tgEsc(payload.body) : ''}`.slice(0, 4000), parse_mode: 'HTML', disable_web_page_preview: true };
+  /* Cut the plain text first, then escape: cutting after escaping could split an &amp; and Telegram rejects the message. */
+  const body = { chat_id: chatId, text: `<b>${tgEsc(String(payload.title || '').slice(0, 200))}</b>${payload.body ? '\n' + tgEsc(String(payload.body).slice(0, 3500)) : ''}`, parse_mode: 'HTML', disable_web_page_preview: true };
   /* Telegram buttons need an https address: on Render the app's own; locally none. */
   if (/^https:\/\//.test(APP_URL)) body.reply_markup = { inline_keyboard: [[{ text: 'Open TradeDesk', url: APP_URL + (payload.url && payload.url.startsWith('/') ? payload.url : '/') }]] };
   const r = await tgCall('sendMessage', body);
@@ -6079,7 +6106,8 @@ function flagOnce(k) {
   const f = USER_STORE.flags || (USER_STORE.flags = {});
   if (f[k]) return false;
   f[k] = Date.now();
-  for (const [kk, t] of Object.entries(f)) if (Date.now() - t > 4 * 86400e3) delete f[kk];
+  /* Trade alerts (j|...) are kept 60 days so a stop / target alert does not repeat on a trade left open; the rest 4 days. */
+  for (const [kk, t] of Object.entries(f)) if (Date.now() - t > (kk.startsWith('j|') ? 60 : 4) * 86400e3) delete f[kk];
   saveStore();
   return true;
 }
@@ -6108,8 +6136,8 @@ async function goldPlanS() {
   return { ...plan, calibrated: k !== 1, calK: k, drivers, expiry: SwingPlan.goldPetalExpiry(istDateKey(), isNseHoliday) };
 }
 function goldPlanText(p) {
-  const head = p.side === 'BUY' && !p.driverBlock ? `BUY · ${p.action}` : p.side === 'BUY' ? `WAIT · ${p.action}` : p.side === 'AVOID' ? `AVOID · ${p.action}` : `WAIT · ${p.why}`;
-  const lv = p.side === 'BUY' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · T1 ${inr(p.t1)} · T2 ${inr(p.t2)} · R:R ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
+  const head = p.side === 'BUY' && !p.driverBlock ? `BUY · ${p.action}` : p.side === 'BUY' ? `WAIT · ${p.action}` : p.side === 'SELL' ? `SELL (small size - all 3 drivers point down) · ${p.action}` : p.side === 'AVOID' ? `AVOID · ${p.action}` : `WAIT · ${p.why}`;
+  const lv = p.side === 'BUY' || p.side === 'SELL' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · T1 ${inr(p.t1)} · T2 ${inr(p.t2)} · R:R ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
   const drv = p.drivers?.known ? `\nDrivers ${p.drivers.count}/3: ${p.drivers.text}` : '';
   const exp = p.expiry && p.expiry.tradingDaysLeft <= 5 ? `\n⚠ Contract expires ${p.expiry.date} (${p.expiry.tradingDaysLeft} trading days) - roll or exit` : '';
   return `${head}${lv}${drv}${exp}\nNow ${inr(p.price)}${p.calibrated ? ' (your MCX calibration)' : ' (proxy - calibrate in the app for exact MCX levels)'}`;
@@ -6207,7 +6235,8 @@ async function morningBrief() {
   } catch {}
   const open = storeJournal().filter(t => t.status === 'open');
   if (open.length) {
-    const cap = +JSON.parse(USER_STORE.keys.td_pos_capital?.v || '0') || 0, risk = open.reduce((a, t) => a + (+t.riskRs || 0), 0);
+    let cap = 0; try { cap = +JSON.parse(USER_STORE.keys.td_pos_capital?.v || '0') || 0; } catch {}
+    const risk = open.reduce((a, t) => a + (+t.riskRs || 0), 0);
     lines.push(`Open trades: ${open.length} (${open.map(t => symShort(t.sym)).join(', ')}) · open risk ${inr(risk, 0)}${cap > 0 ? ` = ${(risk / cap * 100).toFixed(1)}% of capital` : ''}`);
   }
   try { lines.push(...await openTradeDailyChecks()); } catch {}
@@ -6246,15 +6275,21 @@ async function assistantTick() {
     if (m >= 9 * 60 && m <= 23 * 60 + 30) {
       if (!GOLD_PLAN_LAST || Date.now() - GOLD_PLAN_LAST.ts > 30 * 60e3) { try { GOLD_PLAN_LAST = { plan: await goldPlanS(), ts: Date.now() }; } catch {} }
       const g = GOLD_PLAN_LAST?.plan;
-      if (g && g.side === 'BUY' && !g.driverBlock && g.entry < g.price * 0.999) {
+      /* The plan is rebuilt every 30 min from the live price, so once price falls to the planned dip level the new plan
+         says "buy now" and its entry equals the price: remember the day's planned level and alert against that. */
+      if (g && g.side === 'BUY' && !g.driverBlock && g.entry < g.price * 0.999 && (!GOLD_BUY_LEVEL || GOLD_BUY_LEVEL.day !== key || GOLD_BUY_LEVEL.entry !== g.entry))
+        GOLD_BUY_LEVEL = { day: key, entry: g.entry, sl: g.sl, t1: g.t1, calK: g.calK || 1 };
+      if (g && (g.side !== 'BUY' || g.driverBlock)) GOLD_BUY_LEVEL = null;   /* trend or drivers turned: no buy alert */
+      if (GOLD_BUY_LEVEL && GOLD_BUY_LEVEL.day === key) {
+        const lv = GOLD_BUY_LEVEL;
         let q; try { q = await quickPriceFor('MCX:GOLDPETAL'); } catch {}
-        const p = q?.price ? q.price * (g.calK || 1) : null;   /* the plan's levels are in calibrated MCX terms */
-        if (p && p <= g.entry && flagOnce(`gold-buyzone|${key}`)) await pushAll({ title: `🟡 Gold Petal at your buy level ${inr(g.entry)}`, body: `Now ${inr(p)}. Stop ${inr(g.sl)} · T1 ${inr(g.t1)}. Check the MCX quote before ordering.`, tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
+        const p = q?.price ? q.price * (lv.calK || 1) : null;   /* the plan's levels are in calibrated MCX terms */
+        if (p && p <= lv.entry && p > lv.sl && flagOnce(`gold-buyzone|${key}`)) await pushAll({ title: `🟡 Gold Petal at your buy level ${inr(lv.entry)}`, body: `Now ${inr(p)}. Stop ${inr(lv.sl)} · T1 ${inr(lv.t1)}. Check the MCX quote before ordering.`, tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
       }
     }
   } finally { ASSIST_RUNNING = false; }
 }
-let GOLD_PLAN_LAST = null;
+let GOLD_PLAN_LAST = null, GOLD_BUY_LEVEL = null;
 
 setInterval(() => {
   serverAlertTick().catch(e => console.warn('Alert engine:', e.message));

@@ -1558,8 +1558,14 @@ function buildFourStrategyTradeSetups(ctx){
          price (the same price the R:R is measured from); breakouts/breakdowns fill at their trigger. The card's
          EMA / support level is the zone, not the fill: "move SL to entry" at EMA20 would still be a loss. */
       const trigger = /breakout|breakdown/i.test(card.name || '');
-      let entry = trigger ? (long ? Math.max(price, entry0) : Math.min(price, entry0)) : price;
+      /* ...but only while price is AT the zone (within 5% - an active EMA50 bounce can sit 3-5% above EMA50). A card
+         whose zone is further away is a "wait for the pullback" idea: its exit plan is measured from the zone, not
+         from today's price (HDFCBANK 14 Nov 2026: card "buy near EMA20 747.52" said "move SL to your entry 804.00 ·
+         T1 0.96R"; from 747.52 it is ~7.4R). */
+      const atZone = Math.abs(price - entry0) / entry0 <= 0.05;
+      let entry = trigger ? (long ? Math.max(price, entry0) : Math.min(price, entry0)) : atZone ? price : entry0;
       if(!(long ? sl < entry && t1 > entry : sl > entry && t1 < entry)) entry = entry0;
+      const ifFilled = !trigger && entry === entry0 && Math.abs(price - entry0) / entry0 > 0.001 ? `If filled at ${round(entry0)}: ` : '';
       const beyond = uniq(lv).filter(v => long ? v > t1 + atr*0.25 : v < t1 - atr*0.25).sort((a,b) => long ? a-b : b-a)[0];
       const t2 = R2(beyond || (long ? t1 + (t1 - entry) : t1 - (entry - t1)));
       const trail = R2(long ? Math.max(entry, t1 - atr*0.75) : Math.min(entry, t1 + atr*0.75));
@@ -1567,7 +1573,7 @@ function buildFourStrategyTradeSetups(ctx){
       const dir = long ? 'below' : 'above';
       /* Stop-loss ORDER at the SL (not "on a daily close"): a close-based stop can lose more than the 1R the
          position size is built on. */
-      const exit = `Exit plan: stop-loss order at ${round(sl)} (exit if price trades ${dir} it) · book 50% at T1 ${round(t1)}${rr1?` (${rr1.toFixed(2)}R)`:''} and move SL to your entry ${round(entry)} · trail the rest with ${round(trail)} or a daily close ${dir} EMA20${valid(e20)?` (${round(e20)})`:''} · T2 ${round(t2)}${rr2?` (${rr2.toFixed(2)}R)`:''} · time stop: exit at the close if T1 is not hit within 10 sessions.`;
+      const exit = `Exit plan: ${ifFilled}stop-loss order at ${round(sl)} (exit if price trades ${dir} it) · book 50% at T1 ${round(t1)}${rr1?` (${rr1.toFixed(2)}R)`:''} and move SL to your entry ${round(entry)} · trail the rest with ${round(trail)} or a daily close ${dir} EMA20${valid(e20)?` (${round(e20)})`:''} · T2 ${round(t2)}${rr2?` (${rr2.toFixed(2)}R)`:''} · time stop: exit at the close if T1 is not hit within 10 sessions.`;
       return {...card, fillEntry:round(entry), target2:round(t2), trailStop:round(trail), rr1:rr1!=null?+rr1.toFixed(2):null, rr2:rr2!=null?+rr2.toFixed(2):null, exit};
     });
   }
@@ -2522,7 +2528,7 @@ function mcxZones(sym, D){
 function mcxZonesHtml(sym, D, x){
   const z = mcxZones(sym, D);
   if(!z) return '';
-  const a = z.atr, side = x?.side || 'WAIT', b = z.below[0], s = z.above[0], buyOnly = !!x?.buyOnly;
+  const a = z.atr, side = x?.side || 'WAIT', b = z.below[0], s = z.above[0], buyOnly = !!x?.buyOnly && side !== 'SELL';   /* an allowed gold sell uses the normal sell zones */
   const zr = q => `₹${fmt(q.lo)} - ₹${fmt(q.hi)}`;
   let status, cls;
   if(z.inside){ status = `Price is inside a zone (${zr(z.inside)}). Wait: a daily close above ₹${fmt(z.inside.hi)} turns it into support, a close below ₹${fmt(z.inside.lo)} into resistance.`; cls = 'neutral'; }
@@ -2622,7 +2628,7 @@ function mcxFillAsync(sym){
       /* Gold: the plan depends on the drivers, so rebuild the card once they are in. */
       if(first && d?.goldRule && SwingPlan.BUY_ONLY_MCX.has(sym) && CUR_SYM === sym){
         const x = buildCommodityIdea(sym), el = document.querySelector('[data-cidea]');
-        if(x && el){ el.outerHTML = commodityIdeaHtml(sym, x); sd = x.side === 'BUY' && !x.driverBlock ? 'BUY' : x.side === 'AVOID' ? 'AVOID' : 'WAIT'; }
+        if(x && el){ el.outerHTML = commodityIdeaHtml(sym, x); sd = x.side === 'BUY' && !x.driverBlock ? 'BUY' : x.side === 'SELL' ? 'SELL' : x.side === 'AVOID' ? 'AVOID' : 'WAIT'; }
       }
       put('[data-mcx-drivers]', mcxDriversHtml(d, sd));
     })
@@ -2647,7 +2653,7 @@ function buildCommodityIdea(sym, D){
   /* Shared engine (public/swing-plan.js): the server's Gold Petal alerts use the same plan. Gold is buy-only and
      its buys wait for 2 of 3 drivers once they have loaded (MCX_DRIVERS_SEEN, filled by mcxFillAsync). */
   const p = SwingPlan.commodityPlan(sym, D, { minRR: SWING_MIN_RR, drivers: MCX_DRIVERS_SEEN[sym]?.goldRule || null });
-  const {price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, driverBlock} = p;
+  const {price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, driverBlock, smallSize} = p;
   let hedge = null;
   if(cfg.hedge && entry != null){
     const hv = Math.max(ideaHistVol(C, 20) || 0, (ideaHistVol(C, 60) || 0) * 0.8) || 0.35;
@@ -2659,7 +2665,7 @@ function buildCommodityIdea(sym, D){
   }
   const lossPerLot = entry == null ? null : (hedge ? hedge.worst : risk) * cfg.lotQty;   /* with the hedge: the capped loss */
   PLAN_LEVELS[sym] = entry != null && !driverBlock ? { entry, stop: sl, t1, label: side === 'BUY' ? 'Buy' : 'Sell', k: D.k || 1 } : null;
-  return { sym, cfg, k:D.k, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, hedge, lossPerLot, driverBlock, buyOnly: p.buyOnly, driversKnown: !!MCX_DRIVERS_SEEN[sym]?.goldRule };
+  return { sym, cfg, k:D.k, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, hedge, lossPerLot, driverBlock, smallSize, buyOnly: p.buyOnly, driversKnown: !!MCX_DRIVERS_SEEN[sym]?.goldRule };
 }
 function commodityIdeaHtml(sym, x){
   x = x || buildCommodityIdea(sym);
@@ -2670,10 +2676,10 @@ function commodityIdeaHtml(sym, x){
   const verdict = x.side === 'BUY' && x.driverBlock ? 'WAIT' : x.side;
   const title = x.side === 'WAIT' ? (x.buyOnly ? 'No uptrend - no buy yet' : 'No trend - range trade only')
     : x.side === 'AVOID' ? `No new buys - ${escHtml(cfg.name)} is in a downtrend`
-    : x.driverBlock ? `Buy plan on hold - drivers disagree` : `${x.side} ${escHtml(cfg.name)} future`;
-  const head = `<div class="idea-head"><div><div class="idea-kicker">Today's futures idea · ${escHtml(cfg.name)}${x.buyOnly ? ' · buy-only' : ''}</div><div class="idea-title">${title}</div></div>
+    : x.driverBlock ? `Buy plan on hold - drivers disagree` : `${x.side} ${escHtml(cfg.name)} future${x.smallSize ? ' · small size' : ''}`;
+  const head = `<div class="idea-head"><div><div class="idea-kicker">Today's futures idea · ${escHtml(cfg.name)}${x.buyOnly ? (x.side === 'SELL' ? ' · sell: all 3 drivers down' : ' · buys need 2 of 3 drivers') : ''}</div><div class="idea-title">${title}</div></div>
     <div class="idea-view ${verdict === 'BUY' ? 'bull' : verdict === 'SELL' || verdict === 'AVOID' ? 'bear' : 'neutral'}">${verdict}</div></div>`;
-  const drvLine = x.buyOnly && x.side === 'BUY' ? `<div class="idea-comment" style="margin-top:6px">${x.driversKnown ? (x.driverBlock ? '⚠ ' : '✓ ') : ''}<b>Driver check (2 of 3 needed):</b> ${x.driversKnown ? escHtml(MCX_DRIVERS_SEEN[sym].goldRule.text) : 'loading…'}</div>` : '';
+  const drvLine = x.buyOnly && (x.side === 'BUY' || x.side === 'SELL') ? `<div class="idea-comment" style="margin-top:6px">${x.driversKnown ? (x.driverBlock ? '⚠ ' : '✓ ') : ''}<b>Driver check (${x.side === 'SELL' ? 'all 3 point down' : '2 of 3 support a rise needed'}):</b> ${x.driversKnown ? escHtml(MCX_DRIVERS_SEEN[sym].goldRule.text) : 'loading…'}</div>` : '';
   if(x.side === 'WAIT' || x.side === 'AVOID') return `<div class="idea-card" data-cidea>${head}<div class="idea-comment">${escHtml(x.why)}${x.side === 'AVOID' ? ` → <b>${escHtml(x.action)}</b>` : ''}</div><div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)}</div></div>`;
   const h = x.hedge;
   const hedgeHtml = h ? `<div class="idea-hedge"><b>Hedge:</b> buy ${h.K} ${h.type === 'C' ? 'CE (call)' : 'PE (put)'} ≈ ₹${fmt(h.prem)} per ${u} (~3 weeks, volatility ${Math.round(h.hv*100)}% from recent price swings).
@@ -2691,7 +2697,7 @@ function commodityIdeaHtml(sym, x){
     </div>
     ${ideaSizeHtml(x.lossPerLot, 'stop-loss risk')}
     ${hedgeHtml}
-    ${x.side === 'BUY' && !x.driverBlock ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'mcx', sym, name: cfg.name, setup: x.buyOnly ? 'Gold buy (2 of 3 drivers)' : `${cfg.name} ${x.side}`, side: x.side, entry: x.entry, stop: x.sl, t1: x.t1, t2: x.t2, lotQty: cfg.lotQty, calK: x.k})})">📒 I took this trade</button>` : ''}
+    ${(x.side === 'BUY' && !x.driverBlock) || x.side === 'SELL' ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'mcx', sym, name: cfg.name, setup: x.buyOnly ? (x.side === 'SELL' ? 'Gold sell (all 3 drivers, small size)' : 'Gold buy (2 of 3 drivers)') : `${cfg.name} ${x.side}`, side: x.side, entry: x.entry, stop: x.sl, t1: x.t1, t2: x.t2, lotQty: cfg.lotQty, calK: x.k})})">📒 I took this trade</button>` : ''}
     <ul class="idea-why"><li><b>Exit:</b> book half at T1 and move the stop to entry; exit the rest at T2 or on a daily close ${x.side === 'SELL' ? 'above' : 'below'} ${mcxTrailLevel(x)}.</li></ul>
     <div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)} Check margin and circuit limits before ordering.</div>
   </div>`;
