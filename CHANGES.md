@@ -735,3 +735,37 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **Tabs agree:** Decision score = Overview score; Strategy says WAIT when the Overview does; Sector maps HDFC Bank to Banking / Nifty Private Bank; News is about the right company.
 - **Fixed, wrong information on Strategy cards:** a conditional card whose zone is far from today's price measured its exit plan from today's price. Example: "buy near EMA20 747.52" but "move SL to your entry 804.00 · T1 0.96R". Cards more than 5% from their zone now say "If filled at 747.52: … T1 (7.36R) … move SL to 747.52". Cards at the zone (the active trade) are unchanged.
 - Page version 14 Nov 2026 · 7.
+
+## Notifications on your schedule (16 Nov 2026)
+
+- **09:30 morning brief** (was 08:45, after the market has opened):
+  - **New entries:** ALLOWED, SMALL SIZE or NOT TODAY, from the market regime (the READY gate's filter), global cues, a big event today, and your open risk against your limit;
+  - **Global:** the Markets page's Global Bias score (S&P and Nasdaq futures, Nikkei, Hang Seng, India VIX);
+  - **India:** Nifty regime and breadth; FII / DII net cash flows;
+  - holidays, high-impact events, open trades and open risk;
+  - **News:** up to 3 market-moving headlines from the last 18 hours (market recaps such as "Sensex jumps 500 points" left out).
+- **09:45 Gold Petal** (was 09:05) and 17:00: sent only when a BUY (with the drivers) or SELL is ready - its entry within one day's range (1 ATR) of the price. A plan waiting for a bigger dip or rise sends its alert when price reaches the level; that level alert now covers sells too (it was buys only).
+- **10:00 Nifty options** (was 09:30): sent only when your credit-spread rule passes.
+- **Stock scans at 11:00 and 15:00** (were 09:25 / 11:30 / 13:30 / 15:15): half the Yahoo calls. At 15:00, when nothing was ready, one quiet line with the day's Gold Petal and Nifty status.
+- Unchanged: 09:20 open-trade checks, stop / target alerts on your trades.
+- Page version 16 Nov 2026 · 1.
+
+## Track record for Gold Petal and Nifty options (16 Nov 2026)
+
+- **Screener → Track record now has three sub-tabs:** Stocks (unchanged), **Gold Petal** and **Nifty options**. Each shows records, open, closed, win rate and average R, also on the phone.
+- **Gold Petal:** recorded by the server when it alerts a trade:
+  - ready at 09:45 / 17:00: filled at the price, or waiting for its entry that day ("Not filled" if not reached, left out of the win rate);
+  - price reaching a waiting plan's buy / sell level: filled at that level.
+  - Followed every 5 minutes in MCX hours with the card's own exit plan: stop = -1R; at T1 half booked and the stop moved to entry; the rest at T2, at entry, or on the day's close (23:45) through the plan's EMA. Result = half T1 + half the rest.
+- **Nifty options:** recorded when the 10:00 rule passes (one per expiry and side). Spread value checked at 10:00 and 15:05 from the NSE chain; stop when the loss reaches 2× the credit; otherwise settled at expiry from Nifty's close. 1R = 2× the credit; P&L shown in points and ₹ per lot (before charges).
+- **Kept safe across restarts:** records live in a synced key (td_trace). The server and the phone merge their copies by record id, so a Render restart (which wipes the server's disk) loses nothing.
+- Extra calls: one Gold Petal price every 5 minutes only while a Gold record is open; one or two NSE chain calls a day only while a Nifty record is open.
+- Page version 16 Nov 2026 · 2.
+
+## Track record: daily checks, Friday close, 10-day cap; NSE premiums fix (16 Nov 2026)
+
+- **NSE option premiums loading only once - cause found and fixed.** The app sends NSE one request at a time, 2 seconds apart (NSE blocks bursts). That rule only recognised the old address www.nseindia.com; since NSE moved to www.nseindia.in (14 Nov) every NSE call went through the general queue - 2 at a time, 0.5 s apart. The first load got through; later ones looked like bursts to NSE's bot protection. All NSE addresses share the 1-at-a-time queue again. /api/health now shows the last good NSE option-chain answer and the last error, so it can be checked on Render.
+- **Gold Petal track:** no more 5-minute checks. Entry = the plan's defined price (at once when price is there, else when the existing level alert sees price reach it that day; "Not filled" otherwise). Checked once each morning at 09:45 on the completed daily candles, from the same quote the 09:45 plan already loads (no extra call). A day touching both the stop and a target is marked Ambiguous.
+- **Nifty options track:** entry at the 10:00 NSE premiums. Checked each morning at 10:00: closed once 80% of the premium is earned, or at the stop (loss 2× the credit). Otherwise closed at 15:05 on the last trading day of the week (Friday; Thursday when Friday is a holiday). A trade opened on that day carries over to the next week. Settled at expiry if that comes first.
+- **Stocks track:** entry = the price when the pick turned READY. The server now records the READY picks of its 11:00 / 15:00 scans, so picks are tracked even on days the app is not opened. Checked on each day's candle; **closed at the close of day 10 at the latest, also after T1** (a trade still trailing used to run on without a limit). The day count comes from the candles, so trades already in the list get the cap too.
+- Page version 16 Nov 2026 · 3.

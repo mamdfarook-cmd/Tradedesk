@@ -163,7 +163,7 @@ async function apiFetch(path, timeoutMs=15000) {
    Alerts, Track Record, calculator settings, recent stocks and MCX calibrations follow you between devices.
    Every change to one of those keys is time-stamped; the newest copy wins, here or on the server. If the
    server's disk was reset, this browser uploads its copy again. */
-const SYNC_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
+const SYNC_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_trace|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const SYNC_META_KEY = 'td_sync_meta';
 let SYNC_APPLYING = false, SYNC_TIMER = null, SYNC_INFLIGHT = null, SYNC_STATE = { ok:null, at:null, msg:'' };
 function syncMeta(){ try { return JSON.parse(localStorage.getItem(SYNC_META_KEY) || '{}') || {}; } catch { return {}; } }
@@ -192,8 +192,12 @@ async function syncNow(){
       const M = k => (meta[k] && typeof meta[k] === 'object') ? meta[k] : { t: +meta[k] || 0, dirty: false };
       for (const [k, x] of Object.entries(sk)) {   /* newer copies from other devices / the server alert engine */
         if (!SYNC_KEY_RE.test(k) || M(k).dirty || !(+x.t > M(k).t)) continue;
+        /* The signal trace (td_trace) is written by the server too: merge by record id, and send the merged copy
+           back when this browser had records the server lost (a restart wiped its disk). */
+        const v = k === 'td_trace' && x.v != null && typeof traceMergeJson === 'function' ? traceMergeJson(localStorage.getItem(k), x.v) : x.v;
         SYNC_APPLYING = true;
-        try { if (x.v == null) localStorage.removeItem(k); else localStorage.setItem(k, x.v); } finally { SYNC_APPLYING = false; }
+        try { if (v == null) localStorage.removeItem(k); else localStorage.setItem(k, v); } finally { SYNC_APPLYING = false; }
+        if (v !== x.v) { meta[k] = { t: +x.t, dirty: true }; continue; }
         meta[k] = { t: +x.t, dirty: false }; applied.push(k);
       }
       for (const k of syncLocalKeys()) {   /* changes made here, or data the server lost (disk reset) */
@@ -2234,7 +2238,7 @@ async function buildIndexOptionsIdea(sym){
   const chain = await ideaChain(sym, main?.date);
   /* The user's own credit-spread rule on the same live chain (Nifty only - that is what was backtested). */
   /* The rule trades the first expiry at least 3 days away (the backtest entered the day after an expiry, ~6 days
-     out; a 1-day contract has almost no premium and the most gamma). The server's 09:30 alert uses the same. */
+     out; a 1-day contract has almost no premium and the most gamma). The server's 10:00 alert uses the same. */
   let ruleChain = null;
   if(sym === 'NSE:NIFTY' && chain?.expiries?.length){
     const nextExp = chain.expiries.find(e => ideaDaysTo(e) >= 3) || chain.expiries.find(e => e > istDateKey());
@@ -4153,6 +4157,8 @@ function ftEvaluateRow(row, q){
   for(const b of bars){
     if(b.date <= from) continue;
     const before = row.status + '|' + row.phase;
+    /* Day number from the candles themselves (rows saved before the 10-day cap counted only some days). */
+    row.sessions = bars.filter(x => x.date > row.date && x.date < b.date).length;
     ftApplyBar(row, b, risk, b.date < today);
     const changed = (row.status + '|' + row.phase) !== before || row.closed;
     /* A completed day is final. Today's bar is only marked done once it produced an event;
@@ -4168,8 +4174,8 @@ function ftEvaluateRow(row, q){
 /* Apply one bar's high/low to the trade state. Logic unchanged from the original single-day version. */
 /* One daily bar of the exit plan shown on every card:
    stop-loss order at SL (-1R) · at T1 book 50% and move SL to entry · the rest exits at T2, at the trail stop
-   (T1 -/+ 0.75 ATR, never worse than entry) or on a daily close through EMA20 · time stop: if T1 is not hit
-   within 10 sessions, exit at that close. Result R = 0.5 x R(T1) + 0.5 x R(rest). When one bar touches both
+   (T1 -/+ 0.75 ATR, never worse than entry) or on a daily close through EMA20 · at the latest at the close of
+   day 10 (before or after T1). Result R = 0.5 x R(T1) + 0.5 x R(rest). When one bar touches both
    the stop and a target the order is unknown, so it is marked Ambiguous instead of guessed. */
 function ftApplyBar(row, bar, risk, barComplete=true){
   const entry=+row.entry, sl=+row.sl, t1=+row.t1, t2=+row.t2, trailSl=+row.trailSl;
@@ -4180,25 +4186,28 @@ function ftApplyBar(row, bar, risk, barComplete=true){
   const closeThroughEma = barComplete && Number.isFinite(bar.c) && Number.isFinite(bar.e20) && (short ? bar.c > bar.e20 : bar.c < bar.e20);
   const rT1 = Number.isFinite(+row.rT1) ? +row.rT1 : R(t1);
   const close = (status, r) => { row.status=status; row.closed=true; row.resultR = r==null ? null : +r.toFixed(2); };
+  /* Every completed day after the signal counts, before and after T1: the trade is closed at the close of day 10
+     at the latest (swing trades of 1-10 days; a trade still trailing after T1 used to run on without limit). */
+  if(barComplete) row.sessions = (+row.sessions || 0) + 1;
+  const day10 = barComplete && row.sessions >= 10 && Number.isFinite(bar.c);
   if(row.phase==='trail'){
     const hitT2 = ftValid(t2) && up(t2), hitTrail = ftValid(trailSl) && down(trailSl);
     if(hitT2 && hitTrail) close('Ambiguous: T2 & Trail SL', null);
     else if(hitT2) close('T2 Hit', 0.5*rT1 + 0.5*R(t2));
     else if(hitTrail) close('Trail Stop Hit', 0.5*rT1 + 0.5*R(trailSl));
     else if(closeThroughEma) close('EMA20 Exit', 0.5*rT1 + 0.5*R(bar.c));
+    else if(day10) close('Day 10 exit', 0.5*rT1 + 0.5*R(bar.c));
     else { row.status='T1 Hit · trailing'; row.resultR = +(0.5*rT1).toFixed(2); }
     return row;
   }
   const hitSL = ftValid(sl) && down(sl), hitT1 = ftValid(t1) && up(t1), hitT2 = ftValid(t2) && up(t2);
   if(hitSL && (hitT1 || hitT2)) close('Ambiguous: SL & Target', null);
   else if(hitT2) close('T2 Hit', 0.5*rT1 + 0.5*R(t2));
+  else if(hitT1 && day10){ row.rT1=rT1; close('T1 Hit · rest closed day 10', 0.5*rT1 + 0.5*R(bar.c)); }
   else if(hitT1){ row.phase='trail'; row.rT1=rT1; row.status='T1 Hit · trailing'; row.resultR=+(0.5*rT1).toFixed(2); }
   else if(hitSL) close('SL Hit', -1);
-  else {
-    if(barComplete) row.sessions = (+row.sessions || 0) + 1;
-    if(row.sessions >= 10 && Number.isFinite(bar.c)) close('Time Stop', R(bar.c));
-    else row.status='Open';
-  }
+  else if(day10) close('Day 10 exit', R(bar.c));
+  else row.status='Open';
   return row;
 }
 function updateForwardTestsFromPicks(picks=[], source='qualified') {
@@ -4255,6 +4264,7 @@ async function refreshForwardTestsDetailed(limit=80){
   return rows;
 }
 async function tabForwardTest() {
+  if (typeof TRACK_SUB !== 'undefined' && TRACK_SUB !== 'stock' && typeof tabTrace === 'function') return tabTrace(TRACK_SUB);
   const tc = document.getElementById('tc');
   const live = tcGuard();
   tc.innerHTML = `<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div><div class="lt">Updating forward test trade plans…</div></div>`;
@@ -4263,6 +4273,8 @@ async function tabForwardTest() {
     let d = MY_TRADE_CACHE_UI || readMyTradeScreenerCache();
     if(!d) d = await apiFetch('/api/my-trade-screener', 120000);
     if(d?.picks?.length) updateForwardTestsFromPicks(d.picks,'mytrade');
+    /* READY picks the server recorded at its 11:00 / 15:00 scans, also on days the app was not opened. */
+    if(typeof importStockTrace === 'function'){ try { if(typeof syncNow === 'function') await syncNow(); } catch(e){} importStockTrace(); }
     await refreshForwardTestsDetailed(80);
   }catch(e){ /* keep existing local records even when network fails */ }
   const rows = readForwardTests().slice().reverse();
@@ -4289,10 +4301,10 @@ async function tabForwardTest() {
     </tr>`;
   }).join('') : `<tr><td colspan="10">No records yet. Each READY pick in Screener Match is saved here automatically and tracked to its stop or target.</td></tr>`;
   if(!live()) return;
-  tc.innerHTML = `<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">Track Record — how past screener picks played out</div><button onclick="localStorage.removeItem(FORWARD_TEST_KEY);tabForwardTest()" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear Records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Tracks each qualified signal as an actual plan: Entry, ATR-adjusted Stop Loss, Target, Stop Loss and R-multiple. Same-day signal candles are not judged because the day high/low may have happened before the signal. Open this tab daily for proper local tracking.</div></div>
+  tc.innerHTML = `${typeof traceSubTabs === 'function' ? traceSubTabs('stock') : ''}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">Track Record — how past screener picks played out</div><button onclick="localStorage.removeItem(FORWARD_TEST_KEY);tabForwardTest()" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear Records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Every READY pick is recorded at the price when it turned READY (the server records the 11:00 / 15:00 scan picks even when the app is closed) and checked on each day's candle: stop, T1 / T2, and closed at the close of day 10 at the latest. The signal day's candle is not judged because its high/low may have come before the signal.</div></div>
   <div class="scr-summary"><div class="scr-sum-card"><div class="scr-sum-label">Records</div><div class="scr-sum-val">${rows.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Open / Trail</div><div class="scr-sum-val" style="color:var(--acc)">${openCount}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Closed R Samples</div><div class="scr-sum-val">${finished.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Win Rate</div><div class="scr-sum-val" style="color:var(--bull)">${winRate}${winRate==='--'?'':'%'}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Avg R</div><div class="scr-sum-val" style="color:${(+avgR||0)>=0?'var(--bull)':'var(--bear)'}">${avgR}${avgR==='--'?'':'R'}</div></div></div>
   <table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>T1 / T2</th><th>Now</th><th>Status</th><th>Result</th><th>Decision</th></tr></thead><tbody>${body}</tbody></table>
-  <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R), half booked at T1, the rest at T2 / trail stop / a close through EMA20, or a time stop after 10 sessions without T1. Result = half T1 + half the rest. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
+  <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R), half booked at T1, the rest at T2 / trail stop / a close through EMA20, and at the latest at the close of day 10. Result = half T1 + half the rest. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
 }
 
 /* ══════════════════════════════════════════════════════════════════

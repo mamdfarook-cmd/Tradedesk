@@ -223,7 +223,9 @@ function outboundStats() {
    layer serves its last cached value instead. */
 const HOST_LIMITS = [
   { re: /(^|\.)finance\.yahoo\.com$/i,   max: 4, gapMs: 150, key: 'yahoo' },
-  { re: /(^|\.)nseindia\.com$/i,         max: 1, gapMs: 2000, key: 'nse' },
+  /* All NSE addresses share one queue: NSE moved www.nseindia.com to www.nseindia.in on 14 Nov 2026, and the .in
+     host had fallen into the generic bucket (2 at a time, 0.5 s apart) - the bursts NSE's bot protection blocks. */
+  { re: /(^|\.)nseindia\.(com|in|co\.in|org)$/i, max: 1, gapMs: 2000, key: 'nse' },
   { re: /(^|\.)bseindia\.com$/i,         max: 1, gapMs: 1500, key: 'bse' },
   { re: /.*/,                            max: 2, gapMs: 500 },   /* news sites and other APIs */
 ];
@@ -4094,8 +4096,8 @@ function sectorStrengthFor(code) {
    - Nifty below EMA50 but breadth >= 60%   -> RECOVERY: broad strength returning, longs allowed
    - otherwise                              -> CORRECTION / BEAR, no fresh longs
    Without a recent breadth reading the Nifty-only rule is used. */
-function marketRegime(nifty) {
-  const b = LAST_BREADTH && Date.now() - LAST_BREADTH.ts < 18 * 3600e3 ? LAST_BREADTH : null; /* breadth only changes in market hours */
+function marketRegime(nifty, breadthMaxAgeMs = 18 * 3600e3) {
+  const b = LAST_BREADTH && Date.now() - LAST_BREADTH.ts < breadthMaxAgeMs ? LAST_BREADTH : null; /* breadth only changes in market hours */
   if (!nifty || nifty.status === 'UNKNOWN') return { ...(nifty || {}), status:'UNKNOWN', allowReady:true, breadth: b, note:'Nifty data unavailable - regime filter skipped; check the market manually' };
   const above50 = nifty.nifty > nifty.ema50, above200 = nifty.nifty > nifty.ema200;
   if (!b) return { ...nifty, breadth:null, note: nifty.note + ' (breadth not measured yet - run a screener scan)' };
@@ -5025,6 +5027,8 @@ async function nseSwr(key, ttl, maxAge, producer) {
   try { const r = await cacheWrap(key, ttl, producer); return r.value; }
   catch (e) { if (old && Date.now() - old.ts < maxAge) return aged(old); throw e; }
 }
+/* Last option-chain fetch from NSE (shown in /api/health): tells whether NSE is answering this server. */
+const NSE_OC_LAST = { ok: null, error: null, errorAt: null };
 async function getOptionChain(sym, want = '') {
   const name = OC_SYMBOLS[sym];
   if (!name) throw new Error('Option chain only for NSE:NIFTY, NSE:BANKNIFTY, NSE:FINNIFTY');
@@ -5042,7 +5046,9 @@ async function getOptionChain(sym, want = '') {
     const fresh = istMarketHoursS() ? 180e3 : 1800e3;
     const value = await nseSwr(`oc_${name}_${pick0.key}`, fresh, 12 * 3600e3, async () => {
       const exps = exps0, pick = pick0;
-      const j = await nseOcGet(`/api/option-chain-v3?type=Indices&symbol=${name}&expiry=${encodeURIComponent(pick.nse)}`);
+      let j;
+      try { j = await nseOcGet(`/api/option-chain-v3?type=Indices&symbol=${name}&expiry=${encodeURIComponent(pick.nse)}`); NSE_OC_LAST.ok = new Date().toISOString(); }
+      catch (e) { NSE_OC_LAST.error = e.message; NSE_OC_LAST.errorAt = new Date().toISOString(); throw e; }
       const rec = j.records || {}, spot = +rec.underlyingValue;
       const side = o => o ? { ltp: +o.lastPrice || 0, bid: +o.buyPrice1 || 0, ask: +o.sellPrice1 || 0, oi: +o.openInterest || 0,
         chgOi: +o.changeinOpenInterest || 0, iv: +o.impliedVolatility || 0, vol: +o.totalTradedVolume || 0 } : null;
@@ -5615,7 +5621,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){send(res,{status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,outbound:outboundStats()});}
+function apiHealth(req,res){send(res,{status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseOptionChain:NSE_OC_LAST,outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -5829,12 +5835,12 @@ const STATIC_CACHE = new Map();
      disk resets (Render free), any browser that still has the data uploads it again on its next visit.
    - Web Push (VAPID, RFC 8291) straight from Node's crypto: alerts reach the phone with the app closed.
      The VAPID key is derived from APP_SECRET, so it stays the same across restarts.
-   - Server alert engine (every minute in market hours), scheduled screener scans (09:25 and 15:15 IST)
+   - Server alert engine (every minute in market hours), scheduled screener scans (11:00 and 15:00 IST)
      and, on Render, a self-ping that keeps the free instance awake during trading hours.
 ══════════════════════════════════════════════════════════════════ */
 const nodeCrypto = require('crypto');
 const STORE_FILE = path.join(__dirname, 'data', 'user-store.json');
-const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
+const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_trace|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const STORE_MAX_BYTES = 1500000;
 let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {}, flags: {}, telegram: null };
 try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {}, flags: j.flags || {}, telegram: j.telegram || null }; } catch {}
@@ -5861,6 +5867,8 @@ function mergeStoreKeys(incoming) {
   const next = { ...USER_STORE.keys }, changed = [], now = Date.now();
   for (const [k, x] of Object.entries(incoming || {})) {
     if (!STORE_KEY_RE.test(k) || !x) continue;
+    /* The signal trace is written by the server too: merge the two copies by record id instead of replacing. */
+    if (k === 'td_trace') { if (x.v == null) continue; next[k] = { v: JSON.stringify(traceMerge(traceParse(next[k]?.v), traceParse(String(x.v)))), t: Math.max(now, (+next[k]?.t || 0) + 1) }; changed.push(k); continue; }
     next[k] = { v: x.v == null ? null : String(x.v), t: Math.max(now, (+next[k]?.t || 0) + 1) }; changed.push(k);
   }
   if (JSON.stringify(next).length > STORE_MAX_BYTES) throw new Error('Stored data is over 1.5 MB');
@@ -5986,11 +5994,10 @@ async function serverAlertTick() {
   } finally { ALERT_TICK_RUNNING = false; }
 }
 
-/* ── Scheduled screener scans (IST): 09:25 and 15:15 send the summary; 11:30 and 13:30 send only stocks that
-   NEWLY turned READY / ready-on-limit / quick bounce since the day's earlier scans (with entry, stop, target and the
-   quantity for the user's capital and risk %). ── */
-const SCAN_TIMES_IST = [9 * 60 + 25, 11 * 60 + 30, 13 * 60 + 30, 15 * 60 + 15];
-const SCAN_SUMMARY_SLOTS = new Set([9 * 60 + 25, 15 * 60 + 15]);
+/* ── Scheduled screener scans (IST): 11:00 and 15:00 send the READY / ready-on-limit / quick bounce stocks (with
+   entry, stop, target and the quantity for the user's capital and risk %). Two scans instead of four halves the
+   Yahoo calls; 15:00 leaves time to buy before the close. ── */
+const SCAN_TIMES_IST = [11 * 60, 15 * 60];
 function sizingLine(entry, stop, sizeFactor = 1) {
   const num = k => { try { return +JSON.parse(USER_STORE.keys[k]?.v || 'null'); } catch { return NaN; } };
   const cap = num('td_pos_capital'), rp = num('td_pos_risk_pct');
@@ -6022,12 +6029,16 @@ async function scheduledScanTick() {
     if (!MY_TRADE_SCREENER_INFLIGHT) MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { MY_TRADE_SCREENER_INFLIGHT = null; });
     data = await MY_TRADE_SCREENER_INFLIGHT;
   }
-  const sig = scanSignals(data), fresh = sig.filter(x => flagOnce(`seen|${key}|${x.id}`));
-  if (SCAN_SUMMARY_SLOTS.has(slot)) {
-    const body = sig.length ? sig.map(x => x.text).join('\n') : 'No READY stock, no buy limit, no quick bounce.';
-    await pushAll({ title: `TradeDesk ${slot < 12 * 60 ? 'morning' : 'closing'} scan`, body, tag: 'td-scan', url: '/?view=screener' });
-  } else if (fresh.length) {
-    await pushAll({ title: `🟢 New since the last scan (${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')})`, body: fresh.map(x => x.text).join('\n'), tag: 'td-scan-new', url: '/?view=screener' });
+  const sig = scanSignals(data), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
+  try { traceStockRecord(data?.picks || [], key); } catch (e) { console.warn('Stock trace:', e.message); }
+  if (sig.length) {
+    await pushAll({ title: `🟢 ${sig.length} stock${sig.length > 1 ? 's' : ''} ready · ${hhmm} scan`, body: sig.map(x => x.text).join('\n'), tag: 'td-scan', url: '/?view=screener' });
+  } else if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) {
+    /* One quiet line at the last scan of the day when nothing was ready, so a silent day is not mistaken for a
+       broken app: today's Gold Petal and Nifty options status (they alert only when there is a trade). */
+    const gold = GOLD_STATUS?.day === key ? GOLD_STATUS.text : 'plan not checked today';
+    const nifty = NIFTY_STATUS?.day === key ? NIFTY_STATUS.text : 'not checked today';
+    await pushAll({ title: 'TradeDesk · nothing ready today', body: `No stock ready (${hhmm} scan)\nGold Petal: ${gold}\nNifty options: ${nifty}`, tag: 'td-scan', url: '/?view=screener' });
   }
   if (slot === SCAN_TIMES_IST[0] && key === firstTradingDayOfMonth(key)) {
     try {
@@ -6040,12 +6051,12 @@ async function scheduledScanTick() {
 
 /* ══════════════════════════════════════════════════════════════════
    TRADE ASSISTANT - every alert also goes to Telegram when a bot is linked (free, no limits):
-   - 08:45 morning brief (NSE trading days): market regime, holidays / special sessions, high-impact events,
-     open trades with results / corporate actions close, Gold Petal plan and expiry.
-   - 09:05 and 17:00 Gold Petal plan (buy-only, 2 of 3 drivers), plus an instant alert when price reaches the
-     planned buy level. 09:30 Nifty options: the user's credit-spread rule on the live chain.
-   - Scans at 09:25 / 11:30 / 13:30 / 15:15: the morning and closing summaries, and between them only stocks that
-     NEWLY turned READY / ready-on-limit / quick bounce.
+   - 09:30 morning brief (NSE trading days): new entries allowed / small size / not today, global bias, India
+     regime, FII/DII, holidays, high-impact events, open trades, market-moving headlines.
+   - 09:45 and 17:00 Gold Petal: an alert only on a BUY (2 of 3 drivers) or SELL plan, plus an instant alert when
+     price reaches the planned buy level. 10:00 Nifty options: an alert only when the credit-spread rule passes.
+   - Scans at 11:00 and 15:00: READY / ready-on-limit / quick bounce stocks; at 15:00 one quiet line (with the Gold
+     and Nifty status) when nothing was ready.
    - Open-trade watcher (trades the user marked "I took this trade"): stop hit, target 1 hit, day-10 exit,
      results / ex-date within 2 trading days, Gold Petal expiry, Nifty through the short strike.
 ══════════════════════════════════════════════════════════════════ */
@@ -6223,25 +6234,94 @@ async function openTradeDailyChecks() {
   return msgs;
 }
 
+/* Global cue for the brief: the same score as the Markets page's Global Bias card (US index futures, Nikkei,
+   Hang Seng, India VIX). Reuses the page's data when it is under 20 min old, else 4 light Yahoo quotes plus
+   NSE's index list (already fetched for the index prices). */
+async function globalCueS() {
+  const hit = API_CACHE.get('global:all');
+  let d = hit && Date.now() - hit.ts < 20 * 60e3 ? hit.value : null;
+  if (!d) {
+    d = {};
+    const T = { spFut: 'ES=F', nqFut: 'NQ=F', nikkei: '^N225', hangseng: '^HSI' };
+    await Promise.all(Object.entries(T).map(async ([k, t]) => {
+      try { const r = await withTimeout(safeFetch(() => getPriceAndChange(t), 1), 15000, t); if (Number.isFinite(r?.rawPct)) d[k] = { pct: r.rawPct }; } catch {}
+    }));
+    try { const r = (await nseAllIndices()).get('INDIA VIX'); if (r && +r.last > 0) d.vix = { price: +r.last, pct: +r.previousClose > 0 ? (+r.last / +r.previousClose - 1) * 100 : null }; } catch {}
+  }
+  if (!FII_DII_CACHE?.value) await Promise.race([refreshFiiDii().catch(() => {}), new Promise(r => setTimeout(r, 6000))]);
+  const pct = it => it && !it.error && it.pct != null && Number.isFinite(+it.pct) ? +it.pct : null;
+  let score = 0; const parts = [];
+  for (const [k, name] of [['spFut', 'S&P fut'], ['nqFut', 'Nasdaq fut'], ['nikkei', 'Nikkei'], ['hangseng', 'Hang Seng']]) {
+    const p = pct(d[k]); if (p == null) continue;
+    parts.push(`${name} ${p >= 0 ? '+' : ''}${p.toFixed(2)}%`);
+    if (p >= 0.25) score += 1; else if (p <= -0.25) score -= 1;
+  }
+  const vix = +d.vix?.price > 0 && !d.vix?.error ? +d.vix.price : null, vp = pct(d.vix);
+  if (vix != null) { parts.push(`India VIX ${vix.toFixed(1)}`); if (vix < 15) score += 0.75; else if (vix > 20) score -= 1; }
+  if (vp != null) { if (vp <= -3) score += 0.5; else if (vp >= 3) score -= 0.5; }
+  const label = !parts.length ? 'UNKNOWN' : score >= 2.5 ? 'BULL' : score <= -2.5 ? 'BEAR' : 'NEUTRAL';
+  const f = FII_DII_CACHE?.value, n = x => x && Number.isFinite(+x.net) ? `${+x.net >= 0 ? '+' : ''}${Math.round(+x.net).toLocaleString('en-IN')}` : '--';
+  const flow = f && (f.fii || f.dii) ? `FII ${n(f.fii)} · DII ${n(f.dii)} ₹ Cr cash${f.date ? ` (${f.date})` : ''}` : null;
+  return { label, score, text: parts.join(' · '), flow };
+}
+/* Market-moving headlines for the brief: the Nifty news list (the News tab's cache when under an hour old),
+   last 18 hours, only headlines with a clear up / down impact, strongest first. */
+async function marketHeadlinesS() {
+  const sym = 'NSE:NIFTY', name = 'NIFTY', ctx = buildNewsContext(name, sym), c = NEWS_CACHE[`news_v13_${sym}_${newsHash(name)}`];
+  let items = c && Date.now() - c.ts < 60 * 60e3 ? c.payload?.items || [] : null;
+  if (!items) { const all = await withTimeout(gatherAllNews(ctx), 15000, 'news'); items = finalizeNews(all.items || [], ctx); }
+  /* Market recaps ("Sensex jumps 500 points", "Stock market LIVE") and broker pick lists ("Stocks to buy") describe
+     the market, they do not move it. */
+  const RECAP = /\b(sensex|nifty)\b.{0,60}\b(\d[\d,.]*\s*(pts|points)|jumps?|falls?|gains?|rises?|slips?|drops?|ends?|closes?|opens?|trades?|tops?|nears?|extends?|rall(y|ies)|snaps?)\b|\b(stock|share)?\s*market\s+(live|today|highlights|updates?|wrap)\b|\blive\s*(updates?|blog)\b|\b(closing|opening)\s+bell\b|\bstocks?\s+to\s+(buy|watch|sell)\b|\b(top|stock)\s+picks?\b|\bbuy\s+or\s+sell\b|\bstocks?\s+in\s+(news|focus)\b|\btrade\s+setup\b/i;
+  return filterNewsAge(items, 18).filter(i => Math.abs(+i.impactScore || 0) >= 5 && !RECAP.test(i.title || ''))
+    .sort((a, b) => Math.abs(b.impactScore) - Math.abs(a.impactScore)).slice(0, 3)
+    .map(i => ({ ...i, title: String(i.title).replace(/\s+\|\s+.*$/, '').trim() }));
+}
+/* "New entries" line: open-risk limit first, then the market regime (the same filter the READY gate uses), then
+   reasons to trade smaller (cautious regime, weak global cues, a big event today). */
+function entryVerdictS({ reg, glob, eventToday, openPct, limitPct }) {
+  if (openPct != null && openPct >= limitPct) return `NO NEW TRADES - open risk ${openPct.toFixed(1)}% is at your ${limitPct}% limit`;
+  if (reg && reg.allowReady === false) return `NOT TODAY - ${reg.note}`;
+  const why = [];
+  if (!reg || reg.status === 'UNKNOWN') why.push('Nifty trend not available');
+  else if (['CAUTION', 'RECOVERY'].includes(reg.status)) why.push(`market ${reg.status.toLowerCase()}`);
+  if (glob?.label === 'BEAR') why.push('global cues weak');
+  if (eventToday) why.push(`${eventToday} today`);
+  return why.length ? `SMALL SIZE - ${why.join(', ')}` : 'ALLOWED - market trend and global cues support fresh swing longs';
+}
+
 async function morningBrief() {
   const today = istDateKey(), lines = [];
-  try { const reg = marketRegime(await getNiftyRegime()); lines.push(`Market: ${reg.status} - ${reg.note}`); } catch {}
-  const next = upcomingSpecialSession(today).filter(h => h.tradingDays <= 3);
-  for (const h of next) lines.push(`${h.date === today ? 'Today' : h.date}: NSE holiday - ${h.name}${h.special ? ' (special Muhurat session - check NSE timing)' : ''}`);
+  let reg = null, glob = null;
+  /* Breadth is measured by the scans (11:00 / 15:00); at 09:30 the last one is from the previous session. */
+  try { reg = marketRegime(await getNiftyRegime(), 4 * 86400e3); } catch {}
+  try { glob = await globalCueS(); } catch {}
+  const evLines = []; let eventToday = null;
   try {
     const tom = istDateKey(Date.now() + 86400e3);
     const ev = ECON_CALENDAR.concat(generatedMacroEvents(today)).filter(e => (e.date === today || e.date === tom) && /HIGH/i.test(e.impact || '') && ['RBI', 'FOMC', 'CPI', 'NFP', 'BUDGET', 'GDP'].includes(e.category));
-    for (const e of ev.slice(0, 5)) lines.push(`${e.date === today ? 'Today' : 'Tomorrow'}: ${e.event}${e.time ? ' ' + e.time : ''}`);
+    for (const e of ev.slice(0, 5)) evLines.push(`${e.date === today ? 'Today' : 'Tomorrow'}: ${e.event}${e.time ? ' ' + e.time : ''}`);
+    eventToday = ev.find(e => e.date === today)?.event || null;
   } catch {}
   const open = storeJournal().filter(t => t.status === 'open');
-  if (open.length) {
-    let cap = 0; try { cap = +JSON.parse(USER_STORE.keys.td_pos_capital?.v || '0') || 0; } catch {}
-    const risk = open.reduce((a, t) => a + (+t.riskRs || 0), 0);
-    lines.push(`Open trades: ${open.length} (${open.map(t => symShort(t.sym)).join(', ')}) · open risk ${inr(risk, 0)}${cap > 0 ? ` = ${(risk / cap * 100).toFixed(1)}% of capital` : ''}`);
-  }
+  let cap = 0; try { cap = +JSON.parse(USER_STORE.keys.td_pos_capital?.v || '0') || 0; } catch {}
+  let limitPct = 5; try { const v = +JSON.parse(USER_STORE.keys.td_max_open_risk?.v || '5'); if (v > 0 && v <= 100) limitPct = v; } catch {}
+  const risk = open.reduce((a, t) => a + (+t.riskRs || 0), 0), openPct = cap > 0 ? risk / cap * 100 : null;
+
+  lines.push(`New entries: ${entryVerdictS({ reg, glob, eventToday, openPct, limitPct })}`);
+  lines.push(`Global: ${glob ? `${glob.label}${glob.text ? ' - ' + glob.text : ''}` : 'not available'}`);
+  lines.push(`India: ${reg ? `${reg.status} - ${reg.note}` : 'Nifty trend not available'}`);
+  if (glob?.flow) lines.push(`Flows: ${glob.flow}`);
+  for (const h of upcomingSpecialSession(today).filter(h => h.tradingDays <= 3)) lines.push(`${h.date === today ? 'Today' : h.date}: NSE holiday - ${h.name}${h.special ? ' (special Muhurat session - check NSE timing)' : ''}`);
+  lines.push(...evLines);
+  if (open.length) lines.push(`Open trades: ${open.length} (${open.map(t => symShort(t.sym)).join(', ')}) · open risk ${inr(risk, 0)}${openPct != null ? ` = ${openPct.toFixed(1)}% of capital` : ''}`);
   try { lines.push(...await openTradeDailyChecks()); } catch {}
-  try { const g = await goldPlanS(); lines.push(`Gold Petal: ${goldPlanText(g).split('\n')[0]}`); if (g.expiry.tradingDaysLeft <= 5) lines.push(`Gold Petal contract expires ${g.expiry.date} (${g.expiry.tradingDaysLeft} trading days)`); } catch (e) { lines.push('Gold Petal: plan not available (' + e.message + ')'); }
-  lines.push('Nifty options check follows at 09:30, the first scan at 09:25.');
+  try {
+    const h = await marketHeadlinesS();
+    lines.push(h.length ? 'News:\n' + h.map(i => `${i.impactScore > 0 ? '▲' : '▼'} ${String(i.title).slice(0, 120)}${i.source ? ` (${i.source})` : ''}`).join('\n') : 'News: no big market-moving headline since last evening');
+  } catch { lines.push('News: not reachable - check the News tab'); }
+  try { const e = SwingPlan.goldPetalExpiry(today, isNseHoliday); if (e.tradingDaysLeft <= 5) lines.push(`Gold Petal contract expires ${e.date} (${e.tradingDaysLeft} trading days) - roll or exit`); } catch {}
+  lines.push('Gold Petal (09:45) and Nifty options (10:00) alert only when there is a trade ready; stock scans at 11:00 and 15:00.');
   return lines.join('\n');
 }
 
@@ -6255,41 +6335,267 @@ async function assistantTick() {
   ASSIST_RUNNING = true;
   try {
     const at = (min, id) => m >= min && m < min + 20 && flagOnce(`job|${id}|${key}`);
-    if (nseDay && at(8 * 60 + 45, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
-    else if (!nseDay && at(8 * 60 + 45, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; the Gold Petal plan still follows at 09:05.`, tag: 'td-brief', url: '/' });
-    for (const [min, id] of [[9 * 60 + 5, 'gold-am'], [17 * 60, 'gold-pm']]) {
+    if (nseDay && at(9 * 60 + 30, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
+    else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; a Gold Petal alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });
+    /* Gold Petal: an alert only when the plan is a trade (BUY with the drivers, or SELL); otherwise the status is
+       kept for the 15:00 "nothing ready" line. The 17:00 check catches the US-data evening. */
+    for (const [min, id] of [[9 * 60 + 45, 'gold-am'], [17 * 60, 'gold-pm']]) {
       if (at(min, id)) {
-        try { const g = await goldPlanS(); GOLD_PLAN_LAST = { plan: g, ts: Date.now() }; await pushAll({ title: `🟡 Gold Petal · ${min < 12 * 60 ? 'morning' : 'evening'} plan`, body: goldPlanText(g), tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' }); }
-        catch (e) { console.warn('Gold plan:', e.message); }
+        if (min < 12 * 60) await traceGoldDaily(key).catch(e => console.warn('Gold trace:', e.message));   /* yesterday's candle first */
+        try {
+          /* Ready = a trade plan whose entry is within one day's range (1 ATR) of the price. A plan that waits for a
+             bigger dip / rise is alerted later, when price reaches its level (below). */
+          const g = await goldPlanS(), trade = ((g.side === 'BUY' && !g.driverBlock) || g.side === 'SELL') && g.entry > 0 && Math.abs(g.entry - g.price) <= (g.atr || 0);
+          GOLD_PLAN_LAST = { plan: g, ts: Date.now() };
+          const waiting = !trade && g.entry > 0 && (g.side === 'SELL' || (g.side === 'BUY' && !g.driverBlock));
+          GOLD_STATUS = { day: key, text: waiting ? `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - alert when price reaches ${inr(g.entry)} (now ${inr(g.price)})` : goldPlanText(g).split('\n')[0] };
+          if (trade) {
+            traceGoldRecord(g, `ready ${min < 12 * 60 ? '09:45' : '17:00'}`, key);
+            await pushAll({ title: `🟡 Gold Petal · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
+          }
+        } catch (e) { GOLD_STATUS = { day: key, text: `plan not available (${e.message})` }; console.warn('Gold plan:', e.message); }
       }
     }
-    if (nseDay && at(9 * 60 + 30, 'nifty-opt')) {
-      try { const r = await niftyRuleS(); await pushAll({ title: `📊 Nifty options · your rule`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
-      catch (e) { await pushAll({ title: '📊 Nifty options · your rule', body: `NSE option chain not reachable (${e.message}) - check it in the app.`, tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
+    /* Nifty options at 10:00 (opening premiums settle in the first 30 min): an alert only when your rule passes. */
+    if (nseDay && at(10 * 60, 'nifty-opt')) {
+      try {
+        const r = await niftyRuleS();
+        NIFTY_STATUS = { day: key, text: String(r.rule.verdict || (r.rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) };
+        if (r.rule.ok) { traceNiftyRecord(r, key); await pushAll({ title: `📊 Nifty options · your rule passed`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
+      } catch (e) { NIFTY_STATUS = { day: key, text: `NSE option chain not reachable at 10:00 (${e.message})` }; }
+      await traceNiftyCheck(key, m, 'morning').catch(e => console.warn('Nifty trace:', e.message));
     }
+    /* Nifty trace: close at the end of the week (15:05 on its last trading day); settle expiries at 15:40. */
+    if (nseDay && key === lastTradingDayOfWeek(key) && at(15 * 60 + 5, 'trace-nifty-week')) await traceNiftyCheck(key, m, 'week').catch(e => console.warn('Nifty trace:', e.message));
+    if (at(15 * 60 + 40, 'trace-nifty-settle')) await traceNiftyCheck(key, m, 'settle').catch(e => console.warn('Nifty trace:', e.message));
     if (nseDay && at(9 * 60 + 20, 'trade-checks')) {
       const msgs = await openTradeDailyChecks().catch(() => []);
       if (msgs.length) await pushAll({ title: '📋 Your open trades', body: msgs.join('\n'), tag: 'td-trades', url: '/?view=trades' });
     }
-    /* Gold Petal: price reached the planned buy level (a "wait for a dip" plan), once a day, MCX hours. */
+    /* Gold Petal: price reached the planned level of a "wait for a dip" buy or "wait for a rise" sell, once a day,
+       MCX hours. */
     if (m >= 9 * 60 && m <= 23 * 60 + 30) {
       if (!GOLD_PLAN_LAST || Date.now() - GOLD_PLAN_LAST.ts > 30 * 60e3) { try { GOLD_PLAN_LAST = { plan: await goldPlanS(), ts: Date.now() }; } catch {} }
       const g = GOLD_PLAN_LAST?.plan;
       /* The plan is rebuilt every 30 min from the live price, so once price falls to the planned dip level the new plan
          says "buy now" and its entry equals the price: remember the day's planned level and alert against that. */
-      if (g && g.side === 'BUY' && !g.driverBlock && g.entry < g.price * 0.999 && (!GOLD_BUY_LEVEL || GOLD_BUY_LEVEL.day !== key || GOLD_BUY_LEVEL.entry !== g.entry))
-        GOLD_BUY_LEVEL = { day: key, entry: g.entry, sl: g.sl, t1: g.t1, calK: g.calK || 1 };
-      if (g && (g.side !== 'BUY' || g.driverBlock)) GOLD_BUY_LEVEL = null;   /* trend or drivers turned: no buy alert */
+      const tradeSide = g && ((g.side === 'BUY' && !g.driverBlock) || g.side === 'SELL') ? g.side : null;
+      if (tradeSide && (tradeSide === 'BUY' ? g.entry < g.price * 0.999 : g.entry > g.price * 1.001) &&
+          (!GOLD_BUY_LEVEL || GOLD_BUY_LEVEL.day !== key || GOLD_BUY_LEVEL.entry !== g.entry || GOLD_BUY_LEVEL.side !== tradeSide))
+        GOLD_BUY_LEVEL = { day: key, side: tradeSide, entry: g.entry, sl: g.sl, t1: g.t1, t2: g.t2, e20: g.e20, smallSize: g.smallSize, calK: g.calK || 1 };
+      if (g && !tradeSide) GOLD_BUY_LEVEL = null;   /* trend or drivers turned: no level alert */
       if (GOLD_BUY_LEVEL && GOLD_BUY_LEVEL.day === key) {
-        const lv = GOLD_BUY_LEVEL;
+        const lv = GOLD_BUY_LEVEL, sell = lv.side === 'SELL';
         let q; try { q = await quickPriceFor('MCX:GOLDPETAL'); } catch {}
         const p = q?.price ? q.price * (lv.calK || 1) : null;   /* the plan's levels are in calibrated MCX terms */
-        if (p && p <= lv.entry && p > lv.sl && flagOnce(`gold-buyzone|${key}`)) await pushAll({ title: `🟡 Gold Petal at your buy level ${inr(lv.entry)}`, body: `Now ${inr(p)}. Stop ${inr(lv.sl)} · T1 ${inr(lv.t1)}. Check the MCX quote before ordering.`, tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
+        if (p && (sell ? p >= lv.entry && p < lv.sl : p <= lv.entry && p > lv.sl) && flagOnce(`gold-${sell ? 'sellzone' : 'buyzone'}|${key}`)) {
+          traceGoldLevel(lv, p, key);
+          await pushAll({ title: `🟡 Gold Petal at your ${sell ? 'sell (small size)' : 'buy'} level ${inr(lv.entry)}`, body: `Now ${inr(p)}. Stop ${inr(lv.sl)} · T1 ${inr(lv.t1)}. Check the MCX quote before ordering.`, tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
+        }
       }
     }
   } finally { ASSIST_RUNNING = false; }
 }
-let GOLD_PLAN_LAST = null, GOLD_BUY_LEVEL = null;
+let GOLD_PLAN_LAST = null, GOLD_BUY_LEVEL = null, GOLD_STATUS = null, NIFTY_STATUS = null;
+/* ══════════════════════════════════════════════════════════════════
+   SIGNAL TRACE - every alerted trade followed to its exit, checked ONCE A DAY (few calls):
+   - Stocks: each READY pick of the 11:00 / 15:00 scans is recorded here (entry = the price at the scan); the
+     Track record page adds it to its stock list and walks the daily candles: stop, T1 / T2, and an exit at the
+     close of day 10 at the latest.
+   - Gold Petal: recorded when the server alerts a trade (ready at 09:45 / 17:00, or price reaching a waiting plan's
+     level). Entry = the plan's defined price: filled at once when price is already there, else when the level
+     alert sees price reach it that day ("Not filled" otherwise). Checked each morning at 09:45 on the completed
+     daily candles (the same quote the 09:45 plan uses - no extra call): stop -1R · at T1 half booked and the stop
+     moved to entry · the rest at T2, at entry, or on a daily close through the plan's EMA.
+   - Nifty options: recorded when the 10:00 rule passes (premiums from NSE). Checked each morning at 10:00: closed
+     once 80% of the premium is earned, or at the stop (loss 2x the credit); otherwise closed at 15:05 on the last
+     trading day of the week (Friday), or settled at expiry if that comes first. 1R = 2x the credit.
+   Stored in the synced key td_trace so the phone keeps a copy and uploads it again after a Render restart wiped
+   the server's disk; the server and the page merge the two copies by record id.
+══════════════════════════════════════════════════════════════════ */
+const TRACE_KEY = 'td_trace';
+const r2 = v => Math.round(+v * 100) / 100;
+function traceParse(v) {
+  try { const j = JSON.parse(v || 'null'); if (j && Array.isArray(j.rows)) return { clearedAt: +j.clearedAt || 0, rows: j.rows.filter(r => r && r.id) }; } catch {}
+  return { clearedAt: 0, rows: [] };
+}
+function traceMerge(a, b) {
+  const clearedAt = Math.max(+a.clearedAt || 0, +b.clearedAt || 0), m = new Map();
+  for (const r of [...a.rows, ...b.rows]) {
+    if ((+r.createdAt || 0) <= clearedAt) continue;
+    const o = m.get(r.id);
+    if (!o || (+r.upd || 0) > (+o.upd || 0)) m.set(r.id, r);
+  }
+  return { clearedAt, rows: [...m.values()].sort((x, y) => (+x.createdAt || 0) - (+y.createdAt || 0)).slice(-500) };
+}
+function traceLoad() { return traceParse(USER_STORE.keys[TRACE_KEY]?.v); }
+function traceSave(t) { USER_STORE.keys[TRACE_KEY] = { v: JSON.stringify(t), t: Math.max(Date.now(), (+USER_STORE.keys[TRACE_KEY]?.t || 0) + 1) }; saveStore(); }
+
+/* Stocks: the READY picks of a scan (entry = price at the scan). Stock records older than 60 days are dropped -
+   by then the page has copied them into its own list. */
+function traceStockRecord(picks, key) {
+  if (!picks?.length) return;
+  const t = traceLoad(), now = Date.now();
+  t.rows = t.rows.filter(r => r.kind !== 'stock' || now - (+r.createdAt || 0) < 60 * 86400e3);
+  let added = 0;
+  for (const x of picks) {
+    const sym = String(x.sym || '').toUpperCase(), price = +x.price, pl = x.plan || {};
+    if (!sym || !(price > 0) || t.rows.some(r => r.kind === 'stock' && r.date === key && r.sym === sym)) continue;
+    t.rows.push({ id: `stock|${key}|${sym}`, kind: 'stock', sym, date: key, createdAt: now, upd: now, entry: r2(price),
+      sl: +pl.stop > 0 ? r2(pl.stop) : null, t1: +pl.target > 0 ? r2(pl.target) : null, setup: x.pickedSetup || x.selectedStrategy || null,
+      bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null });
+    added++;
+  }
+  if (added) traceSave(t);
+}
+
+/* Gold Petal ----------------------------------------------------- */
+function traceGoldRecord(g, via, key, filledNow = false) {
+  const t = traceLoad();
+  if (t.rows.some(r => r.kind === 'gold' && !r.closed)) return null;   /* one Gold Petal trade at a time, like the plan */
+  const long = g.side !== 'SELL', now = Date.now(), entry = r2(g.entry), price = +g.price;
+  const filled = filledNow || (long ? price <= entry * 1.001 : price >= entry * 0.999);
+  const row = { id: `gold|${now}`, kind: 'gold', sym: 'MCX:GOLDPETAL', date: key, createdAt: now, upd: now, via,
+    side: long ? 'BUY' : 'SELL', small: !!g.smallSize, entry, sl: r2(g.sl), t1: r2(g.t1), t2: r2(g.t2), calK: +g.calK || 1,
+    trailRef: Number.isFinite(+g.e20) && (long ? price > g.e20 : price < g.e20) ? 'e20' : 'e50',
+    phase: filled ? 'entry' : 'pending', status: filled ? 'Open' : `Waiting for ${inr(entry)} today`, closed: false,
+    filledAt: filled ? now : null, mark: r2(price), markAt: now, resultR: null };
+  t.rows.push(row); traceSave(t);
+  return row;
+}
+/* The level alert saw price reach the entry: a waiting record becomes the trade; with none waiting, a new one. */
+function traceGoldLevel(lv, p, key) {
+  const t = traceLoad(), side = lv.side === 'SELL' ? 'SELL' : 'BUY';
+  const w = t.rows.find(r => r.kind === 'gold' && !r.closed && r.phase === 'pending' && r.side === side && r.date === key);
+  if (w) { w.phase = 'entry'; w.status = 'Open'; w.filledAt = Date.now(); w.mark = r2(p); w.markAt = Date.now(); w.upd = Date.now(); traceSave(t); return w; }
+  return traceGoldRecord({ ...lv, price: p }, 'price reached the planned level', key, true);
+}
+function emaSeries(C, p) {
+  const o = new Array(C.length).fill(null); if (C.length < p) return o;
+  const k = 2 / (p + 1); let e = C.slice(0, p).reduce((a, b) => a + b, 0) / p; o[p - 1] = e;
+  for (let i = p; i < C.length; i++) { e = C[i] * k + e * (1 - k); o[i] = e; }
+  return o;
+}
+/* One completed daily candle {h, l, c, e20, e50} (calibrated) applied to an open Gold Petal record. When one candle
+   reaches both the stop and a target the order is unknown, so the record is marked Ambiguous instead of guessed. */
+function traceGoldBar(r, b) {
+  const long = r.side !== 'SELL', sg = long ? 1 : -1, risk = Math.abs(r.entry - r.sl);
+  const R = px => risk > 0 ? r2((px - r.entry) * sg / risk) : 0;
+  const up = lv => long ? b.h >= lv : b.l <= lv, down = lv => long ? b.l <= lv : b.h >= lv;
+  const close = (status, res, px) => { r.closed = true; r.status = status; r.resultR = res == null ? null : r2(res); r.closedAt = Date.now(); r.exitDate = b.date; if (px != null) r.exit = r2(px); };
+  if (r.phase === 'entry') {
+    const sl = down(r.sl), t1 = up(r.t1), t2 = up(r.t2);
+    if (sl && (t1 || t2)) close('Ambiguous: stop and target on the same day', null);
+    else if (t2) close('T2 hit', 0.5 * R(r.t1) + 0.5 * R(r.t2), r.t2);
+    else if (t1) { r.phase = 'trail'; r.rT1 = R(r.t1); r.status = 'T1 hit · half booked, stop at entry'; r.resultR = r2(0.5 * r.rT1); }
+    else if (sl) close('SL hit', -1, r.sl);
+  } else if (r.phase === 'trail') {
+    const rT1 = +r.rT1 || R(r.t1), t2 = up(r.t2), be = down(r.entry);
+    const ema = r.trailRef === 'e50' ? b.e50 : b.e20;
+    if (t2 && be) close('Ambiguous: T2 and entry on the same day', null);
+    else if (t2) close('T2 hit', 0.5 * rT1 + 0.5 * R(r.t2), r.t2);
+    else if (be) close('Rest stopped at entry', 0.5 * rT1, r.entry);
+    else if (Number.isFinite(+ema) && Number.isFinite(+b.c) && (long ? b.c < ema : b.c > ema)) close(`Daily close ${long ? 'below' : 'above'} ${r.trailRef === 'e50' ? 'EMA50' : 'EMA20'}`, 0.5 * rT1 + 0.5 * R(b.c), b.c);
+  }
+}
+/* Each morning (09:45): completed candles after the record day. The record day's candle is not judged - its
+   high / low may have come before the alert (same rule as the stock Track record). */
+async function traceGoldDaily(key) {
+  const t = traceLoad(), open = t.rows.filter(r => r.kind === 'gold' && !r.closed);
+  if (!open.length) return;
+  const q = (await cacheWrap('quote:MCX:GOLDPETAL', TTL.mcx, () => buildQuotePayload('MCX:GOLDPETAL'))).value, d = q?.daily;
+  if (!d?.C?.length) return;
+  let changed = false;
+  for (const r of open) {
+    if (r.phase === 'pending') {
+      if (r.date < key) { r.closed = true; r.status = 'Not filled (entry not reached that day)'; r.resultR = null; r.closedAt = Date.now(); r.upd = Date.now(); changed = true; }
+      continue;
+    }
+    const k = +r.calK || 1, C = d.C.map(v => v * k), e20 = emaSeries(C, 20), e50 = emaSeries(C, 50);
+    const from = r.evalThrough && r.evalThrough > r.date ? r.evalThrough : r.date;
+    for (let i = 0; i < d.C.length && !r.closed; i++) {
+      const date = d.T?.[i] ? istDateKey(d.T[i] * 1000) : null;
+      if (!date || date <= from || date >= key) continue;
+      traceGoldBar(r, { date, h: d.H[i] * k, l: d.L[i] * k, c: C[i], e20: e20[i], e50: e50[i] });
+      r.evalThrough = date; r.mark = r2(C[i]); r.markAt = Date.now(); r.upd = Date.now(); changed = true;
+    }
+  }
+  if (changed) traceSave(t);
+}
+
+/* Nifty options -------------------------------------------------- */
+function traceNiftyRecord({ rule, chain }, key) {
+  const p = rule.pick; if (!rule.ok || !p || p.none) return null;
+  const t = traceLoad();
+  if (t.rows.some(r => r.kind === 'nifty' && !r.closed && r.expiry === chain.expiry && r.ty === p.ty)) return null;   /* one per expiry and side */
+  const now = Date.now();
+  const row = { id: `nifty|${chain.expiry}|${p.ty}|${now}`, kind: 'nifty', sym: 'NSE:NIFTY', date: key, createdAt: now, upd: now,
+    type: p.type, ty: p.ty, sell: +p.sell, buy: +p.buy, credit: r2(p.credit), width: Math.abs(+p.sell - +p.buy), expiry: chain.expiry, lot: 65,
+    spot: r2(rule.spot), stopValue: r2(3 * p.credit), targetValue: r2(0.2 * p.credit), mark: r2(p.credit), markAt: now, status: 'Open', closed: false, resultR: null, pnlPts: null };
+  t.rows.push(row); traceSave(t);
+  return row;
+}
+function ocPxS(chain, k, ty) {
+  const v = SwingPlan.ocPremium(chain, k, ty); if (v > 0) return v;
+  const row = (chain?.strikes || []).find(x => +x.k === +k), o = row ? (ty === 'C' ? row.ce : row.pe) : null;
+  return o && +o.ltp >= 0 ? +o.ltp : null;
+}
+async function niftyCloseOn(dateKey, todayKey, m) {
+  if (dateKey === todayKey && m >= 15 * 60 + 30) { try { const r = (await nseAllIndices()).get('NIFTY 50'); if (+r?.last > 0) return +r.last; } catch {} }
+  const b = parseBars(await withTimeout(safeFetch(() => yfChart('^NSEI', '1d', '1mo'), 1), 15000, 'Nifty closes'));
+  for (let i = b.T.length - 1; i >= 0; i--) if (b.T[i] && istDateKey(b.T[i] * 1000) === dateKey) return +b.C[i];
+  return null;
+}
+function traceNiftySettle(r, spot) {
+  const intrinsic = Math.max(0, Math.min(r.width, r.ty === 'P' ? r.sell - spot : spot - r.sell));
+  r.pnlPts = r2(r.credit - intrinsic); r.resultR = r2(r.pnlPts / (2 * r.credit)); r.closed = true; r.closedAt = Date.now(); r.exitSpot = r2(spot);
+  r.status = intrinsic <= 0 ? 'Expired worthless · full credit kept' : intrinsic >= r.width ? 'Expired · max loss' : 'Expired · part of the credit lost';
+  r.mark = r2(intrinsic); r.markAt = Date.now(); r.upd = Date.now();
+}
+/* The last NSE trading day of the week that contains `key` (Friday, or earlier when Friday is a holiday). */
+function lastTradingDayOfWeek(key) {
+  const d = new Date(key + 'T00:00:00Z'), dow = d.getUTCDay();
+  for (let i = 5 - dow; i >= 0; i--) {
+    const x = new Date(d); x.setUTCDate(d.getUTCDate() + i);
+    const k = x.toISOString().slice(0, 10);
+    if (!isNseHoliday(k)) return k;
+  }
+  return key;
+}
+/* mode: 'morning' (10:00: 80% / stop), 'week' (15:05 on the week's last trading day: close everything older than
+   today), 'settle' (15:40: expiries of today). Expiries already past (server was down) settle from Yahoo's close. */
+async function traceNiftyCheck(key, m, mode = 'morning') {
+  const t = traceLoad(), open = t.rows.filter(r => r.kind === 'nifty' && !r.closed);
+  if (!open.length) return;
+  let changed = false;
+  for (const exp of [...new Set(open.map(r => r.expiry))]) {
+    const rows = open.filter(r => r.expiry === exp);
+    if (exp < key || (exp === key && mode === 'settle')) {
+      let spot = null; try { spot = await niftyCloseOn(exp, key, m); } catch {}
+      if (spot > 0) { rows.forEach(r => traceNiftySettle(r, spot)); changed = true; }
+      continue;
+    }
+    if (mode === 'settle') continue;
+    const due = mode === 'week' ? rows.filter(r => r.date < key) : rows;
+    if (!due.length) continue;
+    let chain; try { chain = await withTimeout(getOptionChain('NSE:NIFTY', exp), 25000, 'Nifty chain'); } catch { continue; }
+    if (chain.expiry !== exp) continue;
+    const spot = +chain.spot;
+    for (const r of due) {
+      const a = ocPxS(chain, r.sell, r.ty), b = ocPxS(chain, r.buy, r.ty);
+      if (!(a > 0) || b == null) continue;
+      const v = r2(Math.max(0, a - b)), tgt = +r.targetValue || r2(0.2 * r.credit);
+      r.pnlPts = r2(r.credit - v); r.resultR = r2(r.pnlPts / (2 * r.credit)); r.mark = v; r.markAt = Date.now(); r.upd = Date.now(); changed = true;
+      const shut = status => { r.closed = true; r.closedAt = Date.now(); r.exitSpot = r2(spot); r.status = status; };
+      if (v <= tgt) shut('80% of the premium earned · closed');
+      else if (v >= r.stopValue) shut('Stop hit (loss 2x the credit)');
+      else if (mode === 'week') shut('Closed at the end of the week');
+      else r.status = spot > 0 && (r.ty === 'P' ? spot < r.sell : spot > r.sell) ? 'Open · Nifty through the short strike' : 'Open';
+    }
+  }
+  if (changed) traceSave(t);
+}
+
 
 setInterval(() => {
   serverAlertTick().catch(e => console.warn('Alert engine:', e.message));
@@ -6299,7 +6605,7 @@ setInterval(() => {
 }, 60 * 1000);
 
 /* Render free sleeps after ~15 idle minutes, which stops the alert engine and the scheduled scans - and a sleeping
-   process runs no timers, so it cannot wake itself (an overnight pause meant no 09:25 scan). A request to its own
+   process runs no timers, so it cannot wake itself (an overnight pause meant no morning alerts). A request to its own
    public address every 10 minutes, around the clock, keeps it awake: ~744 h a month, inside the 750 free hours
    (if no other free Render service shares them). */
 if (ON_RENDER && process.env.RENDER_EXTERNAL_URL) {

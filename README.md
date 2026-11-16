@@ -79,15 +79,30 @@ Telegram alerts (free, optional):
 2. Render → your service → Environment → add TELEGRAM_BOT_TOKEN = that token → Save (Render redeploys).
 3. Open your new bot in Telegram and send /start. In TradeDesk: Screener → My trades → Telegram alerts → Link.
 Every alert then also arrives in Telegram. Schedule (IST, NSE trading days unless noted):
-- 08:45 morning brief: market regime, holidays / special sessions, high-impact events, your open trades, Gold Petal.
-- 09:05 and 17:00 (weekdays) Gold Petal plan (buy-only, 2 of 3 drivers), and an alert when price reaches the buy level.
-- 09:25 and 15:15 scan summary; 11:30 and 13:30 only stocks that NEWLY turned READY / buy-limit / quick bounce.
-- 09:30 Nifty options: your credit-spread rule on the live NSE chain.
+- 09:20 your open trades: day-10 time exit, results / ex-dates close, Gold Petal expiry (only when there is one).
+- 09:30 morning brief: new entries allowed / small size / not today, global bias, India market regime, FII/DII,
+  holidays, high-impact events, your open trades and open risk, up to 3 market-moving headlines.
+- 09:45 and 17:00 (weekdays) Gold Petal: only when a BUY (2 of 3 drivers) or SELL is ready (entry within 1 ATR of
+  the price); a plan waiting for a bigger dip / rise alerts when price reaches its buy / sell level.
+- 10:00 Nifty options: only when your credit-spread rule passes on the live NSE chain.
+- 11:00 and 15:00 stock scans: READY / buy-limit / quick bounce stocks. At 15:00, when nothing was ready, one quiet
+  line with the day's Gold Petal and Nifty status (so a silent day is not mistaken for a broken app).
+
+Track record (Screener → Track record) has three sub-tabs, all checked once a day:
+- Stocks: every READY pick (the server records the 11:00 / 15:00 scan picks even when the app is closed), entry =
+  the price when it turned READY; stop, T1 / T2 on each day's candle; closed at the close of day 10 at the latest.
+- Gold Petal: entry at the plan's defined price; checked each morning on the completed daily candles.
+- Nifty options: entry at the 10:00 NSE premiums; closed once 80% of the premium is earned, at the stop (loss 2x
+  the credit), or at 15:05 on Friday (the week's last trading day).
+They sync like My trades, so a Render restart does not lose them.
+
+/api/health (open it while logged in) shows nseOptionChain: the time of the last good NSE option-chain answer and
+the last error, if any.
 - Any time the market is open: stop or target 1 hit on a trade in My trades (tap 📒 when you take a trade).
 
 Notes for the free plan:
 - The server keeps itself awake around the clock (it calls its own address every 10 minutes), so there is no cold
-  start and alerts / the 09:25 and 15:15 scans always run. That uses about 744 of the 750 free instance hours a
+  start and alerts / the 11:00 and 15:00 scans always run. That uses about 744 of the 750 free instance hours a
   month, so it works only while this is your ONLY free Render web service: a second free service would use up the
   hours before the month ends and Render would pause both until the 1st.
 - Render's free disk is wiped on every deploy: your alerts / Track Record come back automatically the next time

@@ -136,7 +136,7 @@ function jTelegramHtml(st){
   const steps = `<ol class="j-steps"><li>In Telegram, open <b>@BotFather</b> → send <code>/newbot</code> → pick a name → copy the token it gives you.</li><li>Render → your service → <b>Environment</b> → add <code>TELEGRAM_BOT_TOKEN</code> = that token → save (it redeploys).</li><li>Open your new bot in Telegram, send <code>/start</code>, then press <b>Link</b> here.</li></ol>`;
   return `<div class="idea-card j-tg">
     <div class="idea-head"><div><div class="idea-kicker">Telegram alerts</div><div class="idea-title">${st.linked ? `Linked to ${escHtml(st.name || 'your chat')}` : st.configured ? 'Bot ready - link your chat' : 'Not set up'}</div></div><div class="idea-view ${st.linked ? 'bull' : 'neutral'}">${st.linked ? 'ON' : 'OFF'}</div></div>
-    <div class="idea-foot">Every alert also goes to Telegram: stop / target on your trades, new READY stocks, the 08:45 brief, Gold Petal 09:05 / 17:00, Nifty options 09:30. Free.</div>
+    <div class="idea-foot">Every alert also goes to Telegram: stop / target on your trades, new READY stocks, the 09:30 brief, Gold Petal 09:45 / 17:00 and Nifty options 10:00 when there is a trade, stock scans 11:00 / 15:00. Free.</div>
     ${st.configured ? '' : steps}
     <div class="j-actions">${st.configured && !st.linked ? `<button class="idea-btn" onclick="jTelegram('link')">Link</button>` : ''}${st.linked ? `<button class="idea-btn" onclick="jTelegram('test')">Send test</button><button class="idea-btn ghost" onclick="jTelegram('unlink')">Unlink</button>` : ''}${st.configured && !st.linked ? '<span class="idea-foot">Send /start to your bot first.</span>' : ''}</div>
     <div id="j-tg-msg" class="idea-foot"></div>

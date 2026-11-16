@@ -92,3 +92,10 @@
 .td-mtab-st{font-size:.58rem;color:var(--tx3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .td-mtab-st.live{color:var(--bull)}
 .td-mtab-wide{grid-column:span 2}
+
+/* Track record sub-tabs: Stocks / Gold Petal / Nifty options */
+.td-trace-sub{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}
+/* Own class: the phone stylesheet hides .scr-summary on screener pages, but the win rate is the point here. */
+.td-trace-sum{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:14px}
+@media(max-width:620px){.td-trace-sum{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}}
+.td-trace-sub .scr-tab{padding:5px 12px;font-size:.74rem}
