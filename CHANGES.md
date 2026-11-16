@@ -769,3 +769,13 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **Nifty options track:** entry at the 10:00 NSE premiums. Checked each morning at 10:00: closed once 80% of the premium is earned, or at the stop (loss 2× the credit). Otherwise closed at 15:05 on the last trading day of the week (Friday; Thursday when Friday is a holiday). A trade opened on that day carries over to the next week. Settled at expiry if that comes first.
 - **Stocks track:** entry = the price when the pick turned READY. The server now records the READY picks of its 11:00 / 15:00 scans, so picks are tracked even on days the app is not opened. Checked on each day's candle; **closed at the close of day 10 at the latest, also after T1** (a trade still trailing used to run on without a limit). The day count comes from the candles, so trades already in the list get the cap too.
 - Page version 16 Nov 2026 · 3.
+
+## NSE data reliability, FII / DII day cache, Gold 10-day limit (16 Nov 2026)
+
+- **Why NSE premiums, indices and FII / DII still failed - root cause found and reproduced.** Every NSE request waits its turn in a one-at-a-time queue. Two faults made that queue collapse when NSE answers slowly (as from a cloud server like Render): every caller that had no session cookie fetched NSE's 340 KB option-chain page itself (one page load queued up to 11 of them), and the 15-25 s timeouts counted the time spent waiting in the queue, so calls timed out before their turn and their answers were thrown away. Simulated at 4 s per NSE answer: before - all 5 NSE items failed, 17 requests; now - all loaded, 10 requests. Against real NSE from this PC: 4 items in 10 s instead of 16 s.
+  - One cookie-page fetch at a time serves every caller; the cookie is kept 30 minutes (NSE's lasts 2 h) and refreshed from NSE's own answers.
+  - Timeouts no longer include the queue wait: a page may stop waiting, but the NSE answer still arrives and fills the cache for the next look.
+  - /api/health also shows nseCookie (cookie-page fetches) and fiiDii (day held / day expected).
+- **FII / DII kept for the day.** Once the figures for the latest published day are in, NSE is not asked again (kept in data/fii-dii.json, so a restart does not refetch). Only after 17:30 IST on a trading day, while that day's figures are not out, it asks again - at most every 30 minutes.
+- **Gold Petal track: 10-day limit.** A trade that reaches neither stop nor target is closed at the close of day 10 (after T1: the running half), like the stock swing trades.
+- Page version 16 Nov 2026 · 4.

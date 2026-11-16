@@ -637,7 +637,7 @@ async function nseAllIndices() {
   if (Date.now() < NSE_ALLIDX_DOWN_UNTIL) throw new Error('NSE indices paused after a failure');
   if (NSE_ALLIDX_INFLIGHT) return NSE_ALLIDX_INFLIGHT;
   NSE_ALLIDX_INFLIGHT = (async () => {
-    const j = await withTimeout(nseOcGet('/api/allIndices'), 25000, 'NSE allIndices');   /* waits behind other NSE calls in the queue */
+    const j = await nseOcGet('/api/allIndices');   /* no timeout around the queue wait: see nseOptionCookie */
     const map = new Map((j.data || []).map(r => [String(r.index || '').toUpperCase(), r]));
     if (!map.size) throw new Error('NSE allIndices empty');
     /* "09-Nov-2026 15:30" (IST) -> unix s: the time of the values, used by the sectors' stale-quote check. */
@@ -652,7 +652,7 @@ async function nseAllIndices() {
 async function nseIndexPrice(sym) {
   const name = NSE_INDEX_NAME[sym];
   if (!name) throw new Error('No NSE index name for ' + sym);
-  const r = (await nseAllIndices()).get(name);
+  const r = (await withTimeout(nseAllIndices(), 25000, 'NSE allIndices')).get(name);   /* the fetch goes on and fills the cache */
   if (!r || !(+r.last > 0)) throw new Error('NSE has no value for ' + name);
   return { liveRaw:+r.last, prevRaw:+r.previousClose || +r.last, rawPct:+r.percentChange || 0, todayOpen:+r.open || +r.last,
     todayHigh:+r.high || +r.last, todayLow:+r.low || +r.last, todayVol:0, changeBasis:'previousClose', basisTime:null, source:'NSE',
@@ -4665,12 +4665,12 @@ async function refreshNseCalendar(force = false) {
   NSE_CAL_INFLIGHT = (async () => {
     let changed = false;
     if (stale('hol')) try {
-      const j = await withTimeout(nseOcGet('/api/holiday-master?type=trading'), 15000, 'NSE holidays');
+      const j = await nseOcGet('/api/holiday-master?type=trading');
       const list = (j.CM || j.FO || []).map(h => ({ date: nseDdMmmToKey(h.tradingDate), name: String(h.description || '').replace(/\*$/, '').trim(), special: /\*\s*$/.test(String(h.description || '')) })).filter(h => h.date);
       if (list.length >= 5) { NSE_CAL.holidays = list; NSE_CAL.ts.hol = Date.now(); applyNseHolidays(); changed = true; }
     } catch (e) { console.warn('NSE holidays:', e.message); }
     if (stale('corp')) try {
-      const j = await withTimeout(nseOcGet(`/api/corporates-corporateActions?index=equities&from_date=${nseDateParamS(Date.now() - 2 * 86400e3)}&to_date=${nseDateParamS(Date.now() + 30 * 86400e3)}`), 15000, 'NSE corporate actions');
+      const j = await nseOcGet(`/api/corporates-corporateActions?index=equities&from_date=${nseDateParamS(Date.now() - 2 * 86400e3)}&to_date=${nseDateParamS(Date.now() + 30 * 86400e3)}`);
       const rows = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : null;
       if (!rows) throw new Error('unexpected NSE corporate-action answer');
       if (!rows.length && Object.keys(NSE_CAL.corp || {}).length) throw new Error('NSE returned no corporate actions - keeping the last list');
@@ -4683,7 +4683,7 @@ async function refreshNseCalendar(force = false) {
       NSE_CAL.corp = corp; NSE_CAL.ts.corp = Date.now(); changed = true;
     } catch (e) { console.warn('NSE corporate actions:', e.message); }
     if (stale('surv')) try {
-      const [asm, gsm] = await Promise.all([withTimeout(nseOcGet('/api/reportASM'), 15000, 'NSE ASM'), withTimeout(nseOcGet('/api/reportGSM'), 15000, 'NSE GSM')]);
+      const [asm, gsm] = await Promise.all([nseOcGet('/api/reportASM'), nseOcGet('/api/reportGSM')]);
       const surv = {};
       for (const r of [...(asm?.longterm?.data || []), ...(asm?.shortterm?.data || [])]) if (r.symbol) surv[String(r.symbol).toUpperCase()] = `ASM ${String(r.survDesc || '').match(/Long Term|Short Term/i)?.[0] || ''} ${r.asmSurvIndicator || ''}`.replace(/\s+/g, ' ').trim();
       for (const r of (Array.isArray(gsm) ? gsm : gsm?.data || [])) if (r.symbol) surv[String(r.symbol).toUpperCase()] = `GSM stage ${r.gsmStage || ''}`.trim();
@@ -4981,28 +4981,53 @@ async function apiScreenerExplain(req, res, p) {
    NSE needs a session cookie from its own option-chain page first. One cookie serves 10 minutes; the chain is
    cached 3 minutes in market hours (30 outside), and goes through the NSE queue (one request at a time). */
 const OC_SYMBOLS = { 'NSE:NIFTY':'NIFTY', 'NSE:BANKNIFTY':'BANKNIFTY', 'NSE:FINNIFTY':'FINNIFTY' };
-let NSE_OC_COOKIE = null;
-async function nseOptionCookie(force = false) {
-  if (!force && NSE_OC_COOKIE && Date.now() - NSE_OC_COOKIE.ts < 10 * 60 * 1000) return NSE_OC_COOKIE.v;
-  let page = await withTimeout(getWithHeaders(NSE_WWW + '/option-chain', { Accept:'text/html' }), 15000, 'NSE option-chain cookie');
-  if (nseFollowMove(page)) page = await withTimeout(getWithHeaders(NSE_WWW + '/option-chain', { Accept:'text/html' }), 15000, 'NSE option-chain cookie');
-  const v = (page.headers['set-cookie'] || []).map(c => String(c).split(';')[0]).join('; ');
-  if (!v) throw new Error('NSE gave no session cookie');
-  NSE_OC_COOKIE = { v, ts: Date.now() };
-  return v;
+/* NSE session cookie. Root cause of "NSE loads once, then premiums / indices / FII-DII fail" (16 Nov 2026): every
+   caller that found no cookie, or wanted a fresh one, fetched NSE's 340 KB option-chain page itself - a page load
+   queued up to 11 page fetches in NSE's one-at-a-time queue - and the 15 s timeouts counted the time spent WAITING
+   in that queue, so on a slow host every NSE call timed out before its turn and its answer was thrown away. Now one
+   page fetch at a time serves every caller, a cookie younger than a minute is reused even when a fresh one is
+   asked for, it is kept 30 minutes (NSE's nsit cookie lasts 2 h), and cookies NSE sends with API answers update it. */
+let NSE_OC_COOKIE = null, NSE_OC_COOKIE_INFLIGHT = null;
+const NSE_COOKIE_STATS = { pageFetches: 0, lastPageAt: null };
+function nseMergeCookies(base, setCookie) {
+  const jar = new Map(String(base || '').split(/;\s*/).filter(Boolean).map(c => [c.split('=')[0], c]));
+  for (const c of setCookie || []) { const kv = String(c).split(';')[0]; if (kv.includes('=')) jar.set(kv.split('=')[0], kv); }
+  return [...jar.values()].join('; ');
 }
+async function nseOptionCookie(force = false) {
+  const age = NSE_OC_COOKIE ? Date.now() - NSE_OC_COOKIE.ts : Infinity;
+  if (NSE_OC_COOKIE && (age < 60e3 || (!force && age < 30 * 60e3))) return NSE_OC_COOKIE.v;
+  if (NSE_OC_COOKIE_INFLIGHT) return NSE_OC_COOKIE_INFLIGHT;
+  NSE_OC_COOKIE_INFLIGHT = (async () => {
+    NSE_COOKIE_STATS.pageFetches++; NSE_COOKIE_STATS.lastPageAt = new Date().toISOString();
+    let page = await getWithHeaders(NSE_WWW + '/option-chain', { Accept:'text/html' });
+    if (nseFollowMove(page)) page = await getWithHeaders(NSE_WWW + '/option-chain', { Accept:'text/html' });
+    const v = nseMergeCookies('', page.headers['set-cookie']);
+    if (!v) throw new Error('NSE gave no session cookie (HTTP ' + page.status + ')');
+    NSE_OC_COOKIE = { v, ts: Date.now() };
+    return v;
+  })().finally(() => { NSE_OC_COOKIE_INFLIGHT = null; });
+  return NSE_OC_COOKIE_INFLIGHT;
+}
+/* One NSE API call. No timeout here on purpose: get() already gives each request 15 s idle / 20 s in total once it
+   is NSE's turn; a timeout around the queue wait is the caller's choice (a page may stop waiting, the fetch still
+   finishes and fills the cache for the next look). */
 async function nseOcGet(path) {
   const hdr = c => ({ Accept:'application/json', Referer: NSE_WWW + '/option-chain', Cookie:c });
+  const call = async c => { const r = await get(NSE_WWW + path, hdr(c));
+    if (r.headers?.['set-cookie'] && NSE_OC_COOKIE) NSE_OC_COOKIE.v = nseMergeCookies(NSE_OC_COOKIE.v, r.headers['set-cookie']);
+    return r; };
   let r;
-  try { r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie())), 15000, 'NSE option chain'); }
+  try { r = await call(await nseOptionCookie()); }
   catch (e) {
+    if (e.cooldown) throw e;   /* NSE is paused after a 429: do not queue more */
     /* NSE resets the connection when it sees bursts: one retry with a fresh session after a short pause. */
     await new Promise(res => setTimeout(res, 1500));
-    r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (retry)');
+    r = await call(await nseOptionCookie(true));
   }
   /* NSE moved to another address: new session there, then the same request again. */
-  if (nseFollowMove(r)) r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (new address)');
-  if (r.status === 401 || r.status === 403) r = await withTimeout(get(NSE_WWW + path, hdr(await nseOptionCookie(true))), 15000, 'NSE option chain (new cookie)');
+  if (nseFollowMove(r)) r = await call(await nseOptionCookie(true));
+  if (r.status === 401 || r.status === 403) r = await call(await nseOptionCookie(true));
   if (r.status !== 200) throw new Error('NSE HTTP ' + r.status);
   return JSON.parse(r.body);
 }
@@ -5378,16 +5403,37 @@ const NIFTY50_STOCKS = [
 ];
 
 const GLOBAL_LAST_GOOD = {};
-/* FII / DII provisional cash-market figures from NSE (one call, cached 3 h; NSE publishes after the close). */
+/* FII / DII provisional cash-market figures from NSE. NSE publishes them once, in the evening after the close, so
+   one answer serves until the next trading day's evening: once the figures for the latest published day are in
+   (kept in data/fii-dii.json too, so a restart does not refetch them), NSE is not asked again. Only after 17:30 IST
+   on a trading day, while that day's figures are not out yet, it asks again - at most every 30 minutes. */
+const FII_DII_FILE = require('path').join(__dirname, 'data', 'fii-dii.json');
 let FII_DII_CACHE = null, FII_DII_INFLIGHT = null;
+try { const v = JSON.parse(require('fs').readFileSync(FII_DII_FILE, 'utf8')); if (v?.date && (v.fii || v.dii)) FII_DII_CACHE = { value: v, ts: 0 }; } catch {}
+/* The latest trading day whose figures NSE should have published by now (17:30 IST). */
+function fiiDiiExpectedDate(ms = Date.now()) {
+  const ist = new Date(ms + 5.5 * 3600e3), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  let d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
+  const trading = x => { const k = x.toISOString().slice(0, 10), w = x.getUTCDay(); return w >= 1 && w <= 5 && !isNseHoliday(k); };
+  if (!(trading(d) && mins >= 17 * 60 + 30)) do { d = new Date(d.getTime() - 86400e3); } while (!trading(d));
+  return d.toISOString().slice(0, 10);
+}
+function fiiDiiNeedsFetch(ms = Date.now()) {
+  if (FII_DII_INFLIGHT) return false;
+  const v = FII_DII_CACHE?.value;
+  if (v?.date && v.date >= fiiDiiExpectedDate(ms)) return false;   /* already have the latest published day */
+  return !FII_DII_CACHE || ms - FII_DII_CACHE.ts > (v ? 30 : 20) * 60e3;
+}
 function refreshFiiDii() {
   if (FII_DII_INFLIGHT) return FII_DII_INFLIGHT;
-  FII_DII_INFLIGHT = withTimeout(nseOcGet('/api/fiidiiTradeReact'), 15000, 'NSE FII/DII').then(j => {
+  if (!fiiDiiNeedsFetch()) return Promise.resolve(FII_DII_CACHE?.value || null);
+  FII_DII_INFLIGHT = nseOcGet('/api/fiidiiTradeReact').then(j => {
     const rows = Array.isArray(j) ? j : [];
     const pick = re => { const r = rows.find(x => re.test(String(x.category || ''))); return r ? { buy: +r.buyValue, sell: +r.sellValue, net: +r.netValue } : null; };
     const fii = pick(/FII|FPI/i), dii = pick(/DII/i);
     if (!fii && !dii) throw new Error('NSE FII/DII empty');
     FII_DII_CACHE = { value: { date: nseDdMmmToKey(rows[0]?.date) || null, fii, dii }, ts: Date.now() };
+    try { require('fs').mkdirSync(require('path').dirname(FII_DII_FILE), { recursive: true }); require('fs').writeFileSync(FII_DII_FILE, JSON.stringify(FII_DII_CACHE.value)); } catch {}
     return FII_DII_CACHE.value;
   }).catch(e => { FII_DII_CACHE = { value: FII_DII_CACHE?.value || null, ts: Date.now() }; throw e; })
     .finally(() => { FII_DII_INFLIGHT = null; });
@@ -5475,8 +5521,8 @@ async function apiGlobal(req,res){
       if (now > 0 && prev > 0) data.goldInr = { label:'Gold ₹/g (Gold Petal proxy)', cat:'metal', price:+now.toFixed(2), prev:+prev.toFixed(2), chg:+(now - prev).toFixed(2), pct:+((now / prev - 1) * 100).toFixed(2), isUp: now >= prev, at: data.gold.at };
     }
     /* FII / DII net cash buying (NSE, published each evening): served from a day cache, never blocks the page. */
-    if (!FII_DII_CACHE?.value && (!FII_DII_CACHE || Date.now() - FII_DII_CACHE.ts > 20 * 60e3)) await Promise.race([refreshFiiDii().catch(() => {}), new Promise(r => setTimeout(r, 4000))]);
-    else if (FII_DII_CACHE && Date.now() - FII_DII_CACHE.ts > (FII_DII_CACHE.value ? 3 * 3600e3 : 20 * 60e3)) refreshFiiDii().catch(() => {});
+    if (!FII_DII_CACHE?.value && fiiDiiNeedsFetch()) await Promise.race([refreshFiiDii().catch(() => {}), new Promise(r => setTimeout(r, 4000))]);
+    else if (fiiDiiNeedsFetch()) refreshFiiDii().catch(() => {});
     data.fiiDii = FII_DII_CACHE?.value || null;
 
     /* IV Percentile: % of trading days in past year where VIX was BELOW current VIX
@@ -5621,7 +5667,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){send(res,{status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseOptionChain:NSE_OC_LAST,outbound:outboundStats()});}
+function apiHealth(req,res){send(res,{status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseOptionChain:NSE_OC_LAST,nseCookie:NSE_COOKIE_STATS,fiiDii:{date:FII_DII_CACHE?.value?.date||null,expected:fiiDiiExpectedDate()},outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -6496,6 +6542,13 @@ function traceGoldBar(r, b) {
     else if (t2) close('T2 hit', 0.5 * rT1 + 0.5 * R(r.t2), r.t2);
     else if (be) close('Rest stopped at entry', 0.5 * rT1, r.entry);
     else if (Number.isFinite(+ema) && Number.isFinite(+b.c) && (long ? b.c < ema : b.c > ema)) close(`Daily close ${long ? 'below' : 'above'} ${r.trailRef === 'e50' ? 'EMA50' : 'EMA20'}`, 0.5 * rT1 + 0.5 * R(b.c), b.c);
+  }
+  /* At most 10 trading days, like the stock swing trades: still open after the 10th completed day after the
+     entry -> closed at that day's close (before T1: all of it; after T1: the half that was still running). */
+  if (!r.closed && (r.phase === 'entry' || r.phase === 'trail')) {
+    r.days = (+r.days || 0) + 1;
+    if (r.days >= 10 && Number.isFinite(+b.c))
+      close(r.phase === 'trail' ? 'T1 hit · rest closed on day 10' : 'Day 10 exit', r.phase === 'trail' ? 0.5 * (+r.rT1 || R(r.t1)) + 0.5 * R(b.c) : R(b.c), b.c);
   }
 }
 /* Each morning (09:45): completed candles after the record day. The record day's candle is not judged - its

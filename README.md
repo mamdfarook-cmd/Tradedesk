@@ -91,13 +91,18 @@ Every alert then also arrives in Telegram. Schedule (IST, NSE trading days unles
 Track record (Screener → Track record) has three sub-tabs, all checked once a day:
 - Stocks: every READY pick (the server records the 11:00 / 15:00 scan picks even when the app is closed), entry =
   the price when it turned READY; stop, T1 / T2 on each day's candle; closed at the close of day 10 at the latest.
-- Gold Petal: entry at the plan's defined price; checked each morning on the completed daily candles.
+- Gold Petal: entry at the plan's defined price; checked each morning on the completed daily candles; closed at
+  the close of day 10 at the latest.
 - Nifty options: entry at the 10:00 NSE premiums; closed once 80% of the premium is earned, at the stop (loss 2x
   the credit), or at 15:05 on Friday (the week's last trading day).
 They sync like My trades, so a Render restart does not lose them.
 
 /api/health (open it while logged in) shows nseOptionChain: the time of the last good NSE option-chain answer and
-the last error, if any.
+the last error, if any; nseCookie: how often NSE's cookie page was fetched (about twice an hour at most); fiiDii:
+the day of the FII / DII figures held and the latest day NSE should have published.
+
+FII / DII figures are fetched once per published day and kept in data/fii-dii.json; NSE is asked again only after
+17:30 IST on the next trading day.
 - Any time the market is open: stop or target 1 hit on a trade in My trades (tap 📒 when you take a trade).
 
 Notes for the free plan:
