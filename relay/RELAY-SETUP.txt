@@ -1,0 +1,40 @@
+TradeDesk NSE relay - one-time setup (free, about 10 minutes)
+=============================================================
+
+Why: NSE refuses Render's address, so live option premiums, FII / DII and NSE index values do not load there.
+The relay is a tiny free Cloudflare Worker that asks NSE from Cloudflare's address. It is not guaranteed that NSE
+accepts Cloudflare either - step 5 shows whether it does.
+
+1. Make a long random key (your secret between Render and the worker). For example, in PowerShell:
+       -join ((48..57)+(65..90)+(97..122) | Get-Random -Count 40 | % {[char]$_})
+   Copy the 40 characters somewhere safe for the next steps.
+
+2. Create the worker
+   - Go to https://dash.cloudflare.com and sign up / sign in (free plan; no card needed).
+   - Left menu: Compute (Workers) -> Workers & Pages -> Create -> Create Worker (the "Hello World" template).
+   - Name it, for example:  tradedesk-nse   -> Deploy.
+   - Click "Edit code", delete everything in worker.js, paste the whole file relay/nse-relay-worker.js
+     from this project, then Deploy.
+   - Note the worker's address shown at the top, like  https://tradedesk-nse.<your-name>.workers.dev
+
+3. Give the worker the key
+   - The worker's page -> Settings -> Variables and Secrets -> Add
+     Type: Secret   Name: RELAY_KEY   Value: the 40 characters from step 1  -> Deploy.
+
+4. Tell Render about the worker
+   - Render dashboard -> your tradedesk service -> Environment -> Add Environment Variable (twice):
+       NSE_RELAY_URL  =  https://tradedesk-nse.<your-name>.workers.dev
+       NSE_RELAY_KEY  =  the same 40 characters
+   - Save Changes (Render restarts the app).
+
+5. Check
+   - Open the app, log in, then open  https://<your-render-app>.onrender.com/api/health
+   - "nseRelay" shows the worker's address.
+   - After 10:00 on a trading day (or right away after the restart - one catch-up call is allowed), "nseCalls"
+     shows lines starting with "relay /api/...":
+       status 200            -> NSE accepts Cloudflare: premiums, FII / DII and index values load.
+       status 401 / 403      -> NSE refuses Cloudflare too. Remove the two Render variables again; the next step
+                                would be the broker API option.
+       error "does not match" -> the two keys differ; paste the key again in step 3 or 4.
+
+Do not share the key or put it in the GitHub upload. The worker only relays NSE's /api/ data paths.

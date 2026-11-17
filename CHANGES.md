@@ -779,3 +779,25 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **FII / DII kept for the day.** Once the figures for the latest published day are in, NSE is not asked again (kept in data/fii-dii.json, so a restart does not refetch). Only after 17:30 IST on a trading day, while that day's figures are not out, it asks again - at most every 30 minutes.
 - **Gold Petal track: 10-day limit.** A trade that reaches neither stop nor target is closed at the close of day 10 (after T1: the running half), like the stock swing trades.
 - Page version 16 Nov 2026 · 4.
+
+## NSE refusing the server: Fin Ex-Bank from NSE's archive, 5-minute back-off, NSE answers in /api/health (17 Nov 2026)
+
+- **Finding:** the same zip, run on a home connection, loads Fin Services Ex-Bank, live NSE premiums and FII / DII. On Render all three fail, so NSE's live API is refusing Render's (shared, cloud) address - its bot protection does that to cloud servers, on and off. That is outside the app; what the app can do:
+- **Nifty Fin Services Ex-Bank no longer gives "API error 500".** Yahoo only has the FINIETF ETF for it. When NSE's live API is not reachable and no ratio was learned yet, the index / ETF ratio now comes from NSE's archive file of daily index closes (nsearchives.nseindia.com, a separate file server; one small file per trading day, fetched once and kept) and the latest day Yahoo also has. The sector row uses the same value instead of the raw ETF price (~33).
+- **No hammering a refusing NSE.** A 403 "Access Denied" on NSE's cookie page (or on an API call with a fresh cookie) stops NSE live calls for 5 minutes; before, every page view asked again (which keeps a blocked address blocked).
+- **/api/health -> nseCalls** shows NSE's last 12 answers to the server (status, time, start of the body), **nseRefused** how often NSE refused it - so the cause on Render can be read, not guessed.
+- FII / DII: one call per published day, kept on disk (from 16 Nov · 4) - confirmed again: the morning after, no NSE call.
+- Page version 17 Nov 2026 · 1.
+
+## NSE call budget and Cloudflare relay (17 Nov 2026)
+
+- **NSE is asked only at fixed times; pages never start an NSE call.** Before, every look at the indices or the options page could ask NSE (the index list every 60 s, the option chain every 3 minutes, up to three chains per trade-idea view), which keeps a cloud address blocked. Now:
+  - 10:00: the Nifty rule's premiums (one expiry - it used to fetch the nearest and then the rule's) and all index values;
+  - 15:05: the premiums once more - the Track record check (80% / stop daily, the end-of-week close on Friday) and the afternoon's premiums on the pages;
+  - FII / DII once per published day; holiday list weekly (was daily); corporate actions, ASM / GSM daily.
+  - Saved in data/nse-snap.json, so a restart does not ask again. After a deploy, when nothing from today is saved, one catch-up call each for premiums and index values.
+  - Measured: a simulated day of page views + jobs = 7 NSE requests; against real NSE a full session made 5 and no cookie-page fetch (the 340 KB cookie page is now fetched only when NSE asks for a cookie).
+- **Index prices:** live from Yahoo, previous close from NSE's 10:00 snapshot (keeps the Muhurat-session fix). Fin Services Ex-Bank: ETF x the index / ETF ratio learned at the snapshot (archive close as backup).
+- **Option builder:** Black-Scholes estimates only. **Trade ideas:** the saved NSE premiums of the rule's expiry, shown as "NSE premiums of <time>"; other expiries use the estimates.
+- **Cloudflare relay (optional, free):** relay/nse-relay-worker.js + relay/RELAY-SETUP.txt. With NSE_RELAY_URL / NSE_RELAY_KEY set on Render, every NSE call goes through the worker (secret key, NSE /api/ paths only). Tested locally against real NSE (FII / DII and option chain 200; wrong key 401; other paths 400). Whether NSE accepts Cloudflare's address is only known after setup - /api/health -> nseCalls shows it.
+- Page version 17 Nov 2026 · 2.
