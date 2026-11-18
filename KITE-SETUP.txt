@@ -8,7 +8,7 @@ NSE's index values did not load there. With Kite connected they come from Zerodh
   - every NSE index (Fin Services and Fin Services Ex-Bank included) and India VIX, live;
   - expiry dates and lot sizes from Zerodha's instrument list.
 TradeDesk only READS market data. It never places, changes or cancels an order.
-FII / DII is not in Kite's API - it still comes from NSE (the Cloudflare relay is the only fix for that one).
+(FII / DII is not in Kite's API; it was removed from TradeDesk on 18 Nov 2026 because NSE blocks it on Render.)
 
 Needs the paid Kite Connect plan (market data). The free "Personal" plan has no quotes - the card then says so.
 

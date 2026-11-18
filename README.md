@@ -80,7 +80,7 @@ Telegram alerts (free, optional):
 3. Open your new bot in Telegram and send /start. In TradeDesk: Screener → My trades → Telegram alerts → Link.
 Every alert then also arrives in Telegram. Schedule (IST, NSE trading days unless noted):
 - 09:20 your open trades: day-10 time exit, results / ex-dates close, Gold Petal expiry (only when there is one).
-- 09:30 morning brief: new entries allowed / small size / not today, global bias, India market regime, FII/DII,
+- 09:30 morning brief: new entries allowed / small size / not today, global bias, India market regime,
   holidays, high-impact events, your open trades and open risk, up to 3 market-moving headlines.
 - 09:45 and 17:00 (weekdays) Gold Petal: only when a BUY (2 of 3 drivers) or SELL is ready (entry within 1 ATR of
   the price); a plan waiting for a bigger dip / rise alerts when price reaches its buy / sell level.
@@ -98,32 +98,24 @@ Track record (Screener → Track record) has three sub-tabs, all checked once a 
 They sync like My trades, so a Render restart does not lose them.
 
 /api/health (open it while logged in) shows nseOptionChain: the time of the last good NSE option-chain answer and
-the last error, if any; nseCookie: how often NSE's cookie page was fetched (about twice an hour at most); fiiDii:
-the day of the FII / DII figures held and the latest day NSE should have published; nseCalls: NSE's last 12
+the last error, if any; nseCookie: how often NSE's cookie page was fetched (about twice an hour at most); nseCalls: NSE's last 12
 answers to this server (status, time, cookies, start of the body when not 200 - "Access Denied" / 403 means NSE
 refuses this server's address); nseRefused: how often that happened (no NSE live call for 5 minutes after each).
 
-FII / DII figures are fetched once per published day and kept in data/fii-dii.json; NSE is asked again only after
-17:30 IST on the next trading day.
+FII / DII was removed on 18 Nov 2026: NSE refuses Render's address and Zerodha Kite has no FII / DII data.
 
-NSE call budget (NSE refuses cloud servers that ask often). NSE is asked only at fixed times; pages read the saved
-copy (data/nse-snap.json):
-- 10:00  Nifty premiums of the rule's expiry (+ the expiry list once a day) and all index values.
-- 15:05  Nifty premiums once more (Track record check, Friday close, the afternoon's premiums on the pages).
-- evening  FII / DII once per published day; holiday list weekly; corporate actions and ASM / GSM lists daily.
-- Only when nothing from today is saved (after a deploy), one catch-up call each for premiums and index values.
-Index prices are live from Yahoo, with NSE's previous close from the 10:00 snapshot; Fin Services Ex-Bank is the
-ETF x the index / ETF ratio. The option builder uses Black-Scholes estimates only; trade ideas use the saved NSE
-premiums (with their time) for the rule's expiry, estimates for other expiries.
-
+Data sources (18 Nov 2026). NSE refuses Render's address, so NSE market-data requests were removed:
+- Option premiums: Zerodha Kite only (live, any expiry). Not connected: the last saved Kite chain on the pages,
+  Black-Scholes estimates otherwise; the 10:00 rule and the Track record checks need Kite.
+- Index values and previous closes: Zerodha Kite when connected, else Yahoo. Fin Services Ex-Bank = FINIETF ETF x the
+  ratio learned from Kite, else the built-in ratio 978.8 (FINEXBANK_RATIO overrides it).
+- Trading holidays: NSE's 2026 list is built in (NSE_HOLIDAYS=YYYY-MM-DD,... adds days; add 2027 in December).
+- Still asked from NSE (other checks use them; saved / built-in data when refused, retried every 3-6 hours): the
+  results calendar, corporate actions, ASM / GSM lists, the holiday list and the index member lists (universe).
 Zerodha Kite Connect (optional, recommended): with KITE_API_KEY / KITE_API_SECRET on Render and the daily
 "Connect Zerodha" login (Screener -> My trades; Zerodha ends it at 06:00), option premiums of every expiry, every NSE
-index (Fin Services Ex-Bank included) and India VIX come live from Kite - no NSE call. Read-only, no orders. FII / DII
-still comes from NSE. Setup in KITE-SETUP.txt; /api/health -> kite, /api/kite/status.
-
-NSE relay (optional, free): relay/nse-relay-worker.js is a Cloudflare Worker that asks NSE from Cloudflare's address.
-Setup in relay/RELAY-SETUP.txt; then set NSE_RELAY_URL and NSE_RELAY_KEY on Render. /api/health shows nseRelay.
-- Any time the market is open: stop or target 1 hit on a trade in My trades (tap 📒 when you take a trade).
+index (Fin Services Ex-Bank included) and India VIX come live from Kite - no NSE call. Read-only, no orders.
+Setup in KITE-SETUP.txt; /api/health -> kite, /api/kite/status.
 
 Notes for the free plan:
 - The server keeps itself awake around the clock (it calls its own address every 10 minutes), so there is no cold

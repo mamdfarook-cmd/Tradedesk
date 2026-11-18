@@ -221,12 +221,7 @@ function outboundStats() {
    concurrency and spaces requests out, and a circuit breaker: a 429 (or 403/999 from Yahoo/NSE) pauses
    that host for 1 min, doubling up to 15 min, during which callers get an immediate error and the API
    layer serves its last cached value instead. */
-/* Optional NSE relay (a free Cloudflare Worker, relay/nse-relay-worker.js): NSE refuses Render's address; the relay
-   asks NSE from Cloudflare's. NSE_RELAY_URL = the worker's address, NSE_RELAY_KEY = the same secret as the worker's
-   RELAY_KEY. Not set -> NSE is asked directly. */
-const NSE_RELAY = (() => { try { const u = new URL(String(process.env.NSE_RELAY_URL || '')); return u.protocol === 'https:' && process.env.NSE_RELAY_KEY ? { url: u.origin + u.pathname.replace(/\/$/, ''), host: u.hostname, key: String(process.env.NSE_RELAY_KEY) } : null; } catch { return null; } })();
 const HOST_LIMITS = [
-  { re: { test: h => !!NSE_RELAY && h === NSE_RELAY.host }, max: 1, gapMs: 2000, key: 'nse' },   /* the relay shares NSE's queue */
   { re: /(^|\.)finance\.yahoo\.com$/i,   max: 4, gapMs: 150, key: 'yahoo' },
   /* Zerodha Kite: 1 quote request a second (Kite's limit), one at a time */
   { re: { test: h => { try { return h === new URL(KITE.api).hostname; } catch { return false; } } }, max: 1, gapMs: 1100, key: 'kite' },
@@ -631,7 +626,7 @@ async function getPriceAndChange(ticker, symForBasis=null) {
      - option premiums (bid / ask / last / OI / volume) of Nifty, Bank Nifty, FinNifty - live, kept 60 s;
      - every NSE index (Fin Services and Fin Services Ex-Bank included) and India VIX - live, kept 30 s;
      - expiry dates and lot sizes from Kite's instrument list (downloaded once a day).
-   Read-only: this app never places, changes or cancels an order. FII / DII is not in Kite's API - it stays on NSE.
+   Read-only: this app never places, changes or cancels an order. (FII / DII is not in Kite's API; removed 18 Nov 2026.)
    Not connected, or a Kite plan without market data -> the NSE / Yahoo paths below, as before. */
 const KITE = {
   key: String(process.env.KITE_API_KEY || '').trim(),
@@ -888,9 +883,8 @@ function kiteStatus() {
   };
 }
 
-/* NSE's own index values (free /api/allIndices, same session cookie as the option chain). Backup for every
-   NSE index when Yahoo fails, and the main source where Yahoo has no index ticker (Fin Services Ex-Bank: Yahoo
-   only has the FINIETF ETF, which priced the index at ~31 instead of ~31,500). */
+/* NSE index names (index symbols the app treats as NSE indices; Fin Services Ex-Bank: Yahoo only has the FINIETF
+   ETF, ~31 for an index at ~31,500, so it is scaled - see getIndexFallbackPrice). */
 const NSE_INDEX_NAME = {
   'NSE:NIFTY':'NIFTY 50', 'NSE:BANKNIFTY':'NIFTY BANK', 'NSE:NIFTYNXT50':'NIFTY NEXT 50', 'NSE:NIFTYFMCG':'NIFTY FMCG',
   'NSE:NIFTYENERGY':'NIFTY ENERGY', 'NSE:NIFTYCONSDUR':'NIFTY CONSUMER DURABLES', 'NSE:NIFTYFINEXBANK':'NIFTY FINANCIAL SERVICES EX-BANK',
@@ -901,117 +895,24 @@ const NSE_INDEX_NAME = {
   'NSE:NIFTYDIGITAL':'NIFTY INDIA DIGITAL', 'NSE:NIFTYTOURISM':'NIFTY INDIA TOURISM', 'NSE:NIFTYMEDIA':'NIFTY MEDIA', 'NSE:NIFTYREALTY':'NIFTY REALTY',
 };
 const NSE_INDEX_PRIMARY = new Set(['NSE:NIFTYFINEXBANK']);   /* Yahoo symbol is an ETF proxy, not the index */
-/* ── NSE CALL BUDGET (17 Nov 2026) ──
-   NSE refuses cloud servers like Render's when they ask often. So NSE is asked only at fixed times, and every page
-   reads the saved copy (kept in data/nse-snap.json, so a restart does not ask again):
-     10:00  option premiums of the Nifty rule's expiry + all index values (one call each, with the 10:00 rule)
-     15:05  option premiums once more (Track record check, Friday close; the page's premiums of the afternoon)
-     ~18:00 FII / DII (once per published day)        + the holiday / corporate-action / ASM-GSM lists (daily)
-   Pages never start an NSE call. Only when the server has nothing from today (it was restarted by a deploy) one
-   catch-up call each for premiums and index values is allowed per day. Live index prices come from Yahoo; NSE's
-   snapshot gives the correct previous close and the Fin Services Ex-Bank / ETF ratio. */
+/* ── NSE requests removed (18 Nov 2026) ──
+   NSE refuses Render's address, so every NSE market-data request failed there. Removed: the option chain (now
+   Zerodha Kite only), the index snapshot and previous closes (Kite, else Yahoo), the archive index closes (Fin
+   Ex-Bank ratio: Kite, else the built-in ratio), FII / DII, the announcements feed and the Cloudflare relay. Still
+   asked (they feed other checks and fall back to saved / built-in data, retried at most every few hours when
+   refused): the results calendar, corporate actions, ASM / GSM, the holiday list and the index member lists.
+   data/nse-snap.json keeps the last option chains (from Kite) and the Fin Ex-Bank ratio. */
 const NSE_SNAP_FILE = require('path').join(__dirname, 'data', 'nse-snap.json');
-const NSE_SNAP = { allidx: null, chains: {}, info: {}, ratio: {}, spare: {} };
+const NSE_SNAP = { chains: {}, info: {}, ratio: {} };
 try { Object.assign(NSE_SNAP, JSON.parse(require('fs').readFileSync(NSE_SNAP_FILE, 'utf8'))); } catch {}
 let NSE_SNAP_SAVE_T = null;
 function nseSnapSave() {
   clearTimeout(NSE_SNAP_SAVE_T);
   NSE_SNAP_SAVE_T = setTimeout(() => { try { require('fs').mkdirSync(require('path').dirname(NSE_SNAP_FILE), { recursive: true }); require('fs').writeFileSync(NSE_SNAP_FILE, JSON.stringify(NSE_SNAP)); } catch (e) { console.warn('NSE snapshot save:', e.message); } }, 500);
 }
-/* One catch-up call per kind per IST day, only on an NSE trading day after 09:20. */
-function nseSpareOk(kind) {
-  const ist = new Date(Date.now() + 5.5 * 3600e3), key = ist.toISOString().slice(0, 10), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  const w = ist.getUTCDay();
-  if (w === 0 || w === 6 || isNseHoliday(key) || mins < 9 * 60 + 20) return false;
-  if (NSE_SNAP.spare[kind] === key) return false;
-  NSE_SNAP.spare[kind] = key; nseSnapSave();
-  return true;
-}
-const NSE_ALLIDX_FIELDS = ['last', 'previousClose', 'open', 'high', 'low', 'percentChange'];
-let NSE_ALLIDX_INFLIGHT = null;
-/* The scheduled fetch of every index value (10:00) - also learns the Fin Services Ex-Bank / ETF ratio. */
-async function nseFetchAllIndices() {
-  if (NSE_ALLIDX_INFLIGHT) return NSE_ALLIDX_INFLIGHT;
-  NSE_ALLIDX_INFLIGHT = (async () => {
-    const j = await nseOcGet('/api/allIndices');
-    const rows = {};
-    for (const r of j.data || []) { const o = {}; NSE_ALLIDX_FIELDS.forEach(f => { o[f] = +r[f] || 0; }); rows[String(r.index || '').toUpperCase()] = o; }
-    if (!Object.keys(rows).length) throw new Error('NSE allIndices empty');
-    const m = /^(\d{2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2})/.exec(j.timestamp || '');
-    const at = m ? Math.round(Date.parse(`${m[3]}-${NSE_MON[m[2]]}-${m[1]}T${m[4]}:${m[5]}:00+05:30`) / 1000) : Math.round(Date.now() / 1000);
-    NSE_SNAP.allidx = { day: istDateKey(), ts: Date.now(), at, rows };
-    nseSnapSave();
-    /* index / ETF ratio from the same moment (Yahoo's ETF price now) */
-    for (const sym of NSE_INDEX_PRIMARY) {
-      const r = rows[NSE_INDEX_NAME[sym]], tk = YF_MAP[sym];
-      if (r?.last > 0 && tk) getPriceAndChange(tk, sym).then(y => { if (y.liveRaw > 0) { NSE_PROXY_RATIO[sym] = r.last / y.liveRaw; NSE_SNAP.ratio[sym] = { k: NSE_PROXY_RATIO[sym], day: istDateKey() }; nseSnapSave(); } }).catch(() => {});
-    }
-    return NSE_SNAP.allidx;
-  })().finally(() => { NSE_ALLIDX_INFLIGHT = null; });
-  return NSE_ALLIDX_INFLIGHT;
-}
-/* Saved index values (never an NSE call from a page; one catch-up call a day when nothing from today is saved).
-   Returns Map(name -> row) - the values are those of the fetch time, so callers use previousClose, not last. */
-async function nseAllIndices() {
-  const s = NSE_SNAP.allidx;
-  if (!(s && s.day === istDateKey()) && nseSpareOk('allidx')) nseFetchAllIndices().catch(e => console.warn('NSE indices (catch-up):', e.message));
-  if (!s?.rows) throw new Error('NSE index values not fetched yet');
-  return new Map(Object.entries(s.rows));
-}
-/* NSE's previous close of an index, from today's snapshot only (yesterday's snapshot holds the day before). */
-function nseSnapPrevClose(name) {
-  const s = NSE_SNAP.allidx; if (!s || s.day !== istDateKey()) return null;
-  const v = +s.rows?.[String(name).toUpperCase()]?.previousClose; return v > 0 ? v : null;
-}
-/* Index price: live from Yahoo; previous close from NSE's snapshot of today when there is one (Yahoo's daily bars
-   skip special sessions - the Diwali Muhurat session on Sunday 8 Nov 2026 - and gave a wrong day change). */
-async function nseIndexPrice(sym, ticker = YF_MAP[sym]) {
-  const name = NSE_INDEX_NAME[sym];
-  if (!name) throw new Error('No NSE index name for ' + sym);
-  nseAllIndices().catch(() => {});   /* starts the one catch-up call when nothing from today is saved */
-  const y = await getPriceAndChange(ticker, sym), prev = nseSnapPrevClose(name);
-  if (!(prev > 0) || !(y.liveRaw > 0)) return y;
-  return { ...y, prevRaw: prev, rawChg: y.liveRaw - prev, rawPct: (y.liveRaw - prev) / prev * 100, changeBasis: 'previousClose', source: 'Yahoo · NSE previous close' };
-}
-const NSE_PROXY_RATIO = {};   /* index / ETF price: from the 10:00 NSE snapshot, else NSE's archive close */
+const NSE_PROXY_RATIO = {};   /* Fin Ex-Bank index / ETF price: learned from Zerodha Kite, else the built-in ratio */
 for (const [sym, o] of Object.entries(NSE_SNAP.ratio || {})) if (o?.k > 0) NSE_PROXY_RATIO[sym] = o.k;
-/* NSE's daily closing values of every index (archive CSV on nsearchives.nseindia.com - a separate file server that
-   often answers when the live API refuses a cloud server). One file per trading day, fetched once and kept. */
-const NSE_ARCH = new Map();   /* 'YYYY-MM-DD' -> Map(index name -> close), or null when NSE had no file */
-async function nseArchiveCloseOn(k) {
-  if (NSE_ARCH.has(k)) return NSE_ARCH.get(k);
-  const t0 = Date.now(), file = `ind_close_all_${k.slice(8, 10)}${k.slice(5, 7)}${k.slice(0, 4)}.csv`;
-  let r; try { r = await get('https://nsearchives.nseindia.com/content/indices/' + file, { Accept:'text/csv,*/*', Referer: NSE_WWW + '/' }); nseNote('archive ' + file, t0, r); }
-  catch (e) { nseNote('archive ' + file, t0, null, e); throw e; }   /* not cached: try again next time */
-  let map = null;
-  if (r.status === 200 && /Index Name/i.test(r.body)) {
-    map = new Map();
-    for (const line of r.body.split(/\r?\n/).slice(1)) { const c = line.split(','); if (c.length > 5 && +c[5] > 0) map.set(String(c[0]).trim().toUpperCase(), +c[5]); }
-    if (!map.size) map = null;
-  } else if (r.status !== 404) throw new Error('NSE archive HTTP ' + r.status);
-  NSE_ARCH.set(k, map);
-  if (NSE_ARCH.size > 20) NSE_ARCH.delete(NSE_ARCH.keys().next().value);
-  return map;
-}
-/* index / ETF ratio: NSE's archive close and the ETF's close (Yahoo daily bars) on the latest day both have - Yahoo
-   sometimes skips a day (no 16 Nov 2026 candle for FINIETF). The ratio moves only by the ETF's tracking error. */
-let ARCH_RATIO_TRIED = 0;
-async function archiveProxyRatio(sym, ticker) {
-  if (Date.now() - ARCH_RATIO_TRIED < 10 * 60e3) throw new Error('NSE archive ratio tried recently');
-  ARCH_RATIO_TRIED = Date.now();
-  const name = String(NSE_INDEX_NAME[sym] || '').toUpperCase();
-  const b = parseBars(await yfChart(ticker, '1d', '1mo')), etf = new Map();
-  b.T.forEach((t, i) => { if (t && b.C[i] > 0) etf.set(istDateKey(t * 1000), b.C[i]); });
-  let d = new Date(fiiDiiExpectedDate() + 'T00:00:00Z'), tried = 0;
-  for (let n = 0; n < 12 && tried < 4; n++, d = new Date(d.getTime() - 86400e3)) {
-    const k = d.toISOString().slice(0, 10), w = d.getUTCDay();
-    if (w === 0 || w === 6 || isNseHoliday(k) || !etf.has(k)) continue;
-    tried++;
-    const close = (await nseArchiveCloseOn(k))?.get(name);
-    if (close > 0) { ARCH_RATIO_TRIED = 0; return close / etf.get(k); }
-  }
-  throw new Error('no NSE archive close matching a Yahoo ETF day');
-}
+const FINEXBANK_RATIO_DEFAULT = Number(process.env.FINEXBANK_RATIO) > 100 ? Number(process.env.FINEXBANK_RATIO) : 978.8;
 async function getIndexFallbackPrice(sym, ticker) {
   /* Zerodha Kite first when connected: live value and previous close of every NSE index (Fin Ex-Bank included). */
   if (kiteReady() && KITE_IDX_RE[sym]) { try { return await withTimeout(kiteIndexPrice(sym, ticker), 15000, sym + ' Kite'); } catch (e) { console.warn('Kite index ' + sym + ':', e.message); } }
@@ -1019,18 +920,15 @@ async function getIndexFallbackPrice(sym, ticker) {
     /* The Yahoo symbol is an ETF (~31 for an index at ~31,500): scaled by the index / ETF ratio (learned at the
        10:00 NSE snapshot, else from NSE's archive close), or fail so the last good value is served - a raw ETF
        price fired every "below" alert on this index. */
-    nseAllIndices().catch(() => {});
-    let why = '';
-    if (!(NSE_PROXY_RATIO[sym] > 0)) { try { NSE_PROXY_RATIO[sym] = await withTimeout(archiveProxyRatio(sym, ticker), 20000, 'NSE archive'); NSE_SNAP.ratio[sym] = { k: NSE_PROXY_RATIO[sym], day: istDateKey() }; nseSnapSave(); } catch (e2) { why = e2.message; } }
-    const k = NSE_PROXY_RATIO[sym];
-    if (!(k > 0)) throw new Error(`${sym}: no index / ETF ratio yet (${why}) and Yahoo only has an ETF proxy`);
-    const y = await getPriceAndChange(ticker, sym), prev = nseSnapPrevClose(NSE_INDEX_NAME[sym]);
-    const o = { ...y, liveRaw: y.liveRaw * k, prevRaw: y.prevRaw * k, todayOpen: y.todayOpen * k, todayHigh: y.todayHigh * k, todayLow: y.todayLow * k, source: 'ETFxRatio' };
-    if (prev > 0 && o.liveRaw > 0) Object.assign(o, { prevRaw: prev, rawChg: o.liveRaw - prev, rawPct: (o.liveRaw - prev) / prev * 100, changeBasis: 'previousClose' });
-    else if (o.prevRaw > 0) Object.assign(o, { rawChg: o.liveRaw - o.prevRaw, rawPct: (o.liveRaw - o.prevRaw) / o.prevRaw * 100 });
+    /* Fin Ex-Bank: Yahoo has only the FINIETF ETF. Scaled by the ratio learned from Zerodha Kite, else the built-in
+       ratio (measured 974-983 over 11-18 Nov 2026, so within about 0.5%). Before 18 Nov a deploy wiped the learned
+       ratio and NSE refused to give a new one, so every quote failed with HTTP 500. */
+    const learned = NSE_PROXY_RATIO[sym] > 0, k = learned ? NSE_PROXY_RATIO[sym] : FINEXBANK_RATIO_DEFAULT;
+    const y = await getPriceAndChange(ticker, sym);
+    const o = { ...y, liveRaw: y.liveRaw * k, prevRaw: y.prevRaw * k, todayOpen: y.todayOpen * k, todayHigh: y.todayHigh * k, todayLow: y.todayLow * k, source: learned ? 'ETFxRatio' : 'ETFxRatio (approx.)' };
+    if (o.prevRaw > 0) Object.assign(o, { rawChg: o.liveRaw - o.prevRaw, rawPct: (o.liveRaw - o.prevRaw) / o.prevRaw * 100 });
     return o;
   }
-  if (NSE_INDEX_NAME[sym]) { try { return await nseIndexPrice(sym, ticker); } catch {} }
   return getPriceAndChange(ticker, sym);
 }
 
@@ -1507,7 +1405,6 @@ async function fetchNewsRSSLayer(ctx) {
     { url:'https://www.zeebiz.com/market-news.xml', src:'Zee Business Markets', layer:'rss' },
     { url:'https://pulse.zerodha.com/feed.php', src:'Zerodha Pulse', layer:'rss' },
     { url:'https://www.bseindia.com/data/xml/notices.xml', src:'BSE Notices', layer:'rss', timeout:3200 },
-    { url:'https://www.nseindia.in/rss/announcements.xml', src:'NSE Announcements', layer:'rss', timeout:3200 },   /* NSE moved from .com on 14 Nov 2026 */
   ];
   const googleQueries = ctx.commodity ? COMMODITY_NEWS[ctx.commodity].google : ctx.isGold
     ? ['gold price India MCX COMEX DXY Federal Reserve', 'MCX gold USD INR rupee gold']
@@ -4572,7 +4469,7 @@ async function loadResultsCalendar() {
   EARNINGS_DATES.forEach(x => add(String(x.sym).replace('NSE:',''), x.date, 'Results (manual list)'));
   RESULTS_CAL_CACHE = { bySym, ok, source, error, fetchedAt: new Date().toISOString() };
   /* Retry a failed fetch after ~10 minutes instead of an hour. */
-  RESULTS_CAL_TS = ok && !error ? Date.now() : Date.now() - 50 * 60 * 1000;   /* saved-list fallback also retries soon */
+  RESULTS_CAL_TS = ok && !error ? Date.now() : Date.now() + 2 * 3600e3;   /* NSE refused / failed: next try in 3 hours (it refuses Render) */
   return RESULTS_CAL_CACHE;
 }
 function resultsCheckFor(sym, cal, todayKey) {
@@ -4983,7 +4880,14 @@ function daysBetweenKeys(a, b) { return Math.round((Date.parse(b + 'T00:00:00Z')
 /* NSE trading holidays that can fall on an expiry Tuesday. Fixed-date ones every year, plus dated ones that
    must be checked against the NSE circular each year. */
 const NSE_FIXED_HOLIDAYS_MD = new Set(['01-26', '04-14', '05-01', '08-15', '10-02', '12-25']);
-const NSE_DATED_HOLIDAYS = new Set((process.env.NSE_HOLIDAYS || '2026-11-24').split(',').map(s => s.trim()).filter(Boolean));
+/* NSE's 2026 trading holidays (built in: NSE refuses Render, so its holiday list cannot be fetched there). Add 2027's
+   when NSE publishes it (December), or set NSE_HOLIDAYS=YYYY-MM-DD,... on Render. */
+const NSE_HOLIDAYS_BUILTIN = [['2026-01-15','Municipal Corporation Election - Maharashtra'],['2026-01-26','Republic Day'],['2026-02-15','Mahashivratri'],
+  ['2026-03-03','Holi'],['2026-03-21','Id-Ul-Fitr (Ramadan Eid)'],['2026-03-26','Shri Ram Navami'],['2026-03-31','Shri Mahavir Jayanti'],['2026-04-03','Good Friday'],
+  ['2026-04-14','Dr. Baba Saheb Ambedkar Jayanti'],['2026-05-01','Maharashtra Day'],['2026-05-28','Bakri Id'],['2026-06-26','Muharram'],['2026-08-15','Independence Day'],
+  ['2026-09-14','Ganesh Chaturthi'],['2026-10-02','Mahatma Gandhi Jayanti'],['2026-10-20','Dussehra'],['2026-11-08','Diwali Laxmi Pujan'],['2026-11-10','Diwali-Balipratipada'],
+  ['2026-11-24','Prakash Gurpurb Sri Guru Nanak Dev'],['2026-12-25','Christmas']];
+const NSE_DATED_HOLIDAYS = new Set([...NSE_HOLIDAYS_BUILTIN.map(h => h[0]), ...String(process.env.NSE_HOLIDAYS || '').split(',').map(s => s.trim()).filter(Boolean)]);
 function isNseHoliday(key) { return NSE_DATED_HOLIDAYS.has(key) || NSE_FIXED_HOLIDAYS_MD.has(key.slice(5)); }
 
 /* ── NSE calendar data, refreshed once a day (free NSE APIs, the option-chain session):
@@ -4994,8 +4898,8 @@ function isNseHoliday(key) { return NSE_DATED_HOLIDAYS.has(key) || NSE_FIXED_HOL
    - surveillance lists (ASM / GSM): higher margins, trade limits, sometimes trade-for-trade - no fresh entry.
    Kept in data/nse-calendar.json so a restart does not need NSE; a failed refresh keeps the last copy. */
 const NSE_CAL_FILE = require('path').join(__dirname, 'data', 'nse-calendar.json');   /* local requires: path / fs are declared further down */
-let NSE_CAL = { holidays: [], corp: {}, surv: {}, ts: {} };
-try { const j = JSON.parse(require('fs').readFileSync(NSE_CAL_FILE, 'utf8')); NSE_CAL = { holidays: j.holidays || [], corp: j.corp || {}, surv: j.surv || {}, ts: j.ts || {} }; } catch {}
+let NSE_CAL = { holidays: NSE_HOLIDAYS_BUILTIN.map(([date, name]) => ({ date, name, special: false })), corp: {}, surv: {}, ts: {} };
+try { const j = JSON.parse(require('fs').readFileSync(NSE_CAL_FILE, 'utf8')); NSE_CAL = { holidays: j.holidays?.length ? j.holidays : NSE_CAL.holidays, corp: j.corp || {}, surv: j.surv || {}, ts: j.ts || {} }; } catch {}
 /* Every listed day is closed for the normal session; "*" only says a special (Muhurat) session is held. */
 function applyNseHolidays() { for (const h of NSE_CAL.holidays) NSE_DATED_HOLIDAYS.add(h.date); }
 applyNseHolidays();
@@ -5011,9 +4915,11 @@ function corpKind(subject) {
   return 'other';
 }
 let NSE_CAL_INFLIGHT = null;
+const NSE_CAL_FAIL = {};
 async function refreshNseCalendar(force = false) {
   if (NSE_CAL_INFLIGHT) return NSE_CAL_INFLIGHT;
-  const stale = k => force || !NSE_CAL.ts[k] || Date.now() - NSE_CAL.ts[k] > (k === 'hol' ? 7 * 24 : 20) * 3600e3;   /* holiday list weekly */
+  /* holiday list weekly, the others daily; after a failed try (NSE refuses Render) not again for 6 hours */
+  const stale = k => (force || !NSE_CAL.ts[k] || Date.now() - NSE_CAL.ts[k] > (k === 'hol' ? 7 * 24 : 20) * 3600e3) && !(Date.now() - (NSE_CAL_FAIL[k] || 0) < 6 * 3600e3);
   if (!stale('hol') && !stale('corp') && !stale('surv')) return NSE_CAL;
   NSE_CAL_INFLIGHT = (async () => {
     let changed = false;
@@ -5021,7 +4927,7 @@ async function refreshNseCalendar(force = false) {
       const j = await nseOcGet('/api/holiday-master?type=trading');
       const list = (j.CM || j.FO || []).map(h => ({ date: nseDdMmmToKey(h.tradingDate), name: String(h.description || '').replace(/\*$/, '').trim(), special: /\*\s*$/.test(String(h.description || '')) })).filter(h => h.date);
       if (list.length >= 5) { NSE_CAL.holidays = list; NSE_CAL.ts.hol = Date.now(); applyNseHolidays(); changed = true; }
-    } catch (e) { console.warn('NSE holidays:', e.message); }
+    } catch (e) { NSE_CAL_FAIL.hol = Date.now(); console.warn('NSE holidays:', e.message); }
     if (stale('corp')) try {
       const j = await nseOcGet(`/api/corporates-corporateActions?index=equities&from_date=${nseDateParamS(Date.now() - 2 * 86400e3)}&to_date=${nseDateParamS(Date.now() + 30 * 86400e3)}`);
       const rows = Array.isArray(j) ? j : Array.isArray(j?.data) ? j.data : null;
@@ -5034,14 +4940,14 @@ async function refreshNseCalendar(force = false) {
         (corp[sym] = corp[sym] || []).push({ date, subject: String(r.subject || '').replace(/[<>&"]/g, '').replace(/\s+/g, ' ').trim().slice(0, 140), kind: corpKind(r.subject) });
       }
       NSE_CAL.corp = corp; NSE_CAL.ts.corp = Date.now(); changed = true;
-    } catch (e) { console.warn('NSE corporate actions:', e.message); }
+    } catch (e) { NSE_CAL_FAIL.corp = Date.now(); console.warn('NSE corporate actions:', e.message); }
     if (stale('surv')) try {
       const [asm, gsm] = await Promise.all([nseOcGet('/api/reportASM'), nseOcGet('/api/reportGSM')]);
       const surv = {};
       for (const r of [...(asm?.longterm?.data || []), ...(asm?.shortterm?.data || [])]) if (r.symbol) surv[String(r.symbol).toUpperCase()] = `ASM ${String(r.survDesc || '').match(/Long Term|Short Term/i)?.[0] || ''} ${r.asmSurvIndicator || ''}`.replace(/\s+/g, ' ').trim();
       for (const r of (Array.isArray(gsm) ? gsm : gsm?.data || [])) if (r.symbol) surv[String(r.symbol).toUpperCase()] = `GSM stage ${r.gsmStage || ''}`.trim();
       if (Object.keys(surv).length) { NSE_CAL.surv = surv; NSE_CAL.ts.surv = Date.now(); changed = true; }
-    } catch (e) { console.warn('NSE ASM/GSM:', e.message); }
+    } catch (e) { NSE_CAL_FAIL.surv = Date.now(); console.warn('NSE ASM/GSM:', e.message); }
     if (changed) { try { require('fs').mkdirSync(require('path').dirname(NSE_CAL_FILE), { recursive: true }); require('fs').writeFileSync(NSE_CAL_FILE, JSON.stringify(NSE_CAL)); } catch (e) { console.warn('NSE calendar save:', e.message); } }
     return NSE_CAL;
   })().finally(() => { NSE_CAL_INFLIGHT = null; });
@@ -5229,11 +5135,10 @@ async function getSectorQuoteLight(ticker) {
 }
 const SECTOR_SYM = t => Object.keys(YF_MAP).find(k => k.startsWith('NSE:') && YF_MAP[k] === t);
 async function getSectorPriceAndChange(s) {
-  /* NSE's own index list first (one shared call for all sectors, correct previous close), then the direct Yahoo
-     index ticker. No synthetic stock basket calculation. */
+  /* Zerodha Kite when connected (one shared request for all sectors), else the direct Yahoo index ticker; Fin Ex-Bank
+     ETF x ratio. No synthetic stock basket calculation. */
   const sym = SECTOR_SYM(s.ticker);
   if (sym && NSE_INDEX_NAME[sym]) {
-    /* Yahoo's live value with NSE's previous close (Fin Ex-Bank: ETF x ratio), as on the index's own page */
     const n = await getIndexFallbackPrice(sym, s.ticker);
     return { ...n, rawChg: n.liveRaw - n.prevRaw, rawPct: n.prevRaw > 0 ? (n.liveRaw - n.prevRaw) / n.prevRaw * 100 : 0, usedTicker:s.ticker };
   }
@@ -5396,17 +5301,6 @@ async function nseOcGet(path) {
     if (r.headers?.['set-cookie'] && NSE_OC_COOKIE) NSE_OC_COOKIE.v = nseMergeCookies(NSE_OC_COOKIE.v, r.headers['set-cookie']);
     return r; };
   if (Date.now() < NSE_DENIED.until) throw new Error(`NSE refused this server - next try after ${new Date(NSE_DENIED.until + 5.5 * 3600e3).toISOString().slice(11, 16)} IST`);
-  if (NSE_RELAY) {
-    /* Through the relay: it gets NSE's cookie itself (only when NSE asks for one) and answers with NSE's reply. */
-    const t0 = Date.now(), note = 'relay ' + path; let r;
-    try { r = await get(`${NSE_RELAY.url}?path=${encodeURIComponent(path)}&base=${encodeURIComponent(NSE_WWW)}`, { Accept:'application/json', 'X-Relay-Key': NSE_RELAY.key }); }
-    catch (e) { nseNote(note, t0, null, e); throw e; }
-    nseNote(note, t0, r);
-    if (r.headers?.['x-relay'] === 'bad-key') throw new Error('NSE relay: NSE_RELAY_KEY does not match the worker\'s RELAY_KEY');
-    if (r.status === 401 || r.status === 403) { nseDenied(r.status); throw new Error('NSE refused the relay (HTTP ' + r.status + ')'); }
-    if (r.status !== 200) throw new Error('NSE via relay HTTP ' + r.status);
-    return JSON.parse(r.body);
-  }
   let r;
   /* Without a cookie first when none is saved (NSE answered cookie-less API calls on 17 Nov 2026): the 340 KB
      cookie page is fetched only when NSE asks for it (401 / 403). */
@@ -5447,16 +5341,18 @@ async function nseSwr(key, ttl, maxAge, producer) {
 }
 /* Last option-chain fetch from NSE (shown in /api/health): tells whether NSE is answering this server. */
 const NSE_OC_LAST = { ok: null, error: null, errorAt: null };
-/* Expiry list: saved, refetched (by a scheduled fetch only) when older than 20 h. */
+/* Expiry list: Zerodha Kite's instrument list; without Kite the weekly Nifty expiries are worked out (Tuesday, the
+   trading day before when Tuesday is a holiday) - only for the dates shown, premiums need Kite. */
 async function ocExpiryList(name, fetch = false) {
   if (kiteReady()) { try { return await kiteExpiryInfo(name); } catch (e) { console.warn('Kite expiries:', e.message); } }
-  const hit = NSE_SNAP.info[name];
-  if (hit && (!fetch || Date.now() - hit.ts < 20 * 3600e3)) return hit.value;
-  if (!fetch && (name !== 'NIFTY' || !nseSpareOk('ocinfo_' + name))) throw new Error('NSE expiry list not fetched yet');   /* catch-up: Nifty only */
-  const j = await nseOcGet(`/api/option-chain-contract-info?symbol=${name}`);
-  if (!Array.isArray(j?.expiryDates) || !j.expiryDates.length) throw new Error('No expiry dates from NSE');
-  NSE_SNAP.info[name] = { value: { expiryDates: j.expiryDates }, ts: Date.now() }; nseSnapSave();
-  return NSE_SNAP.info[name].value;
+  const out = [], ist = new Date(Date.now() + 5.5 * 3600e3);
+  let d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
+  for (let n = 0; n < 70 && out.length < 8; n++, d = new Date(d.getTime() + 86400e3)) {
+    if (d.getUTCDay() !== 2) continue;
+    let e = d; while (e.getUTCDay() === 0 || e.getUTCDay() === 6 || isNseHoliday(e.toISOString().slice(0, 10))) e = new Date(e.getTime() - 86400e3);
+    out.push(kiteKeyToNse(e.toISOString().slice(0, 10)));
+  }
+  return { expiryDates: out, computed: true };
 }
 /* Expiries (YYYY-MM-DD) still open now: after 15:30 IST an expiry dated today is finished. */
 function ocOpenExpiries(info) {
@@ -5496,32 +5392,15 @@ async function getOptionChain(sym, want = '', opts = {}) {
   if (!name) throw new Error('Option chain only for NSE:NIFTY, NSE:BANKNIFTY, NSE:FINNIFTY');
   /* Zerodha Kite when connected: live premiums of any expiry, kept 60 s - no NSE call. */
   if (kiteReady()) { try { return await kiteOptionChain(sym, name, want, opts); } catch (e) { console.warn('Kite option chain:', e.message); } }
-  const fetchOk = opts.fresh != null;
-  const exps = ocOpenExpiries(await ocExpiryList(name, fetchOk));
-  const dd0 = (a, b) => Math.abs(Date.parse(a) - Date.parse(b));
-  const pick = exps.find(e => e.key === want) || (want ? exps.slice().sort((a, b) => dd0(a.key, want) - dd0(b.key, want))[0] : exps[0]);
-  if (!pick) throw new Error('No expiry dates from NSE');
-  const key = `${name}_${pick.key}`, hit = NSE_SNAP.chains[key], age = hit ? Date.now() - hit.ts : Infinity;
-  const served = h => ({ ...h.value, expiries: exps.map(e => e.key).slice(0, 8), saved: true, stale: Date.now() - h.ts > 10 * 60e3, staleAgeSec: Math.round((Date.now() - h.ts) / 1000) });
-  const today = istDateKey(), fromToday = hit && istDateKey(hit.ts) === today;
-  let doFetch = fetchOk ? age > opts.fresh : false;
-  if (!fetchOk && !fromToday && name === 'NIFTY' && nseSpareOk('chain')) doFetch = true;
-  if (!doFetch) {
-    if (hit && age < 4 * 86400e3) return served(hit);
-    throw new Error('NSE premiums not fetched yet (they are fetched at 10:00 and 15:05)');
+  /* Not connected: the last saved chain (pages show its time; under 4 days), never for a scheduled check. */
+  if (opts.fresh == null) {
+    const today = istDateKey(), exps = Object.keys(NSE_SNAP.chains).filter(k => k.startsWith(name + '_')).map(k => k.slice(name.length + 1)).filter(e => e >= today).sort();
+    const near = want ? exps.slice().sort((a, b) => Math.abs(Date.parse(a) - Date.parse(want)) - Math.abs(Date.parse(b) - Date.parse(want)))[0] : exps[0];
+    const k = near && `${name}_${near}`;
+    const h = k && NSE_SNAP.chains[k];
+    if (h && Date.now() - h.ts < 4 * 86400e3) return { ...h.value, saved: true, stale: true, staleAgeSec: Math.round((Date.now() - h.ts) / 1000) };
   }
-  if (!OC_INFLIGHT.has(key)) OC_INFLIGHT.set(key, (async () => {
-    let j;
-    try { j = await nseOcGet(`/api/option-chain-v3?type=Indices&symbol=${name}&expiry=${encodeURIComponent(pick.nse)}`); NSE_OC_LAST.ok = new Date().toISOString(); }
-    catch (e) { NSE_OC_LAST.error = e.message; NSE_OC_LAST.errorAt = new Date().toISOString(); throw e; }
-    const value = ocBuild(sym, name, j, pick, exps);
-    NSE_SNAP.chains[key] = { value, ts: Date.now() };
-    for (const k of Object.keys(NSE_SNAP.chains)) if (Date.now() - NSE_SNAP.chains[k].ts > 8 * 86400e3) delete NSE_SNAP.chains[k];
-    nseSnapSave();
-    return value;
-  })().finally(() => OC_INFLIGHT.delete(key)));
-  try { return { ...(await OC_INFLIGHT.get(key)), saved: false }; }
-  catch (e) { if (hit && age < 4 * 86400e3) return served(hit); throw e; }
+  throw new Error('live premiums need Zerodha connected (Screener -> My trades -> Connect Zerodha)');
 }
 /* The Nifty rule's expiry: the first one at least 3 days away (same as the page). */
 async function niftyRuleExpiry(fetch) {
@@ -5533,7 +5412,7 @@ async function apiOptionChain(req, res, p) {
   const sym = String(p.get('sym') || 'NSE:NIFTY').toUpperCase();
   if (!OC_SYMBOLS[sym]) return err(res, 'Option chain only for NSE:NIFTY, NSE:BANKNIFTY, NSE:FINNIFTY', 400);
   try { send(res, await getOptionChain(sym, String(p.get('expiry') || ''))); }   /* expiry YYYY-MM-DD; default = nearest */
-  catch (e) { err(res, 'NSE option chain unavailable: ' + e.message, 502); }
+  catch (e) { err(res, 'Option premiums unavailable: ' + e.message, 502); }
 }
 
 async function apiSwingContext(req, res, p) {
@@ -5835,42 +5714,7 @@ const NIFTY50_STOCKS = [
 ];
 
 const GLOBAL_LAST_GOOD = {};
-/* FII / DII provisional cash-market figures from NSE. NSE publishes them once, in the evening after the close, so
-   one answer serves until the next trading day's evening: once the figures for the latest published day are in
-   (kept in data/fii-dii.json too, so a restart does not refetch them), NSE is not asked again. Only after 17:30 IST
-   on a trading day, while that day's figures are not out yet, it asks again - at most every 30 minutes. */
-const FII_DII_FILE = require('path').join(__dirname, 'data', 'fii-dii.json');
-let FII_DII_CACHE = null, FII_DII_INFLIGHT = null;
-try { const v = JSON.parse(require('fs').readFileSync(FII_DII_FILE, 'utf8')); if (v?.date && (v.fii || v.dii)) FII_DII_CACHE = { value: v, ts: 0 }; } catch {}
-/* The latest trading day whose figures NSE should have published by now (17:30 IST). */
-function fiiDiiExpectedDate(ms = Date.now()) {
-  const ist = new Date(ms + 5.5 * 3600e3), mins = ist.getUTCHours() * 60 + ist.getUTCMinutes();
-  let d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
-  const trading = x => { const k = x.toISOString().slice(0, 10), w = x.getUTCDay(); return w >= 1 && w <= 5 && !isNseHoliday(k); };
-  if (!(trading(d) && mins >= 17 * 60 + 30)) do { d = new Date(d.getTime() - 86400e3); } while (!trading(d));
-  return d.toISOString().slice(0, 10);
-}
-function fiiDiiNeedsFetch(ms = Date.now()) {
-  if (FII_DII_INFLIGHT) return false;
-  const v = FII_DII_CACHE?.value;
-  if (v?.date && v.date >= fiiDiiExpectedDate(ms)) return false;   /* already have the latest published day */
-  return !FII_DII_CACHE || ms - FII_DII_CACHE.ts > (v ? 30 : 20) * 60e3;
-}
-function refreshFiiDii() {
-  if (FII_DII_INFLIGHT) return FII_DII_INFLIGHT;
-  if (!fiiDiiNeedsFetch()) return Promise.resolve(FII_DII_CACHE?.value || null);
-  FII_DII_INFLIGHT = nseOcGet('/api/fiidiiTradeReact').then(j => {
-    const rows = Array.isArray(j) ? j : [];
-    const pick = re => { const r = rows.find(x => re.test(String(x.category || ''))); return r ? { buy: +r.buyValue, sell: +r.sellValue, net: +r.netValue } : null; };
-    const fii = pick(/FII|FPI/i), dii = pick(/DII/i);
-    if (!fii && !dii) throw new Error('NSE FII/DII empty');
-    FII_DII_CACHE = { value: { date: nseDdMmmToKey(rows[0]?.date) || null, fii, dii }, ts: Date.now() };
-    try { require('fs').mkdirSync(require('path').dirname(FII_DII_FILE), { recursive: true }); require('fs').writeFileSync(FII_DII_FILE, JSON.stringify(FII_DII_CACHE.value)); } catch {}
-    return FII_DII_CACHE.value;
-  }).catch(e => { FII_DII_CACHE = { value: FII_DII_CACHE?.value || null, ts: Date.now() }; throw e; })
-    .finally(() => { FII_DII_INFLIGHT = null; });
-  return FII_DII_INFLIGHT;
-}
+/* FII / DII removed 18 Nov 2026: NSE refuses Render's address and Kite has no FII / DII data. */
 async function apiGlobal(req,res){
   try {
     const { value: payload, cached } = await cacheWrap('global:all', TTL.global, async () => {
@@ -5913,16 +5757,10 @@ async function apiGlobal(req,res){
        loading - and the options idea then had no VIX for the 5 min the result was cached. */
     const vixHistP = withTimeout(safeFetch(() => yfChart('^INDIAVIX', '1d', '1y'), 1), 20000, 'India VIX history');
     vixHistP.catch(() => {});
-    /* Nifty, Bank Nifty and India VIX from NSE's index list when it answers (correct previous close), else Yahoo. */
-    const GLOBAL_NSE = { '^NSEI':'NIFTY 50', '^NSEBANK':'NIFTY BANK', '^INDIAVIX':'INDIA VIX' };
+    /* Nifty, Bank Nifty and India VIX from Zerodha Kite when connected (exchange previous close), else Yahoo. */
+    const GLOBAL_KITE = { '^NSEI':'NSE:NIFTY', '^NSEBANK':'NSE:BANKNIFTY', '^INDIAVIX':'VIX' };
     const globalPrice = async s => {
-      if (GLOBAL_NSE[s.ticker]) {
-        try {
-          const y = await safeFetch(() => getPriceAndChange(s.ticker), 1), prev = nseSnapPrevClose(GLOBAL_NSE[s.ticker]);
-          if (prev > 0 && y?.liveRaw > 0) return { ...y, prevRaw: prev, rawChg: y.liveRaw - prev, rawPct: (y.liveRaw - prev) / prev * 100 };
-          return y;
-        } catch {}
-      }
+      if (GLOBAL_KITE[s.ticker] && kiteReady()) { try { return await withTimeout(kiteIndexPrice(GLOBAL_KITE[s.ticker], s.ticker), 15000, s.ticker + ' Kite'); } catch {} }
       return safeFetch(() => getPriceAndChange(s.ticker), 1);
     };
     const resultsP = Promise.allSettled(
@@ -5953,10 +5791,6 @@ async function apiGlobal(req,res){
       const now = conv('MCX:GOLDPETAL', data.gold.price, data.usdInr.price), prev = conv('MCX:GOLDPETAL', data.gold.prev, data.usdInr.prev);
       if (now > 0 && prev > 0) data.goldInr = { label:'Gold ₹/g (Gold Petal proxy)', cat:'metal', price:+now.toFixed(2), prev:+prev.toFixed(2), chg:+(now - prev).toFixed(2), pct:+((now / prev - 1) * 100).toFixed(2), isUp: now >= prev, at: data.gold.at };
     }
-    /* FII / DII net cash buying (NSE, published each evening): served from a day cache, never blocks the page. */
-    if (!FII_DII_CACHE?.value && fiiDiiNeedsFetch()) await Promise.race([refreshFiiDii().catch(() => {}), new Promise(r => setTimeout(r, 4000))]);
-    else if (fiiDiiNeedsFetch()) refreshFiiDii().catch(() => {});
-    data.fiiDii = FII_DII_CACHE?.value || null;
 
     /* IV Percentile: % of trading days in past year where VIX was BELOW current VIX
        Formula: daysBelow / totalDays × 100
@@ -6100,7 +5934,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){const ks=kiteStatus();send(res,{kite:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,noMarketData:ks.noMarketData,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null},nseRelay:NSE_RELAY?NSE_RELAY.host:null,status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseOptionChain:NSE_OC_LAST,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},fiiDii:{date:FII_DII_CACHE?.value?.date||null,expected:fiiDiiExpectedDate()},outbound:outboundStats()});}
+function apiHealth(req,res){const ks=kiteStatus();send(res,{kite:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,noMarketData:ks.noMarketData,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -6531,7 +6365,7 @@ async function scheduledScanTick() {
 /* ══════════════════════════════════════════════════════════════════
    TRADE ASSISTANT - every alert also goes to Telegram when a bot is linked (free, no limits):
    - 09:30 morning brief (NSE trading days): new entries allowed / small size / not today, global bias, India
-     regime, FII/DII, holidays, high-impact events, open trades, market-moving headlines.
+     regime, holidays, high-impact events, open trades, market-moving headlines.
    - 09:45 and 17:00 Gold Petal: an alert only on a BUY (2 of 3 drivers) or SELL plan, plus an instant alert when
      price reaches the planned buy level. 10:00 Nifty options: an alert only when the credit-spread rule passes.
    - Scans at 11:00 and 15:00: READY / ready-on-limit / quick bounce stocks; at 15:00 one quiet line (with the Gold
@@ -6634,8 +6468,8 @@ function goldPlanText(p) {
 }
 /* Nifty options: the user's rule on the next weekly expiry after today (an expiry-day chain has no time left). */
 async function niftyRuleS() {
-  /* Same expiry as the page: the first one at least 3 days away - one NSE call (+ the expiry list once a day). */
-  const exp = await withTimeout(niftyRuleExpiry(true), 25000, 'NSE expiry list');
+  /* Same expiry as the page: the first one at least 3 days away (Zerodha Kite chain). */
+  const exp = await withTimeout(niftyRuleExpiry(true), 25000, 'expiry list');
   const chain = await withTimeout(getOptionChain('NSE:NIFTY', exp, { fresh: 5 * 60e3 }), 25000, 'Nifty chain');
   const reg = await getNiftyRegime();
   const spot = +chain.spot || +reg.nifty;
@@ -6726,7 +6560,6 @@ async function globalCueS() {
     }));
     try { const y = await getPriceAndChange('^INDIAVIX'); if (y.liveRaw > 0) d.vix = { price: y.liveRaw, pct: y.prevRaw > 0 ? (y.liveRaw / y.prevRaw - 1) * 100 : null }; } catch {}
   }
-  if (!FII_DII_CACHE?.value) await Promise.race([refreshFiiDii().catch(() => {}), new Promise(r => setTimeout(r, 6000))]);
   const pct = it => it && !it.error && it.pct != null && Number.isFinite(+it.pct) ? +it.pct : null;
   let score = 0; const parts = [];
   for (const [k, name] of [['spFut', 'S&P fut'], ['nqFut', 'Nasdaq fut'], ['nikkei', 'Nikkei'], ['hangseng', 'Hang Seng']]) {
@@ -6738,9 +6571,7 @@ async function globalCueS() {
   if (vix != null) { parts.push(`India VIX ${vix.toFixed(1)}`); if (vix < 15) score += 0.75; else if (vix > 20) score -= 1; }
   if (vp != null) { if (vp <= -3) score += 0.5; else if (vp >= 3) score -= 0.5; }
   const label = !parts.length ? 'UNKNOWN' : score >= 2.5 ? 'BULL' : score <= -2.5 ? 'BEAR' : 'NEUTRAL';
-  const f = FII_DII_CACHE?.value, n = x => x && Number.isFinite(+x.net) ? `${+x.net >= 0 ? '+' : ''}${Math.round(+x.net).toLocaleString('en-IN')}` : '--';
-  const flow = f && (f.fii || f.dii) ? `FII ${n(f.fii)} · DII ${n(f.dii)} ₹ Cr cash${f.date ? ` (${f.date})` : ''}` : null;
-  return { label, score, text: parts.join(' · '), flow };
+  return { label, score, text: parts.join(' · ') };
 }
 /* Market-moving headlines for the brief: the Nifty news list (the News tab's cache when under an hour old),
    last 18 hours, only headlines with a clear up / down impact, strongest first. */
@@ -6789,7 +6620,6 @@ async function morningBrief() {
   lines.push(`New entries: ${entryVerdictS({ reg, glob, eventToday, openPct, limitPct })}`);
   lines.push(`Global: ${glob ? `${glob.label}${glob.text ? ' - ' + glob.text : ''}` : 'not available'}`);
   lines.push(`India: ${reg ? `${reg.status} - ${reg.note}` : 'Nifty trend not available'}`);
-  if (glob?.flow) lines.push(`Flows: ${glob.flow}`);
   for (const h of upcomingSpecialSession(today).filter(h => h.tradingDays <= 3)) lines.push(`${h.date === today ? 'Today' : h.date}: NSE holiday - ${h.name}${h.special ? ' (special Muhurat session - check NSE timing)' : ''}`);
   lines.push(...evLines);
   if (open.length) lines.push(`Open trades: ${open.length} (${open.map(t => symShort(t.sym)).join(', ')}) · open risk ${inr(risk, 0)}${openPct != null ? ` = ${openPct.toFixed(1)}% of capital` : ''}`);
@@ -6842,15 +6672,13 @@ async function assistantTick() {
         const r = await niftyRuleS();
         NIFTY_STATUS = { day: key, text: String(r.rule.verdict || (r.rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) };
         if (r.rule.ok) { traceNiftyRecord(r, key); await pushAll({ title: `📊 Nifty options · your rule passed`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
-      } catch (e) { NIFTY_STATUS = { day: key, text: `NSE option chain not reachable at 10:00 (${e.message})` }; }
+      } catch (e) { NIFTY_STATUS = { day: key, text: `option premiums not available at 10:00 (${e.message})` }; }
       await traceNiftyCheck(key, m, 'morning').catch(e => console.warn('Nifty trace:', e.message));
-      /* the day's one NSE index snapshot (previous closes, Fin Ex-Bank ratio) - after the chain, same NSE session */
-      if (!(NSE_SNAP.allidx?.day === key) && !kiteReady()) await nseFetchAllIndices().catch(e => console.warn('NSE indices:', e.message));
     }
     /* 15:05: the day's second (last) NSE premiums - the rule's expiry for the pages, then the Track record check
        (80% / stop every day; on the week's last trading day the end-of-week close). Settle expiries at 15:40. */
     if (nseDay && at(15 * 60 + 5, 'nse-evening')) {
-      try { await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('NSE 15:05 premiums:', e.message); }
+      try { await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
       await traceNiftyCheck(key, m, key === lastTradingDayOfWeek(key) ? 'week' : 'morning').catch(e => console.warn('Nifty trace:', e.message));
     }
     if (at(15 * 60 + 40, 'trace-nifty-settle')) await traceNiftyCheck(key, m, 'settle').catch(e => console.warn('Nifty trace:', e.message));

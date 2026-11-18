@@ -78,13 +78,6 @@
     const col=x.up===null?'#94a3b8':(x.up!==inverse)?'var(--bull)':'var(--bear)';
     return `<div class="td-mtab"><div class="td-mtab-name">${label}</div><div class="td-mtab-val">${x.v}</div><div class="td-mtab-chg" style="color:${col}">${x.c}</div>${marketStatus(item)}</div>`;
   }
-  /* FII / DII net cash buying (₹ crore), NSE provisional figures of the last session. */
-  function flowCard(f){
-    if(!f || (!f.fii && !f.dii)) return `<div class="td-mtab"><div class="td-mtab-name">FII / DII (₹ Cr)</div><div class="td-mtab-val">--</div><div class="td-mtab-chg">NSE not reached</div></div>`;
-    const v = x => x ? `<span style="color:${x.net >= 0 ? 'var(--bull)' : 'var(--bear)'}">${x.net >= 0 ? '+' : ''}${Math.round(x.net).toLocaleString('en-IN')}</span>` : '--';
-    const day = f.date ? new Date(f.date + 'T00:00:00Z').toLocaleDateString('en-IN', { day:'2-digit', month:'short', timeZone:'UTC' }) : '';
-    return `<div class="td-mtab td-mtab-wide"><div class="td-mtab-name">FII / DII net (₹ Cr)</div><div class="td-mtab-val">FII ${v(f.fii)} · DII ${v(f.dii)}</div><div class="td-mtab-chg">Cash market${day ? ' · ' + day : ''}</div></div>`;
-  }
   window.renderCompactMarketDashboardV19 = async function(force=false){
     const tc=document.getElementById('tc');
     if(!tc) return;
@@ -108,7 +101,7 @@
       <div class="td-market-head"><div class="td-market-title">Global Market Snapshot</div><div class="td-market-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>
       <div class="td-market-sec">India</div>
       <div class="td-market-grid">
-        ${biasCard}${marketCard('India VIX',d.vix,2)}${ivCard}${breadthCard}${flowCard(d.fiiDii)}
+        ${biasCard}${marketCard('India VIX',d.vix,2)}${ivCard}${breadthCard}
       </div>
       <div class="td-market-sec">US now · futures (trade almost round the clock)</div>
       <div class="td-market-grid">

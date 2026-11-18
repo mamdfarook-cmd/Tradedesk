@@ -2167,7 +2167,7 @@ async function ideaExpiries(){
 function ideaDaysTo(dateKey){ return Math.max(1, Math.round((Date.parse(dateKey + 'T15:30:00+05:30') - Date.now()) / 86400000)); }
 /* When the NSE premiums were fetched (the server asks NSE only at 10:00 and 15:05). */
 function ideaOcTime(x){ try{ const t = x?.oc?.at ? new Date(x.oc.at) : null; return t && !isNaN(t) ? t.toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'Asia/Kolkata'}) : 'today'; }catch{ return 'today'; } }
-/* Where the premiums came from: Zerodha Kite (live) or NSE's saved 10:00 / 15:05 fetch. */
+/* Where the premiums came from: Zerodha Kite, or an older saved NSE chain. */
 function ideaOcSrc(x){ return x?.oc?.source === 'Zerodha Kite' ? 'Zerodha live' : 'NSE'; }
 function ideaDate(dateKey){ try{ return new Date(dateKey + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'}); }catch{ return dateKey; } }
 /* Annualised historical volatility of daily closes (fallback volatility for MCX, where no implied vol is loaded). */
@@ -2408,7 +2408,7 @@ function indexIdeaHtml(x){
       <li><b>Volatility:</b> VIX ${fmt(x.vix,1)}${x.ivp != null ? (x.ivp < 50 ? `, lower than on ${100 - Math.round(x.ivp)}% of days in the past year` : `, higher than on ${Math.round(x.ivp)}% of days in the past year`) : ''} - ${x.vol === 'cheap' ? 'favour buying (debit spreads / calendars)' : x.vol === 'rich' ? 'favour selling (credit spreads / iron condors)' : 'credit spreads with defined risk'}</li>
       <li><b>Exit:</b> ${escHtml(x.exit)}</li>
     </ul>
-    <div class="idea-foot">${x.usingLive ? `Credit / debit, max profit / loss and breakevens use ${typed ? 'your premiums' : `${ideaOcSrc(x)} premiums of ${ideaOcTime(x)} (${ideaOcSrc(x) === 'NSE' ? 'fetched at 10:00 and 15:05 to keep NSE calls low' : 'Zerodha Kite quote, refreshed every minute'}; bid/ask middle, or the last trade when the spread is wide; legs with no good quote keep the estimate)`}; the chance of profit still uses India VIX as the volatility. Check the spread before placing.` : 'Premiums are Black-Scholes estimates from India VIX - no live premiums for this expiry (connect Zerodha under Screener -> My trades for live premiums of every expiry; without it the server fetches only the Nifty rule\'s expiry from NSE, at 10:00 and 15:05). Enter live premiums above, and check spreads and liquidity before placing.'} Lot ${lot}.${apply}</div>
+    <div class="idea-foot">${x.usingLive ? `Credit / debit, max profit / loss and breakevens use ${typed ? 'your premiums' : `${ideaOcSrc(x)} premiums of ${ideaOcTime(x)} (${ideaOcSrc(x) === 'NSE' ? 'fetched at 10:00 and 15:05 to keep NSE calls low' : x.oc.stale ? 'last Zerodha quote saved - connect Zerodha for live' : 'Zerodha Kite quote, refreshed every minute'}; bid/ask middle, or the last trade when the spread is wide; legs with no good quote keep the estimate)`}; the chance of profit still uses India VIX as the volatility. Check the spread before placing.` : 'Premiums are Black-Scholes estimates from India VIX - live premiums come from Zerodha (Screener -> My trades -> Connect Zerodha; NSE refuses the server). Enter live premiums above, and check spreads and liquidity before placing.'} Lot ${lot}.${apply}</div>
   </div>`;
 }
 

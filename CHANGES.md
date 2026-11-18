@@ -813,3 +813,22 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **Not from Kite:** FII / DII (not in Kite's API) - still NSE.
 - Tested against a fake Kite API (login, wrong / reused state refused, checksum, instruments, quotes, expired token -> NSE fallback, logout); not yet against the real Kite API.
 - Page version 18 Nov 2026 · 1.
+
+## Fin Services Ex-Bank 500 on Render; FII / DII removed (18 Nov 2026)
+
+- **"API error 500 for /api/quote?sym=NSE:NIFTYFINEXBANK"** - root cause: Yahoo has only the FINIETF ETF, scaled by an index / ETF ratio learned from NSE (10:00 snapshot or archive close). A deploy wipes data/, and NSE refuses Render for both, so no ratio existed and every quote threw. Now a built-in ratio (978.8, measured 974-983 over 11-18 Nov 2026 - within about 0.5%) is used at once and labelled "approx."; the archive is still tried in the background, and Zerodha Kite (when connected) gives the exact value. FINEXBANK_RATIO overrides the built-in ratio.
+- **FII / DII removed** (Markets card, morning brief "Flows" line, /api/health field, the NSE fetch): NSE blocks it on Render and Kite has no FII / DII data, so it only ever showed "NSE not reached".
+- Page version 18 Nov 2026 · 2.
+
+## NSE market-data requests removed (18 Nov 2026)
+
+NSE refuses Render's address, so these requests only ever failed there. Removed, with what replaces them:
+- **Option chain** (contract list + chain) -> Zerodha Kite only. Not connected: the pages show the last saved Kite chain (marked saved) or Black-Scholes; the expiry dates are worked out (weekly Tuesday, the trading day before on a holiday).
+- **All-index snapshot** (10:00 + catch-up; previous closes) -> Zerodha Kite, else Yahoo (also for Nifty / Bank Nifty / VIX on the Markets page).
+- **Archive index closes** (Fin Ex-Bank ratio) -> the ratio learned from Kite, else the built-in 978.8.
+- **NSE announcements feed** in News; **FII / DII** (earlier today); **the Cloudflare relay** (relay/ folder and NSE_RELAY_URL / NSE_RELAY_KEY).
+- **Holiday list:** NSE's 2026 list is now built in; the weekly NSE fetch stays as a bonus.
+
+Kept (they feed other checks and have no other free source; when NSE refuses, the saved / built-in data is used and NSE is asked again only after 3-6 hours instead of every 10 minutes): the results calendar (results-within-5-days check), corporate actions and ASM / GSM (screener event check), the holiday list, the index member lists (stock universe). /api/health -> nseCalls shows their answers.
+
+Page version 18 Nov 2026 · 3.
