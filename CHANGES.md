@@ -832,3 +832,9 @@ NSE refuses Render's address, so these requests only ever failed there. Removed,
 Kept (they feed other checks and have no other free source; when NSE refuses, the saved / built-in data is used and NSE is asked again only after 3-6 hours instead of every 10 minutes): the results calendar (results-within-5-days check), corporate actions and ASM / GSM (screener event check), the holiday list, the index member lists (stock universe). /api/health -> nseCalls shows their answers.
 
 Page version 18 Nov 2026 · 3.
+
+## Zerodha card: says which key the server is missing (18 Nov 2026)
+
+- The Connect Zerodha button shows only when the server has both KITE_API_KEY and KITE_API_SECRET; the card only said "Not set up". Now it shows KITE_API_KEY ✓/✗, KITE_API_SECRET ✓/✗ and the names (never the values) of any variable with KITE / ZERODHA in it, so a typo in the name is visible. KITE_KEY / KITE_SECRET / ZERODHA_API_KEY / ZERODHA_API_SECRET are accepted too.
+- Checked against Zerodha's real instrument lists: all 27 indices (Fin Ex-Bank = NIFTY FINSEREXBNK) and the Nifty / Bank Nifty / FinNifty option expiries are found.
+- Page version 18 Nov 2026 · 4.

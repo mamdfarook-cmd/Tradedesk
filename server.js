@@ -629,8 +629,9 @@ async function getPriceAndChange(ticker, symForBasis=null) {
    Read-only: this app never places, changes or cancels an order. (FII / DII is not in Kite's API; removed 18 Nov 2026.)
    Not connected, or a Kite plan without market data -> the NSE / Yahoo paths below, as before. */
 const KITE = {
-  key: String(process.env.KITE_API_KEY || '').trim(),
-  secret: String(process.env.KITE_API_SECRET || '').trim(),
+  /* also accepts the names people often type (KITE_KEY, ZERODHA_API_KEY...) */
+  key: String(process.env.KITE_API_KEY || process.env.KITE_KEY || process.env.ZERODHA_API_KEY || process.env.KITE_APIKEY || '').trim(),
+  secret: String(process.env.KITE_API_SECRET || process.env.KITE_SECRET || process.env.ZERODHA_API_SECRET || process.env.KITE_APISECRET || '').trim(),
   api: String(process.env.KITE_API_BASE || 'https://api.kite.trade').replace(/\/$/, ''),
   login: String(process.env.KITE_LOGIN_URL || 'https://kite.zerodha.com/connect/login'),
 };
@@ -874,7 +875,10 @@ async function kiteOptionChain(sym, name, want, opts) {
 function kiteStatus() {
   const s = kiteSession(), ins = KITE_INSTR;
   return {
-    configured: !!(KITE.key && KITE.secret), connected: !!s, user: s?.user || null, name: s?.name || null,
+    configured: !!(KITE.key && KITE.secret), keySet: !!KITE.key, secretSet: !!KITE.secret,
+    /* names (never values) of the Kite-like variables this server sees - tells a typo in the name from a missing one */
+    envNames: Object.keys(process.env).filter(k => /KITE|ZERODHA/i.test(k)).sort(),
+    connected: !!s, user: s?.user || null, name: s?.name || null,
     until: s ? new Date(s.until).toISOString() : null, noMarketData: KITE_STATE.noMarketData, ready: kiteReady(),
     redirectUrl: (APP_URL || '') + '/api/kite/callback',
     instruments: ins ? { day: ins.day, options: Object.fromEntries(Object.entries(ins.opt || {}).map(([k, v]) => [k, v.length])), lot: ins.lot || {},
