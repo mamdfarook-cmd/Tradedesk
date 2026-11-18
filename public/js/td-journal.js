@@ -143,6 +143,34 @@ function jTelegramHtml(st){
   </div>`;
 }
 
+/* Zerodha Kite (live premiums, Fin Ex-Bank, index values): the day's login - Zerodha ends it at 06:00 daily. */
+async function jKite(action){
+  const box = document.getElementById('j-kite-msg');
+  if(action === 'connect'){ location.href = API + '/api/kite/login'; return; }
+  try{
+    const r = await fetch(API + '/api/kite/' + action, { method:'POST', credentials:'same-origin' });
+    const j = await r.json().catch(() => ({}));
+    if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
+    if(box) box.innerHTML = 'Disconnected.';
+    setTimeout(tabJournal, 800);
+  }catch(e){ if(box) box.innerHTML = `<span style="color:var(--bear)">${escHtml(e.message)}</span>`; }
+}
+function jKiteHtml(st){
+  if(!st) return '';
+  const tm = iso => { try{ return new Date(iso).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'Asia/Kolkata'}); }catch{ return iso; } };
+  const msg = window.TD_KITE_MSG; window.TD_KITE_MSG = null;
+  const steps = `<ol class="j-steps"><li>On <b>developers.kite.trade</b> open your app and set the <b>Redirect URL</b> to <code>${escHtml(st.redirectUrl || '/api/kite/callback')}</code></li><li>Render → your service → <b>Environment</b> → add <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> (from the same app page) → save (it redeploys).</li><li>Come back here and press <b>Connect Zerodha</b> - once every morning (Zerodha ends the login at 06:00).</li></ol>`;
+  const state = !st.configured ? 'Not set up' : st.noMarketData ? 'Connected - but your Kite plan has no market data' : st.connected ? `Connected${st.name ? ' as ' + escHtml(st.name) : ''} · until ${tm(st.until)}` : 'Not connected today';
+  const ins = st.instruments, miss = ins?.notFound?.length ? ` · not found in Kite: ${ins.notFound.map(s => escHtml(s.replace(/^NSE:/, ''))).join(', ')}` : '';
+  return `<div class="idea-card j-kite">
+    <div class="idea-head"><div><div class="idea-kicker">Zerodha Kite (market data)</div><div class="idea-title">${state}</div></div><div class="idea-view ${st.ready ? 'bull' : st.configured ? 'bear' : 'neutral'}">${st.ready ? 'ON' : 'OFF'}</div></div>
+    <div class="idea-foot">When connected: live option premiums for trade ideas, the option builder and the Track record; every NSE index incl. Fin Services and Fin Services Ex-Bank; India VIX - without asking NSE. Read-only: TradeDesk never places orders. FII / DII is not in Kite's API and still comes from NSE.${st.noMarketData ? ' <b>Kite answered "insufficient permission" for quotes - the free Personal plan has no market data; the paid Connect plan is needed.</b>' : ''}${ins ? `<br>Instrument list ${escHtml(ins.day || '')}: ${ins.indices} indices${miss}${st.lastOk ? ` · last Kite answer ${tm(st.lastOk)}` : ''}` : ''}${st.lastError ? `<br><span style="color:var(--tx3)">Last Kite error: ${escHtml(st.lastError)}</span>` : ''}</div>
+    ${st.configured ? '' : steps}
+    <div class="j-actions">${st.configured ? `<button class="idea-btn" onclick="jKite('connect')">${st.connected ? 'Reconnect' : 'Connect Zerodha'}</button>` : ''}${st.connected ? `<button class="idea-btn ghost" onclick="jKite('logout')">Disconnect</button>` : ''}</div>
+    <div id="j-kite-msg" class="idea-foot">${msg ? (msg === 'ok' ? '<span style="color:var(--bull)">Zerodha connected ✓</span>' : `<span style="color:var(--bear)">Zerodha login: ${escHtml(msg)}</span>`) : ''}</div>
+  </div>`;
+}
+
 /* ── The page (Screener → My trades) ── */
 async function tabJournal(){
   const tc = document.getElementById('tc'); if(!tc) return;
@@ -175,7 +203,8 @@ async function tabJournal(){
   tc.innerHTML = `${screenerModeSwitch('trades')}${bar}
     <div class="idea-card"><div class="idea-head"><div><div class="idea-kicker">Open trades</div><div class="idea-title">${open.length ? `${open.length} open` : 'No open trade'}</div></div><button class="idea-btn" onclick="openTradeForm({})">+ Add manually</button></div>
       ${open.length ? open.map(row).join('') : '<div class="idea-foot">Tap 📒 on a stock\'s trade plan, the Gold Petal idea or the Nifty rule card when you take a trade - or add one here.</div>'}</div>
-    ${statsHtml}${closedHtml}<div data-j-tg><div class="idea-card"><div class="idea-kicker">Telegram alerts</div><div class="idea-foot">Loading…</div></div></div>`;
+    ${statsHtml}${closedHtml}<div data-j-kite></div><div data-j-tg><div class="idea-card"><div class="idea-kicker">Telegram alerts</div><div class="idea-foot">Loading…</div></div></div>`;
+  apiFetch('/api/kite/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-kite]'); if(el) el.innerHTML = jKiteHtml(st); } }).catch(() => {});
   apiFetch('/api/telegram/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-tg]'); if(el) el.innerHTML = jTelegramHtml(st); } }).catch(() => { const el = tc.querySelector('[data-j-tg]'); if(el && live()) el.innerHTML = ''; });
   /* Live P&L, one quote at a time (same cached quick price as the sidebar). */
   for(const t of open){
@@ -200,6 +229,7 @@ async function tabJournal(){
 (function deepLink(){
   let q; try{ q = new URLSearchParams(location.search); }catch{ return; }
   const sym = (q.get('sym') || '').toUpperCase(), view = q.get('view');
+  if(q.get('kite')) window.TD_KITE_MSG = q.get('kite');   /* result of the Zerodha login, shown on the Kite card */
   if(!sym && !view) return;
   const go = () => {
     try{

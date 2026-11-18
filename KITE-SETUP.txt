@@ -1,0 +1,33 @@
+TradeDesk + Zerodha Kite Connect - one-time setup (about 5 minutes), then one tap each morning
+=============================================================================================
+
+What it fixes: NSE refuses Render's address, so live option premiums, Nifty Fin Services / Fin Services Ex-Bank and
+NSE's index values did not load there. With Kite connected they come from Zerodha instead:
+  - live option premiums (bid / ask / last, OI, volume) of Nifty, Bank Nifty and FinNifty, every expiry -
+    trade ideas, the option builder, the 10:00 Nifty rule and the Track record checks;
+  - every NSE index (Fin Services and Fin Services Ex-Bank included) and India VIX, live;
+  - expiry dates and lot sizes from Zerodha's instrument list.
+TradeDesk only READS market data. It never places, changes or cancels an order.
+FII / DII is not in Kite's API - it still comes from NSE (the Cloudflare relay is the only fix for that one).
+
+Needs the paid Kite Connect plan (market data). The free "Personal" plan has no quotes - the card then says so.
+
+1. Redirect URL (developers.kite.trade -> My apps -> your app):
+     Redirect URL  =  https://<your-render-app>.onrender.com/api/kite/callback
+   (the exact address is also shown on the Zerodha card in TradeDesk, under Screener -> My trades)
+
+2. Render dashboard -> your tradedesk service -> Environment -> Add Environment Variable (twice):
+     KITE_API_KEY     = the "API key" from the same app page
+     KITE_API_SECRET  = the "API secret" from the same app page
+   Save Changes (Render restarts the app). Do not paste these into chat, GitHub or the upload zip.
+
+3. Open TradeDesk -> Screener -> My trades -> "Zerodha Kite" card -> Connect Zerodha.
+   You log in on Zerodha's own page (TradeDesk never sees your Zerodha password or 2FA) and come back connected.
+
+Every morning: Zerodha ends every API login at 06:00 (exchange rule - no app can skip it). Press Connect Zerodha once
+before the market opens; at 08:45 on trading days a notification / Telegram message reminds you when it is not
+connected. Also press it again after an upload (a deploy wipes the saved login).
+
+Check: /api/health -> "kite": connected true, ready true, "indices" = how many NSE indices were matched,
+"notFound" = indices Zerodha's list did not match (those stay on Yahoo). Not connected -> everything works as before
+(NSE at 10:00 / 15:05, Black-Scholes estimates).

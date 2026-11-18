@@ -20,3 +20,8 @@ services:
       # Optional: Telegram alerts. Paste the token from @BotFather (Render asks once; leave empty to skip).
       - key: TELEGRAM_BOT_TOKEN
         sync: false
+      # Optional: Zerodha Kite Connect (live premiums / indices) - see KITE-SETUP.txt. Leave empty to skip.
+      - key: KITE_API_KEY
+        sync: false
+      - key: KITE_API_SECRET
+        sync: false

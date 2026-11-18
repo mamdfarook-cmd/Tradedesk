@@ -116,6 +116,11 @@ Index prices are live from Yahoo, with NSE's previous close from the 10:00 snaps
 ETF x the index / ETF ratio. The option builder uses Black-Scholes estimates only; trade ideas use the saved NSE
 premiums (with their time) for the rule's expiry, estimates for other expiries.
 
+Zerodha Kite Connect (optional, recommended): with KITE_API_KEY / KITE_API_SECRET on Render and the daily
+"Connect Zerodha" login (Screener -> My trades; Zerodha ends it at 06:00), option premiums of every expiry, every NSE
+index (Fin Services Ex-Bank included) and India VIX come live from Kite - no NSE call. Read-only, no orders. FII / DII
+still comes from NSE. Setup in KITE-SETUP.txt; /api/health -> kite, /api/kite/status.
+
 NSE relay (optional, free): relay/nse-relay-worker.js is a Cloudflare Worker that asks NSE from Cloudflare's address.
 Setup in relay/RELAY-SETUP.txt; then set NSE_RELAY_URL and NSE_RELAY_KEY on Render. /api/health shows nseRelay.
 - Any time the market is open: stop or target 1 hit on a trade in My trades (tap 📒 when you take a trade).

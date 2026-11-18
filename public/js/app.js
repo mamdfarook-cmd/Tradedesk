@@ -2167,6 +2167,8 @@ async function ideaExpiries(){
 function ideaDaysTo(dateKey){ return Math.max(1, Math.round((Date.parse(dateKey + 'T15:30:00+05:30') - Date.now()) / 86400000)); }
 /* When the NSE premiums were fetched (the server asks NSE only at 10:00 and 15:05). */
 function ideaOcTime(x){ try{ const t = x?.oc?.at ? new Date(x.oc.at) : null; return t && !isNaN(t) ? t.toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'Asia/Kolkata'}) : 'today'; }catch{ return 'today'; } }
+/* Where the premiums came from: Zerodha Kite (live) or NSE's saved 10:00 / 15:05 fetch. */
+function ideaOcSrc(x){ return x?.oc?.source === 'Zerodha Kite' ? 'Zerodha live' : 'NSE'; }
 function ideaDate(dateKey){ try{ return new Date(dateKey + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'}); }catch{ return dateKey; } }
 /* Annualised historical volatility of daily closes (fallback volatility for MCX, where no implied vol is loaded). */
 function ideaHistVol(C, days){ const c = (C||[]).slice(-(days+1)).map(Number).filter(v => v > 0); if(c.length < 10) return null; const r = c.slice(1).map((v,i) => Math.log(v/c[i])); const m = r.reduce((a,b)=>a+b,0)/r.length; return Math.sqrt(r.reduce((a,b)=>a+(b-m)**2,0)/(r.length-1)) * Math.sqrt(252); }
@@ -2259,7 +2261,7 @@ async function buildIndexOptionsIdea(sym){
   const events = (await ideaCalendar()).filter(e => IDX_EVENT_CATS.includes(e.category) && e.date >= today && e.date <= until);
   const nearT = s.near ? ideaDaysTo(s.near.date) : T;
   const x = { sym, cfg, spot, e20, e50, vix, ivp, ad, trend, breadth, score, view, vol, T, sd, expiry: main?.date || null, s, iv, Ty, liveKey, events, nearT, rule, ruleExpiry: ruleChain?.expiry || null,
-    oc: chain ? { pcr: chain.pcr, maxPain: chain.maxPain, callWalls: chain.callWalls, putWalls: chain.putWalls, expiry: chain.expiry, stale: !!chain.stale, at: chain.fetchedAt } : null };
+    oc: chain ? { pcr: chain.pcr, maxPain: chain.maxPain, callWalls: chain.callWalls, putWalls: chain.putWalls, expiry: chain.expiry, stale: !!chain.stale, at: chain.fetchedAt, source: chain.source || null } : null };
   Object.assign(x, ideaOptMetrics(x));
   LAST_IDX_IDEA = x;
   return x;
@@ -2379,7 +2381,7 @@ function indexIdeaHtml(x){
     ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ Credit too small for the risk:</b> ₹${fmt(x.maxProfit)} to make vs ₹${fmt(x.maxLoss)} to lose per unit (R:R ${(x.maxProfit / x.maxLoss).toFixed(2)}). Skip, or check live premiums - a short strike closer to spot pays more.</div>` : '';
   const evHtml = thin + (warn.length ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ Event risk:</b> ${warn.join(' ')}</div>` : `<div class="idea-hedge"><b>Events:</b> no RBI / Fed / CPI / jobs / GDP date in the app calendar before ${s.near ? 'the near expiry' : 'expiry'}.</div>`);
   const typed = s.legs.some(l => l.typed), nse = s.legs.some(l => !l.typed && l.nse > 0);
-  const liveHtml = `<details class="idea-live"${typed ? ' open' : ''}><summary>${typed ? 'Using your premiums - edit' : nse ? `Using NSE premiums of ${ideaOcTime(x)} - type your own to override` : 'Enter live premiums from your broker'}</summary>
+  const liveHtml = `<details class="idea-live"${typed ? ' open' : ''}><summary>${typed ? 'Using your premiums - edit' : nse ? `Using ${ideaOcSrc(x)} premiums of ${ideaOcTime(x)} - type your own to override` : 'Enter live premiums from your broker'}</summary>
     <div class="idea-live-row">${s.legs.map((l, i) => `<label>${l.a === 'SELL' ? 'Sell' : 'Buy'} ${l.k} ${ce(l)}<input data-leg="${i}" type="number" min="0" step="0.05" value="${l.typed ? l.live : ''}" placeholder="${fmt(l.nse > 0 ? l.nse : l.prem)}"></label>`).join('')}
       <button class="idea-btn" onclick="ideaApplyLive()">Recalculate</button>${x.usingLive ? '<button class="idea-btn ghost" onclick="ideaApplyLive(true)">Use estimates</button>' : ''}</div>
     <div class="idea-foot" style="margin-top:6px">Type the last traded price (or the mid of bid/ask) for each leg; empty legs keep the NSE price, or the estimate when NSE has none.</div></details>`;
@@ -2397,7 +2399,7 @@ function indexIdeaHtml(x){
       <div><span>Expected move (1σ)</span><b>±${fmt(x.sd,0)} pts</b></div>
     </div>
     ${ideaSizeHtml(x.maxLoss * lot, 'max loss')}
-    ${x.oc ? `<div class="idea-hedge"><b>NSE open interest${x.oc.expiry ? ` (${ideaDate(x.oc.expiry)} expiry)` : ''}:</b> PCR ${x.oc.pcr ?? '--'}${x.oc.pcr != null ? (x.oc.pcr > 1.3 ? ' (heavy put writing - support below)' : x.oc.pcr < 0.7 ? ' (heavy call writing - cap above)' : ' (balanced)') : ''} · max pain ${fmt(x.oc.maxPain,0)} · biggest call OI (resistance) ${(x.oc.callWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · biggest put OI (support) ${(x.oc.putWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · fetched ${ideaOcTime(x)}${x.oc.expiry && x.expiry && x.oc.expiry !== x.expiry ? ` · NSE expiry ${ideaDate(x.oc.expiry)} used (app calendar said ${ideaDate(x.expiry)})` : ''}</div>` : ''}
+    ${x.oc ? `<div class="idea-hedge"><b>${ideaOcSrc(x) === 'NSE' ? 'NSE' : 'Zerodha'} open interest${x.oc.expiry ? ` (${ideaDate(x.oc.expiry)} expiry)` : ''}:</b> PCR ${x.oc.pcr ?? '--'}${x.oc.pcr != null ? (x.oc.pcr > 1.3 ? ' (heavy put writing - support below)' : x.oc.pcr < 0.7 ? ' (heavy call writing - cap above)' : ' (balanced)') : ''} · max pain ${fmt(x.oc.maxPain,0)} · biggest call OI (resistance) ${(x.oc.callWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · biggest put OI (support) ${(x.oc.putWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · fetched ${ideaOcTime(x)}${x.oc.expiry && x.expiry && x.oc.expiry !== x.expiry ? ` · NSE expiry ${ideaDate(x.oc.expiry)} used (app calendar said ${ideaDate(x.expiry)})` : ''}</div>` : ''}
     ${evHtml}
     ${liveHtml}
     <ul class="idea-why">
@@ -2406,7 +2408,7 @@ function indexIdeaHtml(x){
       <li><b>Volatility:</b> VIX ${fmt(x.vix,1)}${x.ivp != null ? (x.ivp < 50 ? `, lower than on ${100 - Math.round(x.ivp)}% of days in the past year` : `, higher than on ${Math.round(x.ivp)}% of days in the past year`) : ''} - ${x.vol === 'cheap' ? 'favour buying (debit spreads / calendars)' : x.vol === 'rich' ? 'favour selling (credit spreads / iron condors)' : 'credit spreads with defined risk'}</li>
       <li><b>Exit:</b> ${escHtml(x.exit)}</li>
     </ul>
-    <div class="idea-foot">${x.usingLive ? `Credit / debit, max profit / loss and breakevens use ${typed ? 'your premiums' : `NSE premiums of ${ideaOcTime(x)} (fetched at 10:00 and 15:05 to keep NSE calls low; bid/ask middle, or the last trade when the spread is wide; legs with no good quote keep the estimate)`}; the chance of profit still uses India VIX as the volatility. Check the spread before placing.` : 'Premiums are Black-Scholes estimates from India VIX - NSE premiums for this expiry are not available (the server fetches only the Nifty rule\'s expiry, at 10:00 and 15:05). Enter live premiums above, and check spreads and liquidity before placing.'} Lot ${lot}.${apply}</div>
+    <div class="idea-foot">${x.usingLive ? `Credit / debit, max profit / loss and breakevens use ${typed ? 'your premiums' : `${ideaOcSrc(x)} premiums of ${ideaOcTime(x)} (${ideaOcSrc(x) === 'NSE' ? 'fetched at 10:00 and 15:05 to keep NSE calls low' : 'Zerodha Kite quote, refreshed every minute'}; bid/ask middle, or the last trade when the spread is wide; legs with no good quote keep the estimate)`}; the chance of profit still uses India VIX as the volatility. Check the spread before placing.` : 'Premiums are Black-Scholes estimates from India VIX - no live premiums for this expiry (connect Zerodha under Screener -> My trades for live premiums of every expiry; without it the server fetches only the Nifty rule\'s expiry from NSE, at 10:00 and 15:05). Enter live premiums above, and check spreads and liquidity before placing.'} Lot ${lot}.${apply}</div>
   </div>`;
 }
 

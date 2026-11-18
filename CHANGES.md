@@ -801,3 +801,15 @@ Backtest (1 year, 255 stocks): 289 trades at 40% wins and −0.09R became 335 tr
 - **Option builder:** Black-Scholes estimates only. **Trade ideas:** the saved NSE premiums of the rule's expiry, shown as "NSE premiums of <time>"; other expiries use the estimates.
 - **Cloudflare relay (optional, free):** relay/nse-relay-worker.js + relay/RELAY-SETUP.txt. With NSE_RELAY_URL / NSE_RELAY_KEY set on Render, every NSE call goes through the worker (secret key, NSE /api/ paths only). Tested locally against real NSE (FII / DII and option chain 200; wrong key 401; other paths 400). Whether NSE accepts Cloudflare's address is only known after setup - /api/health -> nseCalls shows it.
 - Page version 17 Nov 2026 · 2.
+
+## Zerodha Kite Connect for market data (18 Nov 2026)
+
+- **Why:** NSE refuses Render's address, so on Render the option premiums stayed Black-Scholes estimates, Nifty Fin Services Ex-Bank did not load and NSE's previous closes were missing. Kite's quote API answers any server with a valid login.
+- **What comes from Kite when connected** (KITE_API_KEY / KITE_API_SECRET on Render + the day's login):
+  - option chain of Nifty / Bank Nifty / FinNifty for any expiry (bid / ask / last / OI / volume; expiries and lot sizes from Kite's instrument list, downloaded once a day), kept 60 s - trade ideas, the option builder (live premiums again), the 10:00 rule, the 15:05 and Track record checks;
+  - every NSE index incl. Fin Services and Fin Services Ex-Bank (live value + previous close; Yahoo only for the mini chart), and India VIX - one request for all, kept 30 s;
+  - the 10:00 NSE index snapshot is skipped. Not connected -> the NSE / Yahoo paths as before.
+- **Login:** Screener -> My trades -> Zerodha Kite card -> Connect Zerodha (Zerodha's own login page; redirect back to /api/kite/callback, checked against a one-time state, 10 minutes). Zerodha ends every login at 06:00; an 08:45 reminder on trading days when not connected. Token stored encrypted (AES-256-GCM, key from APP_SECRET) in data/kite-session.json. Read-only - no order endpoint is used.
+- **Not from Kite:** FII / DII (not in Kite's API) - still NSE.
+- Tested against a fake Kite API (login, wrong / reused state refused, checksum, instruments, quotes, expired token -> NSE fallback, logout); not yet against the real Kite API.
+- Page version 18 Nov 2026 · 1.
