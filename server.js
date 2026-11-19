@@ -18,6 +18,21 @@ const https = require('https');
 const url   = require('url');
 const zlib  = require('zlib');
 const PORT  = process.env.PORT || 3000;
+/* ── YAHOO vs KITE SCREENER TEST (19 Nov 2026) ──
+   The whole app uses Yahoo, exactly as before. Only the "Yahoo vs Kite" screener comparison (/api/screener-compare)
+   runs a second screener scan in the 'kite' context: there NSE stock and index charts come from Zerodha Kite (quotes +
+   historical candles, see kiteChart) and the scan's results (screener, Nifty trend, breadth, sector strength, response
+   caches) are kept apart from Yahoo's - the normal screener, Overview, Track record and alerts never see them. */
+const SRC_ALS = new (require('async_hooks').AsyncLocalStorage)();
+const dataSrc = () => (SRC_ALS.getStore() && SRC_ALS.getStore().src) || 'yahoo';
+const srcStoreInit = () => ({ MY_TRADE_SCREENER_CACHE: null, MY_TRADE_SCREENER_TS: 0, MY_TRADE_SCREENER_INFLIGHT: null, NIFTY_REGIME_CACHE: null, NIFTY_REGIME_TS: 0,
+  NIFTY_CLOSES: null, LAST_BREADTH: null, LAST_SECTOR_STRENGTH: null, LAST_SCAN_DIAG: { ts: 0, rows: [] } });
+const SRCV = { yahoo: srcStoreInit(), kite: srcStoreInit() };
+const SV = () => SRCV[dataSrc()];
+/* Chart requests per source, shown on the Data source card: served, failed, average time, and (Kite) how many fell
+   back to Yahoo and why. */
+const srcStatInit = () => ({ charts: 0, ok: 0, failed: 0, ms: 0, fallbacks: 0, notOnKite: 0, quoteCalls: 0, histCalls: 0, lastFallbacks: [] });
+const SRC_STATS = { since: new Date().toISOString(), yahoo: srcStatInit(), kite: srcStatInit() };
 /* Shared with the browser (public/swing-plan.js): S/R levels, setup stop/target, setup choice, R:R,
    pullback volume rule and relative strength are computed by the same code in the screener and Overview. */
 /* Start-up check: a GitHub web upload that misses the public/ sub-folders (picking files instead of dragging
@@ -227,6 +242,8 @@ const HOST_LIMITS = [
   { re: { test: h => { try { return h === new URL(KITE.api).hostname; } catch { return false; } } }, max: 1, gapMs: 1100, key: 'kite' },
   /* All NSE addresses share one queue: NSE moved www.nseindia.com to www.nseindia.in on 14 Nov 2026, and the .in
      host had fallen into the generic bucket (2 at a time, 0.5 s apart) - the bursts NSE's bot protection blocks. */
+  /* Kite historical candles: 3 requests a second allowed - kept a little under */
+  { re: /^kite-hist$/, max: 2, gapMs: 360, key: 'kitehist' },
   { re: /(^|\.)nseindia\.(com|in|co\.in|org)$/i, max: 1, gapMs: 2000, key: 'nse' },
   { re: /(^|\.)bseindia\.com$/i,         max: 1, gapMs: 1500, key: 'bse' },
   { re: /.*/,                            max: 2, gapMs: 500 },   /* news sites and other APIs */
@@ -271,8 +288,8 @@ function noteHostResult(host, status) {
     st.strikes = 0;
   }
 }
-function get(targetUrl, extraHdrs = {}, body = null, method = 'GET') {
-  const host = new URL(targetUrl).hostname;
+function get(targetUrl, extraHdrs = {}, body = null, method = 'GET', queueHost = null) {
+  const host = queueHost || new URL(targetUrl).hostname;   /* queueHost: a named queue (kite-hist) instead of the URL's host */
   const st = hostState(host);
   if (Date.now() < st.coolUntil) {
     const er = new Error(`${host} paused after a rate-limit reply (until ${new Date(st.coolUntil).toISOString()})`);
@@ -316,7 +333,7 @@ function rawGet(targetUrl, extraHdrs = {}, body = null, method = 'GET') {
       const stream = enc==='gzip' ? res.pipe(zlib.createGunzip())
         : enc==='deflate' ? res.pipe(zlib.createInflate()) : res;
       stream.on('data', c => chunks.push(c));
-      stream.on('end', () => done(resolve, { status: res.statusCode, headers: res.headers, body: Buffer.concat(chunks).toString('utf8') }));
+      stream.on('end', () => { const buf = Buffer.concat(chunks); done(resolve, { status: res.statusCode, headers: res.headers, body: buf.toString('utf8'), buf }); });
       stream.on('error', er => done(reject, er));
       /* Errors/aborts on the raw response are not forwarded through pipe(), so listen on it directly. */
       if (stream !== res) res.on('error', er => done(reject, er));
@@ -381,6 +398,12 @@ function chartTtlMs(interval, range) {
   return 30e3; /* live price series: 2m/1d, 1d/5d, 1d/1d */
 }
 async function yfChart(ticker, interval, range) {
+  if (dataSrc() === 'kite') return kiteChartOrYahoo(ticker, interval, range);
+  const st = SRC_STATS.yahoo, t0 = Date.now(); st.charts++;
+  try { const v = await yfChartYahoo(ticker, interval, range); st.ok++; st.ms += Date.now() - t0; return v; }
+  catch (e) { st.failed++; throw e; }
+}
+async function yfChartYahoo(ticker, interval, range) {
   const key = `${ticker}|${interval}|${range}`, ttl = chartTtlMs(interval, range);
   const hit = CHART_CACHE.get(key);
   if (hit && Date.now() - hit.ts < ttl) return hit.value;
@@ -699,7 +722,7 @@ async function kiteCall(path, opts = {}) {
   let body = null;
   if (opts.form) { body = new URLSearchParams(opts.form).toString(); hdr['Content-Type'] = 'application/x-www-form-urlencoded'; }
   const t0 = Date.now(); let r;
-  try { r = await get(KITE.api + path, hdr, body, opts.method || 'GET'); }
+  try { r = await get(KITE.api + path, hdr, body, opts.method || 'GET', opts.queue || null); }
   catch (e) { kiteNote(path, t0, null, e); KITE_STATE.lastError = e.message; KITE_STATE.lastErrorAt = new Date().toISOString(); throw e; }
   kiteNote(path, t0, r.status);
   if (opts.csv && r.status === 200) { KITE_STATE.lastOk = new Date().toISOString(); return r.body; }
@@ -708,6 +731,7 @@ async function kiteCall(path, opts = {}) {
   const type = j?.error_type || '', msg = j?.message || ('HTTP ' + r.status);
   if (type === 'TokenException' && s) { KITE_SESSION = null; kiteSaveSession(); }   /* logged out / expired: login again */
   if (type === 'PermissionException' && /^\/quote/.test(path)) KITE_STATE.noMarketData = true;   /* plan without market data */
+  if ((type === 'PermissionException' || /permission|subscri/i.test(msg)) && /^\/instruments\/historical/.test(path)) KITE_STATE.noHistorical = Date.now();   /* plan without historical data */
   KITE_STATE.lastError = `${String(path).split('?')[0]}: ${type || 'HTTP ' + r.status} - ${msg}`; KITE_STATE.lastErrorAt = new Date().toISOString();
   const er = new Error('Zerodha: ' + msg); er.kiteType = type; throw er;
 }
@@ -762,7 +786,7 @@ let KITE_INSTR = null, KITE_INSTR_INFLIGHT = null, KITE_INSTR_TRIED = 0;
 try { KITE_INSTR = JSON.parse(require('fs').readFileSync(KITE_INSTR_FILE, 'utf8')); } catch {}
 async function kiteInstruments() {
   const today = istDateKey();
-  if (KITE_INSTR?.day === today) return KITE_INSTR;
+  if (KITE_INSTR?.day === today && KITE_INSTR.v === 2) return KITE_INSTR;
   const old = KITE_INSTR && Date.now() - (KITE_INSTR.ts || 0) < 4 * 86400e3 ? KITE_INSTR : null;
   if (old && Date.now() - KITE_INSTR_TRIED < 10 * 60e3) return old;   /* failed recently: keep the last list */
   if (KITE_INSTR_INFLIGHT) return KITE_INSTR_INFLIGHT;
@@ -778,12 +802,14 @@ async function kiteInstruments() {
     }
     if (!opt.NIFTY?.length) throw new Error('Kite instrument list has no Nifty options');
     const idxRows = kiteCsv(nse).filter(r => r.segment === 'INDICES' || r.instrument_type === 'INDEX');
-    const idx = {};
+    const idx = {}, idxTok = {}, eq = {}, eqName = {};
     for (const [sym, re] of Object.entries(KITE_IDX_RE)) {
       const hit = idxRows.find(r => re.test(kiteNorm(r.tradingsymbol))) || idxRows.find(r => re.test(kiteNorm(r.name)));
-      if (hit) idx[sym] = 'NSE:' + hit.tradingsymbol;
+      if (hit) { idx[sym] = 'NSE:' + hit.tradingsymbol; idxTok[sym] = +hit.instrument_token; }
     }
-    KITE_INSTR = { day: today, ts: Date.now(), opt, lot: Object.fromEntries(Object.entries(lot).map(([k, v]) => [k, v.n])), idx, indexNames: idxRows.length };
+    /* NSE stocks / ETFs: symbol -> instrument token (historical candles need the token) */
+    for (const r of kiteCsv(nse)) if (r.segment === 'NSE' && r.instrument_type === 'EQ' && r.tradingsymbol && +r.instrument_token > 0) { eq[r.tradingsymbol] = +r.instrument_token; if (r.name) eqName[r.tradingsymbol] = r.name; }
+    KITE_INSTR = { v: 2, day: today, ts: Date.now(), opt, lot: Object.fromEntries(Object.entries(lot).map(([k, v]) => [k, v.n])), idx, idxTok, eq, eqName, indexNames: idxRows.length };
     try { require('fs').mkdirSync(require('path').dirname(KITE_INSTR_FILE), { recursive: true }); require('fs').writeFileSync(KITE_INSTR_FILE, JSON.stringify(KITE_INSTR)); } catch {}
     return KITE_INSTR;
   })().catch(e => { if (old) { console.warn('Kite instruments (keeping the last list):', e.message); return old; } throw e; })
@@ -822,6 +848,173 @@ async function kiteIndexPrice(sym, ticker) {
     todayOpen: +q.ohlc?.open || live, todayHigh: +q.ohlc?.high || live, todayLow: +q.ohlc?.low || live, todayVol: 0,
     changeBasis: 'previousClose', basisTime: null, marketTime: y?.marketTime || Math.round(Date.now() / 1000), spark: spark.slice(-6), source: 'Zerodha Kite' };
 }
+/* ── KITE CHARTS FOR THE SCREENER TEST (19 Nov 2026) ──
+   In the 'kite' data context (only the "Yahoo vs Kite" screener comparison) yfChart() answers from Zerodha Kite in
+   Yahoo's chart shape, so the screener code runs unchanged on Kite data:
+     - live price, day open / high / low / volume and the previous close: Kite quotes, many stocks per request (250);
+     - daily candles: Kite historical 'day' candles up to yesterday (kept for the day) + today's bar from the quote;
+       weekly / monthly bars are built from the daily ones; 15- / 60-minute bars: Kite intraday candles.
+   Anything Kite does not have (global tickers, a stock missing from Kite's list, a failed call, a plan without
+   historical data) falls back to Yahoo and is counted. */
+const KQ = { wait: new Map(), timer: null, cache: new Map() };
+const kiteIst = s => Date.parse(String(s).replace(' ', 'T').replace(/([+-]\d\d)(\d\d)$/, '$1:$2') + (/[+-]\d\d:?\d\d$|Z$/.test(String(s)) ? '' : '+05:30'));
+const kiteDayTs = d => Math.round(Date.parse(d + 'T09:15:00+05:30') / 1000);   /* daily bars stamped 09:15 IST, like Yahoo */
+const istDay = ms => new Date(ms + 5.5 * 3600e3).toISOString().slice(0, 10);
+const kiteFmt = ms => new Date(ms + 5.5 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
+function kiteQuoteOne(key) {
+  const hit = KQ.cache.get(key), ttl = istMarketHoursS() ? 15e3 : 5 * 60e3;
+  if (hit && Date.now() - hit.ts < ttl) return Promise.resolve(hit.q);
+  if (KQ.wait.has(key)) return KQ.wait.get(key).p;
+  let res, rej; const p = new Promise((a, b) => { res = a; rej = b; });
+  KQ.wait.set(key, { p, res, rej });
+  if (!KQ.timer) KQ.timer = setTimeout(kiteQuoteFlush, 120);
+  return p;
+}
+async function kiteQuoteFlush() {
+  KQ.timer = null;
+  const batch = [...KQ.wait.entries()].slice(0, 250);
+  batch.forEach(([k]) => KQ.wait.delete(k));
+  if (KQ.wait.size) KQ.timer = setTimeout(kiteQuoteFlush, 120);
+  SRC_STATS.kite.quoteCalls++;
+  try {
+    const d = await kiteCall('/quote?' + batch.map(([k]) => 'i=' + encodeURIComponent(k)).join('&'));
+    for (const [k, w] of batch) {
+      const q = d?.[k];
+      if (q && +q.last_price > 0) { KQ.cache.set(k, { q, ts: Date.now() }); w.res(q); } else w.rej(new Error('Kite gave no quote for ' + k));
+    }
+  } catch (e) { batch.forEach(([, w]) => w.rej(e)); }
+  if (KQ.cache.size > 3000) [...KQ.cache.keys()].slice(0, 1000).forEach(k => KQ.cache.delete(k));
+}
+const KH_CACHE = new Map(), KH_INFLIGHT = new Map();
+/* Historical candles -> [{t, o, h, l, c, v}] (t = unix seconds). */
+async function kiteHist(token, kint, fromMs, toMs, key, fresh) {
+  const hit = KH_CACHE.get(key);
+  if (hit && fresh(hit)) return hit.bars;
+  if (KITE_STATE.noHistorical && Date.now() - KITE_STATE.noHistorical < 3600e3) throw new Error('your Kite plan has no historical data');
+  if (KH_INFLIGHT.has(key)) return KH_INFLIGHT.get(key);
+  const p = (async () => {
+    SRC_STATS.kite.histCalls++;
+    const d = await kiteCall(`/instruments/historical/${token}/${kint}?from=${encodeURIComponent(kiteFmt(fromMs))}&to=${encodeURIComponent(kiteFmt(toMs))}`, { queue: 'kite-hist' });
+    const bars = (d?.candles || []).map(c => {
+      const ms = kiteIst(c[0]);
+      return { t: kint === 'day' ? kiteDayTs(istDay(ms)) : Math.round(ms / 1000), o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] || 0 };
+    }).filter(b => b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0);
+    KH_CACHE.set(key, { bars, ts: Date.now(), day: istDateKey() });
+    if (KH_CACHE.size > 1500) [...KH_CACHE.keys()].slice(0, 500).forEach(k => KH_CACHE.delete(k));
+    return bars;
+  })().finally(() => KH_INFLIGHT.delete(key));
+  KH_INFLIGHT.set(key, p);
+  return p;
+}
+/* Daily candles up to yesterday: past days are final, so one fetch serves the whole day. 2-year or 5-year tier. */
+function kiteDaily(token, days) {
+  const tier = days > 740 ? 1830 : 740, now = Date.now(), y = Date.parse(istDay(now) + 'T00:00:00+05:30') - 1000;
+  return kiteHist(token, 'day', now - tier * 86400e3, y, `${token}|day|${tier}`, h => h.day === istDateKey());
+}
+const KITE_RANGE_DAYS = { '1d': 1, '5d': 7, '1mo': 31, '3mo': 92, '6mo': 183, '1y': 366, '2y': 731, '5y': 1827, '10y': 1827, max: 1827 };
+let YF_REV = null;
+async function kiteInstrumentFor(ticker) {
+  const ins = await kiteInstruments();
+  if (!ins?.eq) return null;
+  if (!YF_REV) YF_REV = Object.fromEntries(Object.entries(YF_MAP).map(([s, t]) => [t, s]));
+  if (ticker === '^INDIAVIX') return ins.idxTok?.VIX ? { token: ins.idxTok.VIX, key: ins.idx.VIX, index: true } : null;
+  const sym = ticker !== 'FINIETF.NS' && YF_REV[ticker];   /* FINIETF is an ETF the callers scale themselves */
+  if (sym) return ins.idx?.[sym] && ins.idxTok?.[sym] ? { token: ins.idxTok[sym], key: ins.idx[sym], index: true } : null;
+  const m = /^(.+)\.NS$/i.exec(ticker), code = m && m[1].toUpperCase();
+  return code && ins.eq[code] ? { token: ins.eq[code], key: 'NSE:' + code, name: ins.eqName?.[code] || code } : null;
+}
+function kiteGroup(bars, keyOf) {
+  const out = [];
+  for (const b of bars) {
+    const k = keyOf(b.t), g = out[out.length - 1];
+    if (g && g.k === k) { g.h = Math.max(g.h, b.h); g.l = Math.min(g.l, b.l); g.c = b.c; g.v += b.v; }
+    else out.push({ k, t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v });
+  }
+  return out;
+}
+const weekKey = t => { const d = new Date(t * 1000 + 5.5 * 3600e3); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0, 10); };
+async function kiteChart(inst, ticker, interval, range) {
+  const q = await kiteQuoteOne(inst.key), last = +q.last_price;
+  const tradeMs = q.last_trade_time ? kiteIst(q.last_trade_time) : (q.timestamp ? kiteIst(q.timestamp) : Date.now());
+  const tradeDay = istDay(Number.isFinite(tradeMs) ? tradeMs : Date.now());
+  const qo = +q.ohlc?.open, qh = +q.ohlc?.high, ql = +q.ohlc?.low, qPrev = +q.ohlc?.close;
+  const todayBar = { t: kiteDayTs(tradeDay), o: qo > 0 ? qo : last, h: Math.max(qh > 0 ? qh : last, last), l: Math.min(ql > 0 ? ql : last, last), c: last, v: +q.volume || 0 };
+  const liveOnly = !/^(1d|1wk|1mo|15m|30m|60m|90m|1h)$/.test(interval) || (interval === '1d' && (range === '1d' || range === '5d'));
+  let daily = null;
+  if (!/m$|h$/.test(interval) || liveOnly) {
+    try { daily = await kiteDaily(inst.token, Math.max(KITE_RANGE_DAYS[range] || 731, 400)); }
+    catch (e) { if (!liveOnly) throw e; }   /* live price without history: quote only */
+  }
+  let prev = null, dbars = [];
+  if (daily) {
+    dbars = daily.slice();
+    const lastDay = dbars.length ? istDay(dbars[dbars.length - 1].t * 1000) : '';
+    if (lastDay === tradeDay) dbars[dbars.length - 1] = { ...dbars[dbars.length - 1], h: Math.max(dbars[dbars.length - 1].h, last), l: Math.min(dbars[dbars.length - 1].l, last), c: last };
+    else if (lastDay < tradeDay) dbars.push(todayBar);
+    for (let i = dbars.length - 1; i >= 0; i--) if (istDay(dbars[i].t * 1000) < tradeDay) { prev = dbars[i].c; break; }
+  }
+  if (!(prev > 0)) prev = qPrev > 0 ? qPrev : last;
+  let bars;
+  if (interval === '1d') { const cut = kiteDayTs(istDay(Date.now() - (KITE_RANGE_DAYS[range] || 731) * 86400e3)); bars = daily ? dbars.filter(b => b.t >= cut) : [{ ...todayBar, t: todayBar.t - 86400, o: prev, h: prev, l: prev, c: prev, v: 0 }, todayBar]; }
+  else if (interval === '1wk') bars = kiteGroup(dbars.filter(b => b.t >= Date.now() / 1000 - (KITE_RANGE_DAYS[range] || 731) * 86400), b => weekKey(b));
+  else if (interval === '1mo') bars = kiteGroup(dbars.filter(b => b.t >= Date.now() / 1000 - (KITE_RANGE_DAYS[range] || 1827) * 86400), t => istDay(t * 1000).slice(0, 7));
+  else if (/^(15m|30m|60m|1h|90m)$/.test(interval)) {
+    const kint = interval === '15m' ? '15minute' : interval === '30m' ? '30minute' : '60minute', days = Math.min(KITE_RANGE_DAYS[range] || 7, 60);
+    bars = await kiteHist(inst.token, kint, Date.now() - days * 86400e3, Date.now(), `${inst.token}|${kint}|${days}`, h => Date.now() - h.ts < 3 * 60e3);
+  } else bars = [{ ...todayBar, t: Math.round((Number.isFinite(tradeMs) ? tradeMs : Date.now()) / 1000) }];   /* 1m / 2m / 5m: today's bar from the quote */
+  const yr = (daily ? dbars : []).filter(b => b.t >= Date.now() / 1000 - 365 * 86400);
+  const meta = { symbol: ticker, currency: 'INR', exchangeName: 'NSE', exchangeTimezoneName: 'Asia/Kolkata', instrumentType: inst.index ? 'INDEX' : 'EQUITY',
+    longName: inst.name || null, shortName: inst.name || null, regularMarketPrice: last, regularMarketTime: Math.round((Number.isFinite(tradeMs) ? tradeMs : Date.now()) / 1000),
+    regularMarketOpen: todayBar.o, regularMarketDayHigh: todayBar.h, regularMarketDayLow: todayBar.l, regularMarketVolume: todayBar.v,
+    regularMarketPreviousClose: prev, previousClose: prev, chartPreviousClose: prev,
+    fiftyTwoWeekHigh: yr.length ? Math.max(...yr.map(b => b.h)) : null, fiftyTwoWeekLow: yr.length ? Math.min(...yr.map(b => b.l)) : null, tdSource: 'Zerodha Kite' };
+  return { meta, timestamp: bars.map(b => b.t), indicators: { quote: [{ open: bars.map(b => b.o), high: bars.map(b => b.h), low: bars.map(b => b.l), close: bars.map(b => b.c), volume: bars.map(b => b.v) }] } };
+}
+async function kiteChartOrYahoo(ticker, interval, range) {
+  const st = SRC_STATS.kite, used = SRC_ALS.getStore()?.used, t0 = Date.now(); st.charts++;
+  let inst = null;
+  try { inst = await kiteInstrumentFor(ticker); } catch {}
+  if (inst) {
+    try { const v = await kiteChart(inst, ticker, interval, range); st.ok++; st.ms += Date.now() - t0; if (used) used.kite++; return v; }
+    catch (e) { st.fallbacks++; st.lastFallbacks.unshift(`${ticker} ${interval}/${range}: ${String(e.message).slice(0, 90)}`); st.lastFallbacks.length = Math.min(st.lastFallbacks.length, 8); }
+  } else st.notOnKite++;
+  if (used) used.yahoo++;
+  return yfChartYahoo(ticker, interval, range);
+}
+
+/* ── /api/screener-compare: the same screener on Yahoo and on Kite data, side by side ──
+   The Kite run is kept apart (SRCV.kite): it never changes the normal screener, Overview, Track record or alerts. */
+const SCREENER_CMP = { inflight: null };
+async function apiScreenerCompare(req, res, p) {
+  const ks = kiteStatus();
+  if (!kiteReady()) return send(res, { ready: false, configured: ks.configured, connected: ks.connected, noMarketData: ks.noMarketData,
+    note: !ks.configured ? 'Zerodha is not set up on the server (KITE_API_KEY / KITE_API_SECRET).' : ks.noMarketData ? 'Your Kite plan has no market data.' : 'Connect Zerodha first (Screener -> My trades -> Connect Zerodha), then run the comparison.' });
+  const force = p.get('refresh') === '1';
+  const run = src => SRC_ALS.run({ src, used: { kite: 0, yahoo: 0 } }, async () => {
+    const st = SV(), t0 = Date.now(), used = SRC_ALS.getStore().used;
+    const fresh = st.MY_TRADE_SCREENER_CACHE && !scanPredatesCloseS(st.MY_TRADE_SCREENER_CACHE.generatedAt) && Date.now() - st.MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL;
+    let r, reused = false;
+    if (fresh && !(force && src === 'kite')) { r = st.MY_TRADE_SCREENER_CACHE; reused = true; }
+    else {
+      if (!st.MY_TRADE_SCREENER_INFLIGHT) st.MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { st.MY_TRADE_SCREENER_INFLIGHT = null; });
+      r = await st.MY_TRADE_SCREENER_INFLIGHT;
+      if (used.kite + used.yahoo > 0) st.CMP_USED = { ...used, ms: Date.now() - t0 };   /* shown again when the scan is reused */
+    }
+    return { r, reused, ms: reused ? (st.CMP_USED?.ms ?? null) : Date.now() - t0, used: reused && st.CMP_USED ? st.CMP_USED : { ...used } };
+  });
+  if (!SCREENER_CMP.inflight) SCREENER_CMP.inflight = Promise.all([run('yahoo'), run('kite')]).finally(() => { SCREENER_CMP.inflight = null; });
+  let both;
+  try { both = await SCREENER_CMP.inflight; } catch (e) { return err(res, 'Comparison failed: ' + e.message); }
+  const pick = x => ({ sym: x.sym || String(x.ticker || '').replace(/\.(NS|BO)$/, ''), price: x.price ?? x.currentPrice ?? null, setup: x.selectedStrategy || x.setup || x.picked || null,
+    score: x.selectedStrategyScore ?? x.finalQualification ?? x.decisionScore ?? null, rr: x.rr ?? x.rrBull ?? null, entry: x.entry ?? x.entryPrice ?? null, sl: x.sl ?? x.stopLoss ?? x.stop ?? null });
+  const side = (o, src) => ({ ready: (o.r.picks || []).map(pick), watch: (o.r.watchlist || []).map(pick), quick: (o.r.quickBounce || []).map(q => q.sym),
+    stats: { generatedAt: o.r.generatedAt, reused: o.reused, ms: o.ms, partial: !!o.r.partial, scanned: o.r.scanned, attempted: o.r.scannedAttempted,
+      dataOk: o.r.universeStats?.dataOk, dataFailed: o.r.universeStats?.dataFailed, dataFailedSample: o.r.universeStats?.dataFailedSample || [],
+      shortHistory: (o.r.universeStats?.shortHistory || []).length, bullish: o.r.universeStats?.biasEligible, niftyOk: o.r.marketTrend?.readyAllowed ?? o.r.marketTrend?.aboveEma50 ?? null,
+      chartsFromKite: src === 'kite' ? o.used.kite : 0, chartsFromYahoo: src === 'kite' ? o.used.yahoo : null } });
+  send(res, { ready: true, yahoo: side(both[0], 'yahoo'), kite: side(both[1], 'kite'), sourceStats: SRC_STATS, kiteHistorical: !(KITE_STATE.noHistorical && Date.now() - KITE_STATE.noHistorical < 3600e3) });
+}
+
 async function kiteVix() {
   const ins = await kiteInstruments(), id = ins.idx?.VIX;
   if (!id) throw new Error('India VIX not in Kite\'s index list');
@@ -876,6 +1069,7 @@ function kiteStatus() {
   const s = kiteSession(), ins = KITE_INSTR;
   return {
     configured: !!(KITE.key && KITE.secret), keySet: !!KITE.key, secretSet: !!KITE.secret,
+    noHistorical: !!(KITE_STATE.noHistorical && Date.now() - KITE_STATE.noHistorical < 3600e3),
     /* names (never values) of the Kite-like variables this server sees - tells a typo in the name from a missing one */
     envNames: Object.keys(process.env).filter(k => /KITE|ZERODHA/i.test(k)).sort(),
     connected: !!s, user: s?.user || null, name: s?.name || null,
@@ -988,8 +1182,17 @@ async function getRateBasis(force=false) {
 /* ── RESPONSE CACHE + IN-FLIGHT DEDUPE ──
    Keeps the app responsive when the user switches stocks quickly.
    TTLs are intentionally short so prices stay near-live while duplicate Yahoo calls are avoided. */
-const API_CACHE = new Map();
-const INFLIGHT  = new Map();
+/* Kite-context entries get their own keys ('|src:kite'), so a Kite answer never serves a Yahoo request or the other way
+   round. Keys starting 'kite:' are Kite data either way and are shared. */
+class SrcMap extends Map {
+  k(key) { return dataSrc() === 'kite' && !String(key).startsWith('kite:') ? key + '|src:kite' : key; }
+  get(key) { return super.get(this.k(key)); }
+  set(key, v) { return super.set(this.k(key), v); }
+  has(key) { return super.has(this.k(key)); }
+  delete(key) { return super.delete(this.k(key)); }
+}
+const API_CACHE = new SrcMap();
+const INFLIGHT  = new SrcMap();
 const TTL = {
   quote: 20 * 1000,
   quick: 15 * 1000,
@@ -2979,8 +3182,8 @@ function loadUniverseFromDisk() {
     const j = JSON.parse(require('fs').readFileSync(universeFile(), 'utf8'));
     if (j?.universe?.rows?.length) LIVE_UNIVERSE = j.universe;
     if (j?.shares && typeof j.shares === 'object') SHARES_CACHE = j.shares;
-    if (j?.breadth?.pct != null) LAST_BREADTH = j.breadth;
-    if (j?.sectorStrength?.map) LAST_SECTOR_STRENGTH = j.sectorStrength;
+    if (j?.breadth?.pct != null) SV().LAST_BREADTH = j.breadth;
+    if (j?.sectorStrength?.map) SV().LAST_SECTOR_STRENGTH = j.sectorStrength;
     if (Array.isArray(j?.resultsCal?.rows)) RESULTS_CAL_LAST_GOOD = j.resultsCal;
   } catch {}
 }
@@ -2988,7 +3191,7 @@ function saveUniverseToDisk() {
   try {
     const fsm = require('fs'), dir = require('path').dirname(universeFile());
     fsm.mkdirSync(dir, { recursive: true });
-    fsm.writeFileSync(universeFile(), JSON.stringify({ universe: LIVE_UNIVERSE, shares: SHARES_CACHE, breadth: LAST_BREADTH, sectorStrength: LAST_SECTOR_STRENGTH, resultsCal: RESULTS_CAL_LAST_GOOD }));
+    fsm.writeFileSync(universeFile(), JSON.stringify({ universe: LIVE_UNIVERSE, shares: SHARES_CACHE, breadth: SRCV.yahoo.LAST_BREADTH, sectorStrength: SRCV.yahoo.LAST_SECTOR_STRENGTH, resultsCal: RESULTS_CAL_LAST_GOOD }));
   } catch (er) { console.warn('Universe save failed:', er.message); }
 }
 /* NSE industry (from the official index constituent list) -> the app's sector names, which map to the
@@ -3079,7 +3282,7 @@ async function mapLimit(items, limit, fn) {
 function refreshUniverse(force = false) {
   if (!force && LIVE_UNIVERSE && LIVE_UNIVERSE.industry && Date.now() - Date.parse(LIVE_UNIVERSE.generatedAt) < UNIVERSE_MAX_AGE_MS) return Promise.resolve(LIVE_UNIVERSE);
   if (UNIVERSE_INFLIGHT) return UNIVERSE_INFLIGHT;
-  UNIVERSE_INFLIGHT = buildUniverse().catch(er => { console.warn('Universe refresh failed:', er.message); return LIVE_UNIVERSE; })
+  UNIVERSE_INFLIGHT = SRC_ALS.run({ src: 'yahoo' }, () => buildUniverse()).catch(er => { console.warn('Universe refresh failed:', er.message); return LIVE_UNIVERSE; })
     .finally(() => { UNIVERSE_INFLIGHT = null; });
   return UNIVERSE_INFLIGHT;
 }
@@ -3896,7 +4099,7 @@ function qualifiedMetricsS({C,H,L,V,weekly,marketCapCr,prevIdx}){
    Screener 2: Need Confirmation = near-ready names only, never buy-now.
    A symbol can be in only one screen. Ready wins; confirmation screen excludes all Screener Match symbols.
    No second Yahoo scan is needed for the confirmation screen. */
-let MY_TRADE_SCREENER_CACHE = null, MY_TRADE_SCREENER_TS = 0;
+/* MY_TRADE_SCREENER_CACHE / _TS / _INFLIGHT, LAST_SCAN_DIAG: kept per data source in SRCV (top of file) */
 const MY_TRADE_SCREENER_TTL = 30 * 60 * 1000; /* 30 min server cache to reduce Yahoo load */
 /* Same rule as the page (scanPredatesClose in app.js): made during the NSE session, and that session is over. */
 function scanPredatesCloseS(at) {
@@ -4334,15 +4537,14 @@ async function apiMomentum(req, res, p) {
    Swing longs work best when the index trend supports them. READY is allowed only while Nifty holds
    above its EMA50; below EMA50 every candidate is shown as Watchlist with the regime as the reason.
    If Nifty data cannot be loaded the filter is skipped (and says so) rather than blocking everything. */
-let NIFTY_REGIME_CACHE = null, NIFTY_REGIME_TS = 0, NIFTY_CLOSES = null;
+/* NIFTY_REGIME_CACHE / _TS, NIFTY_CLOSES: per data source in SRCV */
 /* Breadth = % of the scanned universe trading above its 50-day average (updated by every screener scan). */
-let LAST_BREADTH = null; /* {pct, above, total, ts} */
+/* LAST_BREADTH {pct, above, total, ts}, LAST_SECTOR_STRENGTH: per data source in SRCV */
 /* Sector strength from the last screener scan: average 1-month return of the universe stocks in each sector
    (3+ stocks). {ts, map:{sector:{rank, ret, of, n}}}. Used by the Ready Gate (Overview and screener). */
-let LAST_SECTOR_STRENGTH = null;
 function sectorStrengthFor(code) {
-  const sec = sectorInfoFor(code)?.sector, sp = sec && LAST_SECTOR_STRENGTH?.map?.[sec];
-  return sp ? { sector: sec, ret1m: sp.ret, rank: sp.rank, of: sp.of, n: sp.n, at: new Date(LAST_SECTOR_STRENGTH.ts).toISOString() } : (sec ? { sector: sec, ret1m: null } : null);
+  const sec = sectorInfoFor(code)?.sector, sp = sec && SV().LAST_SECTOR_STRENGTH?.map?.[sec];
+  return sp ? { sector: sec, ret1m: sp.ret, rank: sp.rank, of: sp.of, n: sp.n, at: new Date(SV().LAST_SECTOR_STRENGTH.ts).toISOString() } : (sec ? { sector: sec, ret1m: null } : null);
 }
 /* Market regime from index trend AND breadth:
    - Nifty above EMA50 with breadth >= 40%  -> longs allowed (BULL if breadth >= 55% and Nifty above EMA20)
@@ -4351,7 +4553,7 @@ function sectorStrengthFor(code) {
    - otherwise                              -> CORRECTION / BEAR, no fresh longs
    Without a recent breadth reading the Nifty-only rule is used. */
 function marketRegime(nifty, breadthMaxAgeMs = 18 * 3600e3) {
-  const b = LAST_BREADTH && Date.now() - LAST_BREADTH.ts < breadthMaxAgeMs ? LAST_BREADTH : null; /* breadth only changes in market hours */
+  const b = SV().LAST_BREADTH && Date.now() - SV().LAST_BREADTH.ts < breadthMaxAgeMs ? SV().LAST_BREADTH : null; /* breadth only changes in market hours */
   if (!nifty || nifty.status === 'UNKNOWN') return { ...(nifty || {}), status:'UNKNOWN', allowReady:true, breadth: b, note:'Nifty data unavailable - regime filter skipped; check the market manually' };
   const above50 = nifty.nifty > nifty.ema50, above200 = nifty.nifty > nifty.ema200;
   if (!b) return { ...nifty, breadth:null, note: nifty.note + ' (breadth not measured yet - run a screener scan)' };
@@ -4364,7 +4566,7 @@ function marketRegime(nifty, breadthMaxAgeMs = 18 * 3600e3) {
   return { ...nifty, status, allowReady, breadth: b, note };
 }
 async function getNiftyRegime() {
-  if (NIFTY_REGIME_CACHE && Date.now() - NIFTY_REGIME_TS < 10 * 60 * 1000) return NIFTY_REGIME_CACHE;
+  if (SV().NIFTY_REGIME_CACHE && Date.now() - SV().NIFTY_REGIME_TS < 10 * 60 * 1000) return SV().NIFTY_REGIME_CACHE;
   try {
     const raw = await withTimeout(safeFetch(() => yfChart('^NSEI', '1d', '2y'), 1), 8000, 'Nifty regime');
     const d = enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {});
@@ -4379,11 +4581,11 @@ async function getNiftyRegime() {
     /* trendUp: the READY gate (backtest 7 Nov 2026 - pullbacks went from break-even to +0.3% a trade with it).
        aboveSma200: the Quick Bounce (RSI-2) market filter. */
     const sma200 = C.slice(n - 200).reduce((a, b) => a + b, 0) / 200;
-    NIFTY_REGIME_CACHE = { status, allowReady, nifty:+price.toFixed(2), ema20:+e20.toFixed(2), ema50:+e50.toFixed(2), ema200:+e200.toFixed(2), note,
+    SV().NIFTY_REGIME_CACHE = { status, allowReady, nifty:+price.toFixed(2), ema20:+e20.toFixed(2), ema50:+e50.toFixed(2), ema200:+e200.toFixed(2), note,
       trendUp: price > e50 && e20 > e50, sma200: +sma200.toFixed(2), aboveSma200: price > sma200 };
-    NIFTY_CLOSES = C.slice();
-    NIFTY_REGIME_TS = Date.now();
-    return NIFTY_REGIME_CACHE;
+    SV().NIFTY_CLOSES = C.slice();
+    SV().NIFTY_REGIME_TS = Date.now();
+    return SV().NIFTY_REGIME_CACHE;
   } catch (er) {
     console.warn('Nifty regime fetch failed:', er.message);
     return { status:'UNKNOWN', allowReady:true, nifty:null, ema20:null, ema50:null, ema200:null, trendUp:null, sma200:null, aboveSma200:null, note:'Nifty data unavailable - regime filter skipped; check the market trend manually' };
@@ -4485,20 +4687,19 @@ function resultsCheckFor(sym, cal, todayKey) {
   return { date: pick.date, purpose: pick.purpose, tradingDays, block: tradingDays >= 0 && tradingDays <= RESULTS_BLOCK_TRADING_DAYS, recent: tradingDays < 0 && tradingDays >= -2 };
 }
 
-let MY_TRADE_SCREENER_INFLIGHT = null;
 async function apiMyTradeScreener(req, res) {
   const q = url.parse(req.url, true).query || {};
   /* A forced rescan (~250 Yahoo calls) is allowed at most every 5 minutes; inside that, the fresh result is reused. */
   /* A scan made while NSE was open is not reused after that session closed (the Overview then uses the final close). */
-  const cacheOk = MY_TRADE_SCREENER_CACHE && !scanPredatesCloseS(MY_TRADE_SCREENER_CACHE.generatedAt);
-  const forceRefresh = (q.refresh === '1' || q.force === '1' || q.nocache === '1') && !(cacheOk && Date.now() - MY_TRADE_SCREENER_TS < 5 * 60 * 1000);
-  if (!forceRefresh && cacheOk && Date.now() - MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL) return send(res, MY_TRADE_SCREENER_CACHE);
+  const cacheOk = SV().MY_TRADE_SCREENER_CACHE && !scanPredatesCloseS(SV().MY_TRADE_SCREENER_CACHE.generatedAt);
+  const forceRefresh = (q.refresh === '1' || q.force === '1' || q.nocache === '1') && !(cacheOk && Date.now() - SV().MY_TRADE_SCREENER_TS < 5 * 60 * 1000);
+  if (!forceRefresh && cacheOk && Date.now() - SV().MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL) return send(res, SV().MY_TRADE_SCREENER_CACHE);
   /* A full scan is ~150 Yahoo calls. Concurrent requests (several tabs, refresh clicks) now share the
      scan already running instead of each starting another one. */
-  if (!MY_TRADE_SCREENER_INFLIGHT) {
-    MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { MY_TRADE_SCREENER_INFLIGHT = null; });
+  if (!SV().MY_TRADE_SCREENER_INFLIGHT) {
+    SV().MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { SV().MY_TRADE_SCREENER_INFLIGHT = null; });
   }
-  try { send(res, await MY_TRADE_SCREENER_INFLIGHT); }
+  try { send(res, await SV().MY_TRADE_SCREENER_INFLIGHT); }
   catch (e) { err(res, e.message); }
 }
 
@@ -4530,13 +4731,89 @@ function triggerTextS({ m, rs, rsOk, volOk, weeklyOk, wk, readyCore, selected })
 }
 
 /* Per-stock outcome of the last scan (every eligible stock, not just the top 20) - for /api/screener-diag. */
-let LAST_SCAN_DIAG = { ts: 0, rows: [] };
+/* ── NSE daily delivery % and stock-option put / call open interest (19 Nov 2026 tags) ──
+   Two NSE archive files a day, after the evening update (about 18:30 IST): sec_bhavdata_full (delivery % per stock)
+   and the F&O bhavcopy (stock option open interest -> put/call ratio). Backtest May 2021 - Nov 2026 on the app's
+   swing signals: delivery 50%+ on the signal day +0.094R a trade vs -0.026R under 50%; skipping stocks whose option
+   PCR is under 0.5 lifted the average from +0.030R to +0.083R. They are TAGS (shown, recorded), not READY rules.
+   The data is the last completed session's; when NSE does not answer (it refuses some cloud addresses) the tags
+   show "n/a" and nothing else changes. Retried at most every 3 hours. */
+const NSE_DAILY_FILE = require('path').join(__dirname, 'data', 'nse-daily.json');
+let NSE_DAILY = { date: null, del: {}, pcr: {}, ts: 0, tried: 0, error: null };
+try { const j = JSON.parse(require('fs').readFileSync(NSE_DAILY_FILE, 'utf8')); if (j && j.date) NSE_DAILY = { ...NSE_DAILY, ...j }; } catch {}
+let NSE_DAILY_INFLIGHT = null;
+function unzipFirst(b) {
+  let e = b.length - 22; while (e >= 0 && b.readUInt32LE(e) !== 0x06054b50) e--;
+  if (e < 0) throw new Error('not a zip file');
+  const cd = b.readUInt32LE(e + 16), meth = b.readUInt16LE(cd + 10), csz = b.readUInt32LE(cd + 20), lo = b.readUInt32LE(cd + 42);
+  const n = b.readUInt16LE(lo + 26), x = b.readUInt16LE(lo + 28), data = b.subarray(lo + 30 + n + x, lo + 30 + n + x + csz);
+  return (meth === 8 ? zlib.inflateRawSync(data) : data).toString('utf8');
+}
+function nseCsvRows(t) {
+  const L = String(t || '').split(/\r?\n/).filter(Boolean); if (!L.length) return { h: [], rows: [] };
+  return { h: L[0].split(',').map(s => s.trim()), rows: L.slice(1).map(l => l.split(',').map(s => s.trim())) };
+}
+/* The latest NSE session whose evening files should exist: today after 18:45 IST, else the session before. */
+function nseDailyCandidates() {
+  const now = Date.now(), ist = new Date(now + 5.5 * 3600e3), m = ist.getUTCHours() * 60 + ist.getUTCMinutes(), out = [];
+  let t = m >= 18 * 60 + 45 ? now : now - 86400e3;
+  for (let k = 0; out.length < 4 && k < 12; k++, t -= 86400e3) {
+    const key = istDateKey(t), dow = new Date(key + 'T00:00:00Z').getUTCDay();
+    if (dow >= 1 && dow <= 5 && !isNseHoliday(key)) out.push(key);
+  }
+  return out;
+}
+async function nseDailyRefresh() {
+  const want = nseDailyCandidates();
+  if (NSE_DAILY.date && NSE_DAILY.date >= want[0] && Object.keys(NSE_DAILY.pcr || {}).length) return NSE_DAILY;   /* PCR missing: try again (every 3 h) */
+  if (NSE_DAILY.tried && Date.now() - NSE_DAILY.tried < 3 * 3600e3) return NSE_DAILY;
+  if (NSE_DAILY_INFLIGHT) return NSE_DAILY_INFLIGHT;
+  NSE_DAILY_INFLIGHT = (async () => {
+    NSE_DAILY.tried = Date.now();
+    const H = { Accept: '*/*', Referer: 'https://www.nseindia.com/' };
+    let lastErr = 'no file';
+    for (const key of want) {
+      if (NSE_DAILY.date && (key < NSE_DAILY.date || (key === NSE_DAILY.date && Object.keys(NSE_DAILY.pcr || {}).length))) break;
+      const dd = key.slice(8, 10) + key.slice(5, 7) + key.slice(0, 4);
+      try {
+        const a = await withTimeout(get(`https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_${dd}.csv`, H), 30000, 'NSE delivery file');
+        if (a.status !== 200 || !/DELIV_PER/.test(a.body.slice(0, 400))) { lastErr = `delivery file HTTP ${a.status}`; continue; }
+        const del = {}, d = nseCsvRows(a.body), iS = d.h.indexOf('SYMBOL'), iSe = d.h.indexOf('SERIES'), iP = d.h.indexOf('DELIV_PER');
+        for (const r of d.rows) if (r[iSe] === 'EQ' || r[iSe] === 'BE') { const p = parseFloat(r[iP]); if (Number.isFinite(p)) del[r[iS]] = p; }
+        const pcr = {};
+        try {
+          const f = await withTimeout(get(`https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_${key.replace(/-/g, '')}_F_0000.csv.zip`, H), 45000, 'NSE F&O file');
+          if (f.status === 200 && f.buf && f.buf.length > 1000) {
+            const o = nseCsvRows(unzipFirst(f.buf)), I = k => o.h.indexOf(k), ty = I('FinInstrmTp'), sy = I('TckrSymb'), op = I('OptnTp'), oi = I('OpnIntrst'), agg = {};
+            for (const r of o.rows) if (r[ty] === 'STO') { const x = agg[r[sy]] || (agg[r[sy]] = { ce: 0, pe: 0 }); if (r[op] === 'CE') x.ce += +r[oi] || 0; else if (r[op] === 'PE') x.pe += +r[oi] || 0; }
+            for (const [s, x] of Object.entries(agg)) if (x.ce > 0) pcr[s] = Math.round(x.pe / x.ce * 100) / 100;
+          }
+        } catch (e) { console.warn('NSE F&O file:', e.message); }
+        NSE_DAILY = { date: key, del, pcr, ts: Date.now(), tried: NSE_DAILY.tried, error: Object.keys(pcr).length ? null : 'option PCR file not loaded' };
+        try { require('fs').mkdirSync(require('path').dirname(NSE_DAILY_FILE), { recursive: true }); require('fs').writeFileSync(NSE_DAILY_FILE, JSON.stringify(NSE_DAILY)); } catch {}
+        return NSE_DAILY;
+      } catch (e) { lastErr = e.message; break; }   /* refused / timed out: try again in 3 hours */
+    }
+    NSE_DAILY.error = lastErr;
+    return NSE_DAILY;
+  })().finally(() => { NSE_DAILY_INFLIGHT = null; });
+  return NSE_DAILY_INFLIGHT;
+}
+function nseDailyFor(sym) {
+  const s = String(sym || '').replace(/^NSE:/, '').replace(/\.(NS|BO)$/, '').toUpperCase();
+  if (!NSE_DAILY.date) return { date: null, dp: null, pcr: null };
+  const dp = NSE_DAILY.del[s], pcr = NSE_DAILY.pcr[s];
+  return { date: NSE_DAILY.date, dp: Number.isFinite(dp) ? dp : null, pcr: Number.isFinite(pcr) ? pcr : null };
+}
+
 async function runMyTradeScreenerScan() {
   const scanDiag = [], sectorRet = [];
+  /* Delivery % / option PCR tags: the last session's NSE files (at most a few seconds when they are due). */
+  try { await withTimeout(nseDailyRefresh(), 25000, 'NSE daily files'); } catch {}
 
   /* Market regime (Nifty vs EMA20/50/200) and the results calendar are loaded once per scan. */
   const [niftyTrend, resultsCal] = await Promise.all([getNiftyRegime(), getResultsCalendar()]);
-  const niftyCloses = NIFTY_CLOSES;
+  const niftyCloses = SV().NIFTY_CLOSES;
   const todayKey = istDateKey();
   let resultsBlockedCount = 0, regimeBlockedCount = 0, eventBlockedCount = 0;
 
@@ -4551,7 +4828,7 @@ async function runMyTradeScreenerScan() {
     whitelistUsed: false
   };
   const startedAt = Date.now();
-  const maxScanMs = 85000;
+  const maxScanMs = dataSrc() === 'kite' ? 300000 : 85000;   /* Kite: ~3 candle requests a second -> ~100 s for the list */
   const BATCH = 20;
   let timedOut = false;
   let scannedAttempted = 0;
@@ -4561,7 +4838,7 @@ async function runMyTradeScreenerScan() {
   let biasEligibleCount = 0;
   const ready = [];
   const watch = [];
-  const quickCands = [];
+  const quickCands = [], patternCands = [];
 
   for (let i = 0; i < universe.length; i += BATCH) {
     if (Date.now() - startedAt > maxScanMs) { timedOut = true; break; }
@@ -4597,6 +4874,11 @@ async function runMyTradeScreenerScan() {
         scanDiag.push(dg);
         if (m.bias !== 'Bullish') { dg.out = 'not bullish structure'; return null; }
         biasEligibleCount++;
+        /* Tags (backtested, shown and recorded - they do not change READY) and the Pattern breakouts list. */
+        const sym0 = ticker.replace(/\.(NS|BO)$/, ''), stTags = SwingPlan.stockTags({ H, L, C }) || {}, nd = nseDailyFor(sym0);
+        const tags = { hhhl: !!stTags.hhhl, off52: stTags.off52 ?? null, near52: !!stTags.near52, dbAbove: !!stTags.dbAbove, dbNeck: stTags.doubleBottom?.neck ?? null,
+          dp: nd.dp, dpOk: nd.dp == null ? null : nd.dp >= 50, pcr: nd.pcr, pcrOk: nd.pcr == null ? null : nd.pcr >= 0.5, nseDate: nd.date };
+        { const pb = SwingPlan.patternBreakout({ H, L, C, V, atr: m.atr }); if (pb) patternCands.push({ sym: sym0, ticker, ...pb, tags }); }
 
         /* The setup the price is actually in (shared engine, same as the Overview); fall back to the
            best-scoring setup only to explain Watchlist candidates. */
@@ -4635,7 +4917,12 @@ async function runMyTradeScreenerScan() {
           plan: m.plan, rs3m: rs.rs3m, rs6m: rs.rs6m, stock3m: rs.stock3m, nifty3m: rs.nifty3m,
           bounceVolume: m.pv?.todayRatio ?? null, pullbackDryUp: m.pv?.dryRatio ?? null,
           weekly: wk ? { up: wk.up, close: wk.close, ema20: wk.ema20 } : null,
-          rsOk,
+          rsOk, tags,
+          /* The tested exit (10-year backtest): sell all at 2R or at the close of day 15 (+0.037R a trade vs +0.011R
+             at T1 in 10 days). T1 stays the R:R check and the first resistance. */
+          /* Measured from the entry: today's price for pullbacks / bounces (bought now), the trigger for breakouts. */
+          exit2R: (() => { const e = /breakout/i.test(m.picked || '') ? Math.max(m.price, +m.plan?.entry || 0) : m.price, st = +m.plan?.stop;
+            return st > 0 && e > st ? +(e + 2 * (e - st)).toFixed(2) : null; })(),
           trigger: triggerTextS({ m, rs, rsOk: true, volOk, weeklyOk, wk, readyCore, selected })
         };
         const blockReasons = [];
@@ -4664,7 +4951,7 @@ async function runMyTradeScreenerScan() {
         if (limitOk) {
           const why = `Ready on limit: buy at ₹${m.limit.price} (R:R ${m.limit.rr.toFixed(2)}) - price is above the pullback zone`;
           return {...screenerCardPayloadS({ticker, m, selected, status:'WATCH', reason: why, rankScore: rankScore + 500, emaGap, resistanceRoom, slRisk}),
-            ...extra, limitReady: true, limitEntry: m.limit,
+            ...extra, limitReady: true, limitEntry: { ...m.limit, exit2R: +m.limit.stop > 0 && m.limit.price > m.limit.stop ? +(m.limit.price + 2 * (m.limit.price - m.limit.stop)).toFixed(2) : null },
             trigger: `Place a buy limit at ₹${m.limit.price}; it fills only if price comes back to the zone (${m.picked} ${m.limit.zone})` };
         }
         if (readyCore) {
@@ -4715,7 +5002,7 @@ async function runMyTradeScreenerScan() {
   }
 
   /* Breadth from this scan, then the market regime (Nifty trend + breadth) decides whether READY stands. */
-  if (dataOkCount >= 50) { LAST_BREADTH = { pct: Math.round(aboveSma50Count / dataOkCount * 100), above: aboveSma50Count, total: dataOkCount, ts: Date.now() }; saveUniverseToDisk(); }
+  if (dataOkCount >= 50) { SV().LAST_BREADTH = { pct: Math.round(aboveSma50Count / dataOkCount * 100), above: aboveSma50Count, total: dataOkCount, ts: Date.now() }; saveUniverseToDisk(); }
   const marketTrend = marketRegime(niftyTrend);
   /* Sector strength: average 1-month return of the universe stocks in each sector (3+ stocks). Leaders get a
      ranking bonus, laggards a small penalty. */
@@ -4725,7 +5012,7 @@ async function runMyTradeScreenerScan() {
     .map(([k, v]) => ({ sector: k, ret: +(v.reduce((a, b) => a + b, 0) / v.length).toFixed(2), n: v.length }))
     .sort((a, b) => b.ret - a.ret);
   const secPos = Object.fromEntries(secRank.map((x, i) => [x.sector, { rank: i + 1, ret: x.ret, of: secRank.length, n: x.n }]));
-  if (secRank.length >= 5) { LAST_SECTOR_STRENGTH = { ts: Date.now(), map: secPos }; saveUniverseToDisk(); }
+  if (secRank.length >= 5) { SV().LAST_SECTOR_STRENGTH = { ts: Date.now(), map: secPos }; saveUniverseToDisk(); }
   /* Strength gate (replaces the Nifty-regime hold): a long passes when its sector is up over 1 month OR the
      stock beats Nifty over 3 months. A weak Nifty alone no longer holds a stock back - it only adds a
      smaller-size note. */
@@ -4793,12 +5080,24 @@ async function runMyTradeScreenerScan() {
     .filter(q => !q.resultsBlock && !q.eventBlock)
     .sort((a, b) => a.rsi2 - b.rsi2).slice(0, 15);
   const quickBounceNote = !niftyOk200 ? `Quick Bounce paused: Nifty is below its 200-day average (${marketTrend.sma200})` : '';
-  LAST_SCAN_DIAG = { ts: Date.now(), rows: scanDiag };
+  /* Pattern breakouts: only while Nifty is in its uptrend (same gate as READY), no results / corporate event close,
+     not already READY. Tightest stop first. */
+  const patternBreakouts = marketTrend.trendUp === false ? [] : patternCands
+    .filter(p => !readySymsAll.has(p.sym.toUpperCase()))
+    .map(p => { const ri = resultsCheckFor(p.sym, resultsCal, todayKey), ev = stockEventCheckS(p.sym, todayKey);
+      return { ...p, sector: sectorInfoFor(p.sym)?.sector || null, resultsDate: ri?.date || null, resultsBlock: !!ri?.block, resultsTradingDays: ri ? ri.tradingDays : null, resultsRecent: !!ri?.recent, eventBlock: ev.block, eventNotes: ev.notes }; })
+    .filter(p => !p.resultsBlock && !p.eventBlock)
+    .sort((a, b) => a.riskPct - b.riskPct).slice(0, 15);
+  const patternNote = marketTrend.trendUp === false ? `Pattern breakouts paused: ${NIFTY_TREND_WHY}` : '';
+  SV().LAST_SCAN_DIAG = { ts: Date.now(), rows: scanDiag };
   const result = {
     picks,
     watchlist,
     quickBounce,
     quickBounceNote,
+    patternBreakouts,
+    patternNote,
+    nseDaily: { date: NSE_DAILY.date, stocks: Object.keys(NSE_DAILY.del || {}).length, pcrStocks: Object.keys(NSE_DAILY.pcr || {}).length, error: NSE_DAILY.date ? NSE_DAILY.error : (NSE_DAILY.error || 'not loaded yet') },
     screen1: picks,
     screen2: watchlist,
     duplicateCheck: {readySymbols: readySymsAll.size, watchlistExcludesAllReady: true},
@@ -4831,7 +5130,9 @@ async function runMyTradeScreenerScan() {
     universeLabel: 'Eligible NSE large-cap scan: market cap > ₹35,000Cr, price > ₹10, bullish bias only',
     screenerFlow: [
       {step:'Market', rule:'READY only while Nifty is above its EMA50 with EMA20 above EMA50; plus sector up (1M) or beating Nifty (3M)'},
-      {step:'Quick Bounce', rule:'RSI-2 under 10, close above the 50/200-day averages, Nifty above its 200-day average; exit at the first close above the 5-day average or day 10'},
+      {step:'Quick Bounce', rule:'Watch only: RSI-2 under 10, close above the 50/200-day averages, Nifty above its 200-day average (high win rate, but it lost money with 5 positions open in the 10-year test)'},
+      {step:'Exit', rule:'Tested exit: sell all at 2R (2x the risk) or at the close of day 15; T1 is the first resistance and the R:R check'},
+      {step:'Pattern breakouts', rule:'Double bottom (close above the neckline) or flat base (25-day range within 12%, close above it on 1.3x volume), stock and Nifty in an uptrend; stop under the pattern, target 2R'},
       {step:'Relative strength', rule:'READY needs the stock to outperform Nifty over ~3 months; leaders rank higher'},
       {step:'Volume', rule:'Pullbacks: quiet pullback, green bounce day on >=1.0x volume · Breakout: >=1.1x'},
       {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days`},
@@ -4847,11 +5148,11 @@ async function runMyTradeScreenerScan() {
     generatedAt: new Date().toISOString(),
     note: timedOut ? 'Screener Match/Watchlist returned partial results due to data-provider timeout; refresh again from the Screener tab.' : 'Screener Match is a server pre-filter; Overview remains the final trade decision: selected-strategy gate failures such as RSI outside zone, weak ADX, late entry, RR below 1.25, or volume below 0.8x, high selling volume, or RR below 1.25 cannot stay Ready. Watchlist shows need-confirmation candidates only. A stock cannot appear in both lists. Breakout is included; Pre-Breakout Watch and Momentum Continuation are watch-only and never READY.'
   };
-  MY_TRADE_SCREENER_CACHE = result;
+  SV().MY_TRADE_SCREENER_CACHE = result;
   /* A partial scan (timeout, or Yahoo paused so most charts failed) is kept 1 minute, not 30, so the next
      visit rescans instead of showing an empty or thin list for half an hour. */
   const scanOk = !timedOut && dataOkCount >= 0.8 * universe.length;
-  MY_TRADE_SCREENER_TS = scanOk ? Date.now() : Date.now() - MY_TRADE_SCREENER_TTL + 60e3;
+  SV().MY_TRADE_SCREENER_TS = scanOk ? Date.now() : Date.now() - MY_TRADE_SCREENER_TTL + 60e3;
   return result;
 }
 
@@ -5227,13 +5528,13 @@ async function apiScreenerExplain(req, res, p) {
     const daily = enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {});
     if (daily.n < 200) return send(res, { sym, eligible:false, reason:'Less than 200 days of history' });
     const m = qualifiedMetricsS({ C:daily.C, H:daily.H, L:daily.L, V:daily.V, weekly:null, marketCapCr:screenerMcapNow(ticker, daily.C[daily.n-1]), prevIdx:daily._prevSessionIdx });
-    const rs = NIFTY_CLOSES ? SwingPlan.relStrength(daily.C, NIFTY_CLOSES) : null;
+    const rs = SV().NIFTY_CLOSES ? SwingPlan.relStrength(daily.C, SV().NIFTY_CLOSES) : null;
     const pickedObj = m.picked ? m.strategyScores[SETUP_KEY[m.picked]] : null;
     send(res, { sym, price:m.price, bias:m.bias, marketCapCr:m.marketCapCr, picked:m.picked, plan:m.plan, rr:m.rrBull, rrBySetup:m.rrBy,
       volume:{ blend:+m.volRatio.toFixed(2), ...m.pv, ok: m.picked ? SwingPlan.setupVolumeOk(m.picked, m.volRatio, m.pv) : null },
       rs, decisionScore:m.decisionScore, highSellingVolume:m.highSellingVolume,
       setupScore: pickedObj ? Math.round(+pickedObj.score) : null, gate: pickedObj ? pickedObj.readyGate : null,
-      regime: marketRegime(NIFTY_REGIME_CACHE), updatedAt:new Date().toISOString() });
+      regime: marketRegime(SV().NIFTY_REGIME_CACHE), updatedAt:new Date().toISOString() });
   } catch (er) { err(res, er.message); }
 }
 
@@ -5429,7 +5730,7 @@ async function apiSwingContext(req, res, p) {
     let rs = null;
     try {
       const raw = await withTimeout(yfChart(code + '.NS', '1d', '2y'), 15000, sym + ' rs');
-      if (NIFTY_CLOSES) rs = SwingPlan.relStrength(enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {}).C, NIFTY_CLOSES);   /* same series as the screener */
+      if (SV().NIFTY_CLOSES) rs = SwingPlan.relStrength(enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {}).C, SV().NIFTY_CLOSES);   /* same series as the screener */
     } catch {}
     const r = cal ? resultsCheckFor(code, cal, istDateKey()) : null;
     send(res, {
@@ -6322,16 +6623,20 @@ function sizingLine(entry, stop, sizeFactor = 1) {
   const qty = Math.floor(cap * rp / 100 * sizeFactor / (entry - stop));
   return qty > 0 ? ` · qty ${qty} (risk ${+(rp * sizeFactor).toFixed(2)}% of ${inr(cap, 0)}${sizeFactor < 1 ? ', half size' : ''})` : ' · stop too wide for your risk %';
 }
-function scanSignals(data) {
+function scanSignals(data, slot) {
   const out = [];
   /* READY buys at the current price (the plan's entry is the pullback ZONE, e.g. EMA20 - sizing from it overstated the
      quantity, the mistake the Overview's calculator avoids). Breakout with Volume is half size, in the quantity too. */
   for (const x of data.picks || []) {
     const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
-    out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · target ${inr(pl.target)}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+    const t2 = +x.exit2R > 0 ? +x.exit2R : +pl.stop > 0 && fill > pl.stop ? fill + 2 * (fill - pl.stop) : null;   /* the screener's own 2R, so list, alert and record agree */
+    out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · exit 2R ${t2 ? inr(t2) : '--'} or day 15 (T1 ${inr(pl.target)})${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
   }
-  for (const x of (data.watchlist || []).filter(x => x.limitReady && x.limitEntry)) out.push({ id: `limit|${x.sym}`, text: `Ready on limit ${x.sym}: buy limit ${inr(x.limitEntry.price)} · stop ${inr(x.limitEntry.stop)} · target ${inr(x.limitEntry.target)}${sizingLine(x.limitEntry.price, x.limitEntry.stop)}` });
-  for (const x of (data.quickBounce || []).slice(0, 6)) out.push({ id: `quick|${x.sym}`, text: `Quick bounce ${x.sym} (small size): buy next open ~${inr(x.price)} · stop ${inr(x.stop)} · sell on a close above ${inr(x.sma5)}` });
+  for (const x of (data.watchlist || []).filter(x => x.limitReady && x.limitEntry)) out.push({ id: `limit|${x.sym}`, text: `Ready on limit ${x.sym}: buy limit ${inr(x.limitEntry.price)} · stop ${inr(x.limitEntry.stop)} · exit 2R ${x.limitEntry.exit2R ? inr(x.limitEntry.exit2R) : '--'} or day 15${sizingLine(x.limitEntry.price, x.limitEntry.stop)}` });
+  /* Quick Bounce is watch-only (2 in 3 win, but no profit with 5 positions open over 10 years): no alert. Pattern
+     breakouts are judged on the day's close, so they are alerted at the 15:00 scan only. */
+  if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) for (const x of (data.patternBreakouts || []).slice(0, 5))
+    out.push({ id: `pattern|${x.sym}`, text: `${x.name} ${x.sym}: buy near the close / next open if it holds ~${inr(x.price)} · stop ${inr(x.stop)} · exit 2R ${inr(x.target)} or day 15${sizingLine(x.price, x.stop)}` });
   return out;
 }
 async function scheduledScanTick() {
@@ -6341,21 +6646,21 @@ async function scheduledScanTick() {
   if (slot == null || USER_STORE.scans[`${key}|${slot}`]) return;
   USER_STORE.scans = { [`${key}|${slot}`]: Date.now() };   /* keep only the latest marker */
   saveStore();
-  let data = MY_TRADE_SCREENER_CACHE && Date.now() - MY_TRADE_SCREENER_TS < 20 * 60 * 1000 ? MY_TRADE_SCREENER_CACHE : null;
+  let data = SV().MY_TRADE_SCREENER_CACHE && Date.now() - SV().MY_TRADE_SCREENER_TS < 20 * 60 * 1000 ? SV().MY_TRADE_SCREENER_CACHE : null;
   if (!data) {
-    if (!MY_TRADE_SCREENER_INFLIGHT) MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { MY_TRADE_SCREENER_INFLIGHT = null; });
-    data = await MY_TRADE_SCREENER_INFLIGHT;
+    if (!SV().MY_TRADE_SCREENER_INFLIGHT) SV().MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { SV().MY_TRADE_SCREENER_INFLIGHT = null; });
+    data = await SV().MY_TRADE_SCREENER_INFLIGHT;
   }
-  const sig = scanSignals(data), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
+  const sig = scanSignals(data, slot), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
   try { traceStockRecord(data?.picks || [], key); } catch (e) { console.warn('Stock trace:', e.message); }
   if (sig.length) {
     await pushAll({ title: `🟢 ${sig.length} stock${sig.length > 1 ? 's' : ''} ready · ${hhmm} scan`, body: sig.map(x => x.text).join('\n'), tag: 'td-scan', url: '/?view=screener' });
   } else if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) {
     /* One quiet line at the last scan of the day when nothing was ready, so a silent day is not mistaken for a
        broken app: today's Gold Petal and Nifty options status (they alert only when there is a trade). */
-    const gold = GOLD_STATUS?.day === key ? GOLD_STATUS.text : 'plan not checked today';
+    const mcx = MCX_ALERT_SYMS.map(s => `${MCX_NAME[s]}: ${MCX_STATUS[s]?.day === key ? MCX_STATUS[s].text : 'plan not checked today'}`).join('\n');
     const nifty = NIFTY_STATUS?.day === key ? NIFTY_STATUS.text : 'not checked today';
-    await pushAll({ title: 'TradeDesk · nothing ready today', body: `No stock ready (${hhmm} scan)\nGold Petal: ${gold}\nNifty options: ${nifty}`, tag: 'td-scan', url: '/?view=screener' });
+    await pushAll({ title: 'TradeDesk · nothing ready today', body: `No stock ready (${hhmm} scan)\n${mcx}\nNifty options: ${nifty}`, tag: 'td-scan', url: '/?view=screener' });
   }
   if (slot === SCAN_TIMES_IST[0] && key === firstTradingDayOfMonth(key)) {
     try {
@@ -6396,8 +6701,12 @@ function tgCall(method, body) {
   });
 }
 const tgEsc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+/* Render's free disk is wiped on every deploy, and the Telegram link (chat id) used to live only there - after a
+   deploy no alert reached Telegram until it was linked again. TELEGRAM_CHAT_ID in the environment survives it. */
+const TG_CHAT_ENV = String(process.env.TELEGRAM_CHAT_ID || '').trim();
+const tgChatId = () => USER_STORE.telegram?.off ? null : USER_STORE.telegram?.chatId || (/^-?\d{3,}$/.test(TG_CHAT_ENV) ? TG_CHAT_ENV : null);
 async function sendTelegram(payload) {
-  const chatId = USER_STORE.telegram?.chatId;
+  const chatId = tgChatId();
   if (!TG_TOKEN || !chatId) return 0;
   /* Cut the plain text first, then escape: cutting after escaping could split an &amp; and Telegram rejects the message. */
   const body = { chat_id: chatId, text: `<b>${tgEsc(String(payload.title || '').slice(0, 200))}</b>${payload.body ? '\n' + tgEsc(String(payload.body).slice(0, 3500)) : ''}`, parse_mode: 'HTML', disable_web_page_preview: true };
@@ -6409,7 +6718,8 @@ async function sendTelegram(payload) {
 }
 async function apiTelegram(req, res, pn) {
   const tg = USER_STORE.telegram || {};
-  if (pn === '/api/telegram/status') return send(res, { configured: !!TG_TOKEN, linked: !!tg.chatId, linkedAt: tg.linkedAt || null, name: tg.name || null });
+  if (pn === '/api/telegram/status') return send(res, { configured: !!TG_TOKEN, linked: !!tgChatId(), linkedAt: tg.linkedAt || null, name: tg.name || (TG_CHAT_ENV && !tg.chatId ? 'TELEGRAM_CHAT_ID' : null),
+    chatId: tgChatId(), fromEnv: !tg.chatId && !!tgChatId(), envSet: !!TG_CHAT_ENV, devices: USER_STORE.subs.length });
   if (req.method !== 'POST') return err(res, 'Use POST', 405);
   if (!TG_TOKEN) return err(res, 'Telegram is not set up: add TELEGRAM_BOT_TOKEN in Render → Environment, then redeploy', 400);
   if (pn === '/api/telegram/link') {
@@ -6422,9 +6732,10 @@ async function apiTelegram(req, res, pn) {
     const last = (r.result || []).slice(-1)[0];
     if (last) tgCall('getUpdates', { offset: last.update_id + 1, timeout: 0 });   /* clear the queue */
     await sendTelegram({ title: 'TradeDesk linked ✓', body: 'Alerts, the morning brief, Gold Petal and Nifty option signals will arrive here.' });
-    return send(res, { ok: true, linked: true, name: USER_STORE.telegram.name });
+    return send(res, { ok: true, linked: true, name: USER_STORE.telegram.name, chatId: msg.chat.id });
   }
-  if (pn === '/api/telegram/unlink') { delete USER_STORE.telegram; saveStore(); return send(res, { ok: true, linked: false }); }
+  /* With TELEGRAM_CHAT_ID set, Unlink must still stop the alerts (until Link again, or the next deploy). */
+  if (pn === '/api/telegram/unlink') { USER_STORE.telegram = TG_CHAT_ENV ? { off: true } : null; if (!TG_CHAT_ENV) delete USER_STORE.telegram; saveStore(); return send(res, { ok: true, linked: false }); }
   if (pn === '/api/telegram/test') { const n = await sendTelegram({ title: 'TradeDesk test', body: 'Telegram alerts work.' }); return n ? send(res, { ok: true }) : err(res, 'Not sent - link Telegram first', 400); }
   err(res, 'Not found', 404);
 }
@@ -6445,13 +6756,15 @@ const symShort = s => String(s || '').replace(/^(NSE|MCX):/, '');
 
 /* Gold Petal plan on the server - the page's own function (SwingPlan.commodityPlan) on the same quote, with the
    user's saved MCX calibration (synced key) and the same drivers. */
-async function goldPlanS() {
-  const sym = 'MCX:GOLDPETAL';
+const MCX_ALERT_SYMS = ['MCX:GOLDPETAL', 'MCX:CRUDEOIL', 'MCX:NATURALGAS'];
+const MCX_NAME = { 'MCX:GOLDPETAL': 'Gold Petal', 'MCX:CRUDEOIL': 'Crude Oil Mini', 'MCX:NATURALGAS': 'Natural Gas Mini' };
+const MCX_EMOJI = { 'MCX:GOLDPETAL': '🟡', 'MCX:CRUDEOIL': '🛢', 'MCX:NATURALGAS': '🔥' };
+async function goldPlanS(sym = 'MCX:GOLDPETAL') {
   const q = (await cacheWrap(`quote:${sym}`, TTL.mcx, () => buildQuotePayload(sym))).value;
   let k = 1;
   try { const c = JSON.parse(USER_STORE.keys['td_mcx_cal2_' + sym]?.v || 'null'); if (c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3 * 86400e3) { const kk = c.mcx / c.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } } catch {}
   const d = q.daily, n = d.C.length;
-  if (n < 60 || !(q.price > 0)) throw new Error('Gold Petal history too short');
+  if (n < 60 || !(q.price > 0)) throw new Error(`${MCX_NAME[sym] || sym} history too short`);
   const C = d.C.map(v => v * k), H = d.H.map(v => v * k), L = d.L.map(v => v * k), price = q.price * k;
   /* Same live candle rule as the page: today's bar is replaced when Yahoo already has it, else appended. */
   const tz = q.dataSource?.timezone || 'America/New_York';
@@ -6459,13 +6772,13 @@ async function goldPlanS() {
   if (sameDay) { C[n - 1] = price; H[n - 1] = Math.max(H[n - 1], price); L[n - 1] = Math.min(L[n - 1], price); }
   else { C.push(price); H.push(price); L.push(price); }
   const sr = SwingPlan.srLevels({ H, L, C, i: C.length - 2, price });
-  let drivers = null; try { drivers = (await mcxDriversFor(sym)).goldRule; } catch {}
+  let drivers = null; if (SwingPlan.GOLD_MCX.has(sym)) { try { drivers = (await mcxDriversFor(sym)).goldRule; } catch {} }
   const plan = SwingPlan.commodityPlan(sym, { C, H, L, price, sr }, { minRR: 1.25, drivers });
-  return { ...plan, calibrated: k !== 1, calK: k, drivers, expiry: SwingPlan.goldPetalExpiry(istDateKey(), isNseHoliday) };
+  return { ...plan, calibrated: k !== 1, calK: k, drivers, expiry: sym === 'MCX:GOLDPETAL' ? SwingPlan.goldPetalExpiry(istDateKey(), isNseHoliday) : null };
 }
 function goldPlanText(p) {
   const head = p.side === 'BUY' && !p.driverBlock ? `BUY · ${p.action}` : p.side === 'BUY' ? `WAIT · ${p.action}` : p.side === 'SELL' ? `SELL (small size - all 3 drivers point down) · ${p.action}` : p.side === 'AVOID' ? `AVOID · ${p.action}` : `WAIT · ${p.why}`;
-  const lv = p.side === 'BUY' || p.side === 'SELL' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · T1 ${inr(p.t1)} · T2 ${inr(p.t2)} · R:R ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
+  const lv = p.side === 'BUY' || p.side === 'SELL' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · Target ${inr(p.exitTarget || p.t1)} (${p.exitRule || 'T1'}) · R:R to T1 ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
   const drv = p.drivers?.known ? `\nDrivers ${p.drivers.count}/3: ${p.drivers.text}` : '';
   const exp = p.expiry && p.expiry.tradingDaysLeft <= 5 ? `\n⚠ Contract expires ${p.expiry.date} (${p.expiry.tradingDaysLeft} trading days) - roll or exit` : '';
   return `${head}${lv}${drv}${exp}\nNow ${inr(p.price)}${p.calibrated ? ' (your MCX calibration)' : ' (proxy - calibrate in the app for exact MCX levels)'}`;
@@ -6523,7 +6836,8 @@ async function openTradeWatchTick() {
       if (stop > 0 && (long ? p <= stop : p >= stop) && flagOnce(`j|${t.id}|stop`))
         await pushAll({ title: `🛑 ${name} hit your stop ${inr(stop)}`, body: `Now ${inr(p)}. Exit as planned and mark the trade closed in My trades.`, tag: `j-${t.id}`, url: '/?view=trades' });
       else if (t1 > 0 && (long ? p >= t1 : p <= t1) && flagOnce(`j|${t.id}|t1`))
-        await pushAll({ title: `🎯 ${name} reached target 1 ${inr(t1)}`, body: `Now ${inr(p)}. Book half and move the stop to your entry ${inr(t.entry)}.`, tag: `j-${t.id}`, url: '/?view=trades' });
+        /* Trades saved from 19 Nov 2026 carry the tested exit (exitDays): their target is the whole-position exit. */
+        await pushAll({ title: `🎯 ${name} reached your target ${inr(t1)}`, body: t.exitDays ? `Now ${inr(p)}. The tested exit sells the whole position here - then mark it closed in My trades.` : `Now ${inr(p)}. Book half and move the stop to your entry ${inr(t.entry)}.`, tag: `j-${t.id}`, url: '/?view=trades' });
     }
   } finally { WATCH_RUNNING = false; }
 }
@@ -6534,9 +6848,13 @@ async function openTradeDailyChecks() {
   let cal = null; try { cal = await getResultsCalendar(); } catch {}
   for (const t of open) {
     const sym = String(t.sym).toUpperCase(), name = symShort(sym);
-    if (t.kind === 'stock') {
+    if (t.kind === 'mcx' && +t.exitDays > 0) {
       const held = t.openedAt ? tradingDaysUntil(t.openedAt, today) : 0;
-      if (held >= 10 && flagOnce(`j|${t.id}|day10|${today}`)) msgs.push(`${name}: day ${held} - the plan's time exit (10 trading days) is due`);
+      if (held >= +t.exitDays && flagOnce(`j|${t.id}|dayN|${today}`)) msgs.push(`${name}: day ${held} - the plan's time exit (${+t.exitDays} trading days) is due`);
+    }
+    if (t.kind === 'stock') {
+      const held = t.openedAt ? tradingDaysUntil(t.openedAt, today) : 0, lim = +t.exitDays > 0 ? +t.exitDays : 10;
+      if (held >= lim && flagOnce(`j|${t.id}|day10|${today}`)) msgs.push(`${name}: day ${held} - the plan's time exit (${lim} trading days) is due`);
       const r = cal ? resultsCheckFor(name, cal, today) : null;
       if (r && r.tradingDays >= 0 && r.tradingDays <= 2 && flagOnce(`j|${t.id}|results|${r.date}`)) msgs.push(`${name}: results ${r.date === today ? 'today' : `on ${r.date}`} - gap risk, consider booking or tightening the stop`);
       for (const a of stockEventCheckS(name, today).items.filter(a => a.tradingDays <= 2))
@@ -6633,7 +6951,7 @@ async function morningBrief() {
     lines.push(h.length ? 'News:\n' + h.map(i => `${i.impactScore > 0 ? '▲' : '▼'} ${String(i.title).slice(0, 120)}${i.source ? ` (${i.source})` : ''}`).join('\n') : 'News: no big market-moving headline since last evening');
   } catch { lines.push('News: not reachable - check the News tab'); }
   try { const e = SwingPlan.goldPetalExpiry(today, isNseHoliday); if (e.tradingDaysLeft <= 5) lines.push(`Gold Petal contract expires ${e.date} (${e.tradingDaysLeft} trading days) - roll or exit`); } catch {}
-  lines.push('Gold Petal (09:45) and Nifty options (10:00) alert only when there is a trade ready; stock scans at 11:00 and 15:00.');
+  lines.push('MCX (Gold Petal, Crude Oil, Natural Gas at 09:45 / 17:00) and Nifty options (10:00) alert only when there is a trade ready; stock scans at 11:00 and 15:00.');
   return lines.join('\n');
 }
 
@@ -6650,24 +6968,28 @@ async function assistantTick() {
     /* Zerodha: the token ends at 06:00 every day - a reminder to log in before the market opens. */
     if (nseDay && KITE.key && KITE.secret && !kiteSession() && at(8 * 60 + 45, 'kite-login')) await pushAll({ title: 'Connect Zerodha for today', body: 'Live option premiums, Fin Services Ex-Bank and index values come from Zerodha Kite. Its login ends at 06:00 daily - tap to connect (TradeDesk -> My trades -> Connect Zerodha).', tag: 'td-kite', url: '/api/kite/login' });
     if (nseDay && at(9 * 60 + 30, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
-    else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; a Gold Petal alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });
+    else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; an MCX alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });
     /* Gold Petal: an alert only when the plan is a trade (BUY with the drivers, or SELL); otherwise the status is
        kept for the 15:00 "nothing ready" line. The 17:00 check catches the US-data evening. */
+    /* NSE's evening files (delivery %, option PCR) for tomorrow's tags. */
+    if (nseDay && at(19 * 60, 'nse-daily')) nseDailyRefresh().catch(() => {});
     for (const [min, id] of [[9 * 60 + 45, 'gold-am'], [17 * 60, 'gold-pm']]) {
       if (at(min, id)) {
-        if (min < 12 * 60) await traceGoldDaily(key).catch(e => console.warn('Gold trace:', e.message));   /* yesterday's candle first */
-        try {
-          /* Ready = a trade plan whose entry is within one day's range (1 ATR) of the price. A plan that waits for a
-             bigger dip / rise is alerted later, when price reaches its level (below). */
-          const g = await goldPlanS(), trade = ((g.side === 'BUY' && !g.driverBlock) || g.side === 'SELL') && g.entry > 0 && Math.abs(g.entry - g.price) <= (g.atr || 0);
-          GOLD_PLAN_LAST = { plan: g, ts: Date.now() };
-          const waiting = !trade && g.entry > 0 && (g.side === 'SELL' || (g.side === 'BUY' && !g.driverBlock));
-          GOLD_STATUS = { day: key, text: waiting ? `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - alert when price reaches ${inr(g.entry)} (now ${inr(g.price)})` : goldPlanText(g).split('\n')[0] };
-          if (trade) {
-            traceGoldRecord(g, `ready ${min < 12 * 60 ? '09:45' : '17:00'}`, key);
-            await pushAll({ title: `🟡 Gold Petal · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
-          }
-        } catch (e) { GOLD_STATUS = { day: key, text: `plan not available (${e.message})` }; console.warn('Gold plan:', e.message); }
+        if (min < 12 * 60) await traceGoldDaily(key).catch(e => console.warn('MCX trace:', e.message));   /* yesterday's candle first */
+        for (const sym of MCX_ALERT_SYMS) {
+          try {
+            /* Ready = a trade plan whose entry is within one day's range (1 ATR) of the price. A plan that waits for a
+               bigger dip / rise is alerted later, when price reaches its level (below). */
+            const g = await goldPlanS(sym), trade = ((g.side === 'BUY' && !g.driverBlock) || g.side === 'SELL') && g.entry > 0 && Math.abs(g.entry - g.price) <= (g.atr || 0);
+            GOLD_PLAN_LAST[sym] = { plan: g, ts: Date.now() };
+            const waiting = !trade && g.entry > 0 && (g.side === 'SELL' || (g.side === 'BUY' && !g.driverBlock));
+            MCX_STATUS[sym] = { day: key, text: waiting ? `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - alert when price reaches ${inr(g.entry)} (now ${inr(g.price)})` : goldPlanText(g).split('\n')[0] };
+            if (trade) {
+              traceGoldRecord(g, `ready ${min < 12 * 60 ? '09:45' : '17:00'}`, key);
+              await pushAll({ title: `${MCX_EMOJI[sym]} ${MCX_NAME[sym]} · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: `td-mcx-${sym}`, url: `/?sym=${sym}` });
+            }
+          } catch (e) { MCX_STATUS[sym] = { day: key, text: `plan not available (${e.message})` }; console.warn(`${sym} plan:`, e.message); }
+        }
       }
     }
     /* Nifty options at 10:00 (opening premiums settle in the first 30 min): an alert only when your rule passes. */
@@ -6676,7 +6998,12 @@ async function assistantTick() {
         const r = await niftyRuleS();
         NIFTY_STATUS = { day: key, text: String(r.rule.verdict || (r.rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) };
         if (r.rule.ok) { traceNiftyRecord(r, key); await pushAll({ title: `📊 Nifty options · your rule passed`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
-      } catch (e) { NIFTY_STATUS = { day: key, text: `option premiums not available at 10:00 (${e.message})` }; }
+      } catch (e) {
+        NIFTY_STATUS = { day: key, text: `option premiums not available at 10:00 (${e.message})` };
+        /* Silent before: since 18 Nov 2026 premiums come only from Zerodha Kite, whose login ends at 06:00 every day -
+           a day without "Connect Zerodha" sent nothing at all, which looked like a broken app. */
+        await pushAll({ title: 'Nifty options: not checked at 10:00', body: `${/Zerodha/i.test(e.message) ? 'Zerodha is not connected today (its login ends at 06:00 daily).' : 'Option premiums were not available.'} Connect Zerodha (My trades -> Connect Zerodha), then open Markets -> Nifty to see your credit-spread rule.`, tag: 'td-nifty-opt', url: '/?view=trades' });
+      }
       await traceNiftyCheck(key, m, 'morning').catch(e => console.warn('Nifty trace:', e.message));
     }
     /* 15:05: the day's second (last) NSE premiums - the rule's expiry for the pages, then the Track record check
@@ -6692,29 +7019,32 @@ async function assistantTick() {
     }
     /* Gold Petal: price reached the planned level of a "wait for a dip" buy or "wait for a rise" sell, once a day,
        MCX hours. */
-    if (m >= 9 * 60 && m <= 23 * 60 + 30) {
-      if (!GOLD_PLAN_LAST || Date.now() - GOLD_PLAN_LAST.ts > 30 * 60e3) { try { GOLD_PLAN_LAST = { plan: await goldPlanS(), ts: Date.now() }; } catch {} }
-      const g = GOLD_PLAN_LAST?.plan;
+    if (m >= 9 * 60 && m <= 23 * 60 + 30) for (const sym of MCX_ALERT_SYMS) {
+      if (!GOLD_PLAN_LAST[sym] || Date.now() - GOLD_PLAN_LAST[sym].ts > 30 * 60e3) { try { GOLD_PLAN_LAST[sym] = { plan: await goldPlanS(sym), ts: Date.now() }; } catch { GOLD_PLAN_LAST[sym] = { plan: null, ts: Date.now() }; } }
+      const g = GOLD_PLAN_LAST[sym]?.plan;
       /* The plan is rebuilt every 30 min from the live price, so once price falls to the planned dip level the new plan
          says "buy now" and its entry equals the price: remember the day's planned level and alert against that. */
       const tradeSide = g && ((g.side === 'BUY' && !g.driverBlock) || g.side === 'SELL') ? g.side : null;
+      const cur = GOLD_BUY_LEVEL[sym];
       if (tradeSide && (tradeSide === 'BUY' ? g.entry < g.price * 0.999 : g.entry > g.price * 1.001) &&
-          (!GOLD_BUY_LEVEL || GOLD_BUY_LEVEL.day !== key || GOLD_BUY_LEVEL.entry !== g.entry || GOLD_BUY_LEVEL.side !== tradeSide))
-        GOLD_BUY_LEVEL = { day: key, side: tradeSide, entry: g.entry, sl: g.sl, t1: g.t1, t2: g.t2, e20: g.e20, smallSize: g.smallSize, calK: g.calK || 1 };
-      if (g && !tradeSide) GOLD_BUY_LEVEL = null;   /* trend or drivers turned: no level alert */
-      if (GOLD_BUY_LEVEL && GOLD_BUY_LEVEL.day === key) {
-        const lv = GOLD_BUY_LEVEL, sell = lv.side === 'SELL';
-        let q; try { q = await quickPriceFor('MCX:GOLDPETAL'); } catch {}
+          (!cur || cur.day !== key || cur.entry !== g.entry || cur.side !== tradeSide))
+        GOLD_BUY_LEVEL[sym] = { sym, day: key, side: tradeSide, entry: g.entry, sl: g.sl, t1: g.t1, t2: g.t2, exitTarget: g.exitTarget, exitDays: g.exitDays, exitRule: g.exitRule, e20: g.e20, smallSize: g.smallSize, calK: g.calK || 1 };
+      if (g && !tradeSide) GOLD_BUY_LEVEL[sym] = null;   /* trend or drivers turned: no level alert */
+      const lv = GOLD_BUY_LEVEL[sym];
+      if (lv && lv.day === key) {
+        const sell = lv.side === 'SELL';
+        let q; try { q = await quickPriceFor(sym); } catch {}
         const p = q?.price ? q.price * (lv.calK || 1) : null;   /* the plan's levels are in calibrated MCX terms */
-        if (p && (sell ? p >= lv.entry && p < lv.sl : p <= lv.entry && p > lv.sl) && flagOnce(`gold-${sell ? 'sellzone' : 'buyzone'}|${key}`)) {
+        if (p && (sell ? p >= lv.entry && p < lv.sl : p <= lv.entry && p > lv.sl) && flagOnce(`${sym === 'MCX:GOLDPETAL' ? 'gold' : sym}-${sell ? 'sellzone' : 'buyzone'}|${key}`)) {
           traceGoldLevel(lv, p, key);
-          await pushAll({ title: `🟡 Gold Petal at your ${sell ? 'sell (small size)' : 'buy'} level ${inr(lv.entry)}`, body: `Now ${inr(p)}. Stop ${inr(lv.sl)} · T1 ${inr(lv.t1)}. Check the MCX quote before ordering.`, tag: 'td-gold', url: '/?sym=MCX:GOLDPETAL' });
+          await pushAll({ title: `${MCX_EMOJI[sym]} ${MCX_NAME[sym]} at your ${sell ? 'sell (small size)' : 'buy'} level ${inr(lv.entry)}`, body: `Now ${inr(p)}. Stop ${inr(lv.sl)} · target ${inr(lv.exitTarget || lv.t1)} (${lv.exitRule || 'T1'}). Check the MCX quote before ordering.`, tag: `td-mcx-${sym}`, url: `/?sym=${sym}` });
         }
       }
     }
   } finally { ASSIST_RUNNING = false; }
 }
-let GOLD_PLAN_LAST = null, GOLD_BUY_LEVEL = null, GOLD_STATUS = null, NIFTY_STATUS = null;
+const GOLD_PLAN_LAST = {}, GOLD_BUY_LEVEL = {}, MCX_STATUS = {};
+let NIFTY_STATUS = null;
 /* ══════════════════════════════════════════════════════════════════
    SIGNAL TRACE - every alerted trade followed to its exit, checked ONCE A DAY (few calls):
    - Stocks: each READY pick of the 11:00 / 15:00 scans is recorded here (entry = the price at the scan); the
@@ -6759,8 +7089,11 @@ function traceStockRecord(picks, key) {
   for (const x of picks) {
     const sym = String(x.sym || '').toUpperCase(), price = +x.price, pl = x.plan || {};
     if (!sym || !(price > 0) || t.rows.some(r => r.kind === 'stock' && r.date === key && r.sym === sym)) continue;
+    const tg = x.tags || {};
     t.rows.push({ id: `stock|${key}|${sym}`, kind: 'stock', sym, date: key, createdAt: now, upd: now, entry: r2(price),
       sl: +pl.stop > 0 ? r2(pl.stop) : null, t1: +pl.target > 0 ? r2(pl.target) : null, setup: x.pickedSetup || x.selectedStrategy || null,
+      exitMode: '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
+      tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, dpOk: tg.dpOk ?? null, pcrOk: tg.pcrOk ?? null },
       bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null });
     added++;
   }
@@ -6768,12 +7101,16 @@ function traceStockRecord(picks, key) {
 }
 
 /* Gold Petal ----------------------------------------------------- */
+/* MCX records (kind 'mcx'; older Gold Petal rows are kind 'gold' and keep their old exit). New rows follow the tested
+   exit: the whole position at exitTarget (gold buys 3R, others T1) or at the stop, else the close of day exitDays. */
+const isMcxRow = r => r.kind === 'mcx' || r.kind === 'gold';
 function traceGoldRecord(g, via, key, filledNow = false) {
-  const t = traceLoad();
-  if (t.rows.some(r => r.kind === 'gold' && !r.closed)) return null;   /* one Gold Petal trade at a time, like the plan */
+  const t = traceLoad(), sym = g.sym || 'MCX:GOLDPETAL';
+  if (t.rows.some(r => isMcxRow(r) && (r.sym || 'MCX:GOLDPETAL') === sym && !r.closed)) return null;   /* one trade per commodity at a time, like the plan */
   const long = g.side !== 'SELL', now = Date.now(), entry = r2(g.entry), price = +g.price;
   const filled = filledNow || (long ? price <= entry * 1.001 : price >= entry * 0.999);
-  const row = { id: `gold|${now}`, kind: 'gold', sym: 'MCX:GOLDPETAL', date: key, createdAt: now, upd: now, via,
+  const row = { id: `mcx|${sym}|${now}`, kind: 'mcx', sym, date: key, createdAt: now, upd: now, via, exitMode: 'full',
+    target: r2(g.exitTarget || g.t1), maxDays: +g.exitDays || 10, exitRule: g.exitRule || null,
     side: long ? 'BUY' : 'SELL', small: !!g.smallSize, entry, sl: r2(g.sl), t1: r2(g.t1), t2: r2(g.t2), calK: +g.calK || 1,
     trailRef: Number.isFinite(+g.e20) && (long ? price > g.e20 : price < g.e20) ? 'e20' : 'e50',
     phase: filled ? 'entry' : 'pending', status: filled ? 'Open' : `Waiting for ${inr(entry)} today`, closed: false,
@@ -6783,8 +7120,8 @@ function traceGoldRecord(g, via, key, filledNow = false) {
 }
 /* The level alert saw price reach the entry: a waiting record becomes the trade; with none waiting, a new one. */
 function traceGoldLevel(lv, p, key) {
-  const t = traceLoad(), side = lv.side === 'SELL' ? 'SELL' : 'BUY';
-  const w = t.rows.find(r => r.kind === 'gold' && !r.closed && r.phase === 'pending' && r.side === side && r.date === key);
+  const t = traceLoad(), side = lv.side === 'SELL' ? 'SELL' : 'BUY', sym = lv.sym || 'MCX:GOLDPETAL';
+  const w = t.rows.find(r => isMcxRow(r) && (r.sym || 'MCX:GOLDPETAL') === sym && !r.closed && r.phase === 'pending' && r.side === side && r.date === key);
   if (w) { w.phase = 'entry'; w.status = 'Open'; w.filledAt = Date.now(); w.mark = r2(p); w.markAt = Date.now(); w.upd = Date.now(); traceSave(t); return w; }
   return traceGoldRecord({ ...lv, price: p }, 'price reached the planned level', key, true);
 }
@@ -6801,6 +7138,15 @@ function traceGoldBar(r, b) {
   const R = px => risk > 0 ? r2((px - r.entry) * sg / risk) : 0;
   const up = lv => long ? b.h >= lv : b.l <= lv, down = lv => long ? b.l <= lv : b.h >= lv;
   const close = (status, res, px) => { r.closed = true; r.status = status; r.resultR = res == null ? null : r2(res); r.closedAt = Date.now(); r.exitDate = b.date; if (px != null) r.exit = r2(px); };
+  if (r.exitMode === 'full') {   /* the tested exit: all at the target or the stop, else the close of day maxDays */
+    if (r.phase !== 'entry') return;
+    const sl = down(r.sl), tg = up(r.target);
+    if (sl && tg) close('Ambiguous: stop and target on the same day', null);
+    else if (tg) close('Target hit', R(r.target), r.target);
+    else if (sl) close('SL hit', -1, r.sl);
+    else { r.days = (+r.days || 0) + 1; if (r.days >= (+r.maxDays || 10) && Number.isFinite(+b.c)) close(`Day ${+r.maxDays || 10} exit`, R(b.c), b.c); }
+    return;
+  }
   if (r.phase === 'entry') {
     const sl = down(r.sl), t1 = up(r.t1), t2 = up(r.t2);
     if (sl && (t1 || t2)) close('Ambiguous: stop and target on the same day', null);
@@ -6826,11 +7172,14 @@ function traceGoldBar(r, b) {
 /* Each morning (09:45): completed candles after the record day. The record day's candle is not judged - its
    high / low may have come before the alert (same rule as the stock Track record). */
 async function traceGoldDaily(key) {
-  const t = traceLoad(), open = t.rows.filter(r => r.kind === 'gold' && !r.closed);
-  if (!open.length) return;
-  const q = (await cacheWrap('quote:MCX:GOLDPETAL', TTL.mcx, () => buildQuotePayload('MCX:GOLDPETAL'))).value, d = q?.daily;
-  if (!d?.C?.length) return;
+  const t = traceLoad(), openAll = t.rows.filter(r => isMcxRow(r) && !r.closed);
+  if (!openAll.length) return;
   let changed = false;
+  for (const sym of [...new Set(openAll.map(r => r.sym || 'MCX:GOLDPETAL'))]) {
+  const open = openAll.filter(r => (r.sym || 'MCX:GOLDPETAL') === sym);
+  let q; try { q = (await cacheWrap(`quote:${sym}`, TTL.mcx, () => buildQuotePayload(sym))).value; } catch { continue; }
+  const d = q?.daily;
+  if (!d?.C?.length) continue;
   for (const r of open) {
     if (r.phase === 'pending') {
       if (r.date < key) { r.closed = true; r.status = 'Not filled (entry not reached that day)'; r.resultR = null; r.closedAt = Date.now(); r.upd = Date.now(); changed = true; }
@@ -6844,6 +7193,7 @@ async function traceGoldDaily(key) {
       traceGoldBar(r, { date, h: d.H[i] * k, l: d.L[i] * k, c: C[i], e20: e20[i], e50: e50[i] });
       r.evalThrough = date; r.mark = r2(C[i]); r.markAt = Date.now(); r.upd = Date.now(); changed = true;
     }
+  }
   }
   if (changed) traceSave(t);
 }
@@ -7058,6 +7408,7 @@ async function handleRequest(req,res){
   if(pn==='/api/health')           return apiHealth(req,res);
   /* Zerodha Kite: daily login (redirect to Zerodha and back), status, disconnect */
   if(pn==='/api/kite/status')      return send(res, kiteStatus());
+  if(pn==='/api/screener-compare') return apiScreenerCompare(req,res,ps);
   if(pn==='/api/kite/login') {
     if (!KITE.key || !KITE.secret) return err(res, 'Set KITE_API_KEY and KITE_API_SECRET on Render first', 400);
     res.writeHead(302, { Location: kiteLoginUrl(), 'Cache-Control': 'no-store' }); return res.end();
@@ -7088,7 +7439,7 @@ async function handleRequest(req,res){
   if(pn==='/api/momentum')         return apiMomentum(req,res,ps);
   if(pn.startsWith('/api/push/'))  return apiPush(req,res,pn);
   if(pn==='/api/screener-explain') return apiScreenerExplain(req,res,ps);
-  if(pn==='/api/screener-diag') return send(res, LAST_SCAN_DIAG);
+  if(pn==='/api/screener-diag') return send(res, SV().LAST_SCAN_DIAG);
   if(pn==='/api/sector-map') {
     const map = {}; Object.entries(LIVE_UNIVERSE?.industry || {}).forEach(([k, v]) => { if (v.sector) map[k] = v.sector; });
     return send(res, { count: Object.keys(map).length, source: LIVE_UNIVERSE?.source || null, map });

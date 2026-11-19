@@ -72,6 +72,9 @@ Optional news API variables: MARKETAUX_KEY, FINNHUB_KEY, NEWSDATA_KEY
 Optional: TRUST_PROXY_HOPS (default 1 in production, 0 locally)
 Optional: NSE_HOLIDAYS = extra trading holidays, comma-separated YYYY-MM-DD (the server also reads NSE's own list daily)
 Optional: TELEGRAM_BOT_TOKEN = your Telegram bot's token, for alerts in Telegram (see below)
+Recommended with Telegram: TELEGRAM_CHAT_ID = the number shown on the Telegram card after Link. The link itself lives
+  on Render's disk, which every deploy wipes - without this variable Telegram alerts stop after each deploy until
+  you press Link again.
 ```
 
 Telegram alerts (free, optional):
@@ -79,20 +82,26 @@ Telegram alerts (free, optional):
 2. Render → your service → Environment → add TELEGRAM_BOT_TOKEN = that token → Save (Render redeploys).
 3. Open your new bot in Telegram and send /start. In TradeDesk: Screener → My trades → Telegram alerts → Link.
 Every alert then also arrives in Telegram. Schedule (IST, NSE trading days unless noted):
-- 09:20 your open trades: day-10 time exit, results / ex-dates close, Gold Petal expiry (only when there is one).
+- 09:20 your open trades: time exit due (stocks day 15, MCX day 10 / 20), results / ex-dates close, Gold Petal
+  expiry (only when there is one).
 - 09:30 morning brief: new entries allowed / small size / not today, global bias, India market regime,
   holidays, high-impact events, your open trades and open risk, up to 3 market-moving headlines.
-- 09:45 and 17:00 (weekdays) Gold Petal: only when a BUY (2 of 3 drivers) or SELL is ready (entry within 1 ATR of
-  the price); a plan waiting for a bigger dip / rise alerts when price reaches its buy / sell level.
-- 10:00 Nifty options: only when your credit-spread rule passes on the live NSE chain.
-- 11:00 and 15:00 stock scans: READY / buy-limit / quick bounce stocks. At 15:00, when nothing was ready, one quiet
-  line with the day's Gold Petal and Nifty status (so a silent day is not mistaken for a broken app).
+- 09:45 and 17:00 (weekdays) MCX - Gold Petal, Crude Oil Mini, Natural Gas Mini: only when a BUY is ready (gold:
+  2 of 3 drivers; gold also a small-size SELL when all 3 drivers point down; crude and gas are buy-only), entry
+  within 1 ATR of the price; a plan waiting for a bigger dip alerts when price reaches its buy level.
+- 10:00 Nifty options: when your bull-put rule passes on the live Zerodha chain. When Zerodha is not connected that
+  day (its login ends at 06:00) an alert says so instead of staying silent.
+- 11:00 and 15:00 stock scans: READY / buy-limit stocks (exit 2R or day 15); pattern breakouts at 15:00. Quick
+  Bounce is watch-only (no alert). At 15:00, when nothing was ready, one quiet line with the day's MCX and Nifty
+  status (so a silent day is not mistaken for a broken app).
 
 Track record (Screener → Track record) has three sub-tabs, all checked once a day:
 - Stocks: every READY pick (the server records the 11:00 / 15:00 scan picks even when the app is closed), entry =
-  the price when it turned READY; stop, T1 / T2 on each day's candle; closed at the close of day 10 at the latest.
-- Gold Petal: entry at the plan's defined price; checked each morning on the completed daily candles; closed at
-  the close of day 10 at the latest.
+  the price when it turned READY. From 19 Nov 2026: the whole position at 2R or the stop, else the close of day 15
+  (older records keep T1 / T2 / day 10). Results by tag (delivery, PCR, structure, 52-week high, double bottom).
+- MCX (Gold Petal, Crude Oil, Natural Gas): entry at the plan's defined price; checked each morning on the
+  completed daily candles; the whole position at the target (gold 3R, others T1) or the stop, else the close of day
+  20 (gold) / 10. A win rate per commodity.
 - Nifty options: entry at the 10:00 NSE premiums; closed once 80% of the premium is earned, at the stop (loss 2x
   the credit), or at 15:05 on Friday (the week's last trading day).
 They sync like My trades, so a Render restart does not lose them.
@@ -116,6 +125,21 @@ Zerodha Kite Connect (optional, recommended): with KITE_API_KEY / KITE_API_SECRE
 "Connect Zerodha" login (Screener -> My trades; Zerodha ends it at 06:00), option premiums of every expiry, every NSE
 index (Fin Services Ex-Bank included) and India VIX come live from Kite - no NSE call. Read-only, no orders.
 Setup in KITE-SETUP.txt; /api/health -> kite, /api/kite/status.
+Screener -> Yahoo vs Kite (test): runs the same swing screener on Yahoo data and on Kite data (live quotes + historical
+candles) and lists the READY / Watchlist stocks found by both, only by Yahoo and only by Kite, with each source's data
+gaps. The Kite scan takes about 2 minutes (Kite allows ~3 history requests a second) and is kept apart: the normal
+Swing list, Overview, Track record and alerts stay on Yahoo. Needs a Kite plan with historical data. /api/screener-compare.
+
+Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
+- Stock exit: sell all at 2R or day 15 (T1 stays the R:R check). Tags on every screener row: higher highs / higher
+  lows, near the 52-week high, double bottom above its neckline, NSE delivery % (50%+) and the stock-option put/call
+  ratio (0.5+) - delivery and PCR come from two NSE archive files read once a day (data/nse-daily.json; "n/a" when NSE
+  does not answer the server). New list: Pattern breakouts (double bottom / flat base).
+- Quick Bounce is watch-only; candle patterns no longer vote in the Overview bias.
+- Nifty options: bull puts only (bear calls lost money); minimum credit by days to expiry (6+ up to 10 days, 20+
+  beyond). The generic "Today's options idea" card was removed.
+- MCX: Gold Petal exit 3R / 20 days; Crude Oil and Natural Gas buy-only setups (Natural Gas Mini, 250 mmBtu).
+- My trades: portfolio check (more than 5 open trades, more than 2 in one sector, open risk over the limit).
 
 Notes for the free plan:
 - The server keeps itself awake around the clock (it calls its own address every 10 minutes), so there is no cold
@@ -124,6 +148,8 @@ Notes for the free plan:
   hours before the month ends and Render would pause both until the 1st.
 - Render's free disk is wiped on every deploy: your alerts / Track Record come back automatically the next time
   you open TradeDesk on a device that has them; Export backup (Markets page) keeps a copy as a file.
+  Notifications after a deploy: phone / browser alerts start again once you open TradeDesk on that device; Telegram
+  keeps working only with TELEGRAM_CHAT_ID set (see above).
 - Background alerts on a phone: open the 🔔 box on a stock → Turn on → Test. iPhone: Share → Add to Home Screen
   first, then open TradeDesk from that icon.
 - Changing `APP_PASSWORD` logs every device out and needs background alerts turned on again.

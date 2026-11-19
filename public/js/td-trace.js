@@ -1,4 +1,5 @@
-/* Track record sub-tabs: Stocks (the browser's READY-pick tracker in app.js), Gold Petal and Nifty options.
+/* Track record sub-tabs: Stocks (the browser's READY-pick tracker in app.js), MCX (Gold Petal, Crude Oil, Natural
+   Gas - older Gold Petal rows are kind 'gold', newer ones kind 'mcx') and Nifty options.
    Gold Petal and Nifty records are made by the server at the moment it alerts a ready trade / a passed rule and
    are followed by the server to their exit (see SIGNAL TRACE in server.js). They arrive here through the synced
    key td_trace; this page and the server merge their copies by record id, so neither side loses rows. */
@@ -24,12 +25,13 @@ function traceMergeJson(localText, serverText){
   return sameAsServer ? serverText : JSON.stringify(m);
 }
 function traceLoadC(){ try { return traceParseC(localStorage.getItem(TRACE_KEY)); } catch { return { clearedAt: 0, rows: [] }; } }
+const isMcxKind = k => k === 'mcx' || k === 'gold';
 function traceClear(kind){
-  if (!confirm(`Clear all ${kind === 'gold' ? 'Gold Petal' : 'Nifty options'} records? Stock records are kept.`)) return;
+  if (!confirm(`Clear all ${isMcxKind(kind) ? 'MCX' : 'Nifty options'} records? Stock records are kept.`)) return;
   /* clearedAt removes every record made before now on all devices and on the server; the other kind's open
      records are kept by re-stamping them. */
   const t = traceLoadC(), now = Date.now();
-  const keep = t.rows.filter(r => r.kind !== kind).map(r => ({ ...r, createdAt: now + 1, upd: now + 1 }));
+  const keep = t.rows.filter(r => isMcxKind(kind) ? !isMcxKind(r.kind) : r.kind !== kind).map(r => ({ ...r, createdAt: now + 1, upd: now + 1 }));
   try { localStorage.setItem(TRACE_KEY, JSON.stringify({ clearedAt: now, rows: keep })); } catch {}
   tabTrace(kind);
 }
@@ -43,6 +45,7 @@ function importStockTrace(){
     if (have.has(`${r.date}_${r.sym}`)) continue;
     rows.push({ date: r.date, source: 'server scan', rank: '-', sym: r.sym, side: 'Long', bias: r.bias || 'Bullish', entry: ftR(r.entry), current: ftR(r.entry),
       sl: ftR(r.sl), t1: ftR(r.t1), t2: null, trailSl: null, atr: null, rr1: null, rr2: null, score10: r.score10 || null, final: r.final || null, setup: r.setup || null,
+      exitMode: r.exitMode || null, t2r: r.t2r ? ftR(r.t2r) : null, tags: r.tags || null, sector: r.sector || null,
       status: 'Open', phase: 'entry', resultR: null, retNow: 0, d5: null, d10: null, d20: null, closed: false, createdAt: new Date(+r.createdAt || Date.now()).toISOString() });
     have.add(`${r.date}_${r.sym}`); n++;
   }
@@ -51,7 +54,7 @@ function importStockTrace(){
 }
 function traceSubTabs(active){
   const b = (id, label) => `<button class="scr-tab${active === id ? ' active' : ''}" onclick="TRACK_SUB='${id}';tabScreener('track')">${label}</button>`;
-  return `<div class="td-trace-sub">${b('stock', 'Stocks')}${b('gold', 'Gold Petal')}${b('nifty', 'Nifty options')}</div>`;
+  return `<div class="td-trace-sub">${b('stock', 'Stocks')}${b('mcx', 'MCX')}${b('nifty', 'Nifty options')}</div>`;
 }
 function traceSummaryHtml(rows){
   const done = rows.filter(r => r.closed && Number.isFinite(+r.resultR) && r.resultR !== null);
@@ -64,15 +67,16 @@ const trMoney = v => Number.isFinite(+v) && +v > 0 ? '₹' + fmt(+v) : '--';
 const trR = v => v == null || !Number.isFinite(+v) ? '--' : (+v >= 0 ? '+' : '') + (+v).toFixed(2) + 'R';
 const trCol = v => v == null || !Number.isFinite(+v) ? 'var(--tx2)' : +v > 0 ? 'var(--bull)' : +v < 0 ? 'var(--bear)' : 'var(--tx2)';
 const trTime = ms => ms ? new Date(ms).toLocaleString('en-IN', { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
+const MCX_TR_NAME = { 'MCX:GOLDPETAL': 'Gold Petal', 'MCX:CRUDEOIL': 'Crude Oil', 'MCX:NATURALGAS': 'Natural Gas' };
 function traceGoldRows(rows){
   return rows.map(r => `<tr>
-    <td>${escHtml(r.date)}<br><span style="color:var(--tx3)">${escHtml(r.via || '')}</span></td>
+    <td>${escHtml(r.date)}<br><b>${escHtml(MCX_TR_NAME[r.sym || 'MCX:GOLDPETAL'] || r.sym)}</b> <span style="color:var(--tx3)">${escHtml(r.via || '')}</span></td>
     <td><span style="color:${r.side === 'SELL' ? 'var(--bear)' : 'var(--bull)'};font-weight:800">${r.side === 'SELL' ? 'SELL' : 'BUY'}</span>${r.small ? '<br><span style="color:var(--tx3)">small size</span>' : ''}</td>
     <td style="color:${trCol(r.resultR)};font-weight:900">${trR(r.resultR)}</td>
     <td style="font-weight:800;white-space:normal;min-width:130px">${escHtml(r.status || 'Open')}</td>
     <td>${trMoney(r.entry)}</td>
     <td>${trMoney(r.sl)}</td>
-    <td>${trMoney(r.t1)}<br><span style="color:var(--tx3)">T2 ${trMoney(r.t2)}</span></td>
+    <td>${r.exitMode === 'full' ? `${trMoney(r.target)}<br><span style="color:var(--tx3)">${escHtml(r.exitRule || 'all at target')}</span>` : `${trMoney(r.t1)}<br><span style="color:var(--tx3)">T2 ${trMoney(r.t2)}</span>`}</td>
     <td>${trMoney(r.closed ? r.exit || r.mark : r.mark)}<br><span style="color:var(--tx3)">${trTime(r.closed ? r.closedAt : r.markAt)}</span></td>
   </tr>`).join('');
 }
@@ -98,18 +102,24 @@ async function tabTrace(kind){
   tc.innerHTML = `<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div><div class="lt">Loading the latest records…</div></div>`;
   try { if (typeof syncNow === 'function') await syncNow(); } catch {}
   if (!live()) return;
-  const rows = traceLoadC().rows.filter(r => r.kind === kind).reverse();
-  const gold = kind === 'gold';
+  if (kind === 'gold') kind = 'mcx';
+  const gold = isMcxKind(kind);
+  const rows = traceLoadC().rows.filter(r => gold ? isMcxKind(r.kind) : r.kind === kind).reverse();
   const head = gold
-    ? '<th>Date</th><th>Side</th><th>Result</th><th>Status</th><th>Entry</th><th>Stop</th><th>T1 / T2</th><th>Last price</th>'
+    ? '<th>Date</th><th>Side</th><th>Result</th><th>Status</th><th>Entry</th><th>Stop</th><th>Target</th><th>Last price</th>'
     : '<th>Date</th><th>Spread</th><th>Result</th><th>P&amp;L</th><th>Status</th><th>Credit</th><th>Close at (80%) / stop</th><th>Last value</th><th>Expiry</th>';
-  const empty = `<tr><td colspan="${gold ? 8 : 9}">No records yet. ${gold ? 'A Gold Petal trade is recorded when the server alerts it as ready (09:45 / 17:00) or when price reaches a waiting plan\'s level.' : 'A credit spread is recorded when your rule passes at the 10:00 check.'}</td></tr>`;
+  const empty = `<tr><td colspan="${gold ? 8 : 9}">No records yet. ${gold ? 'An MCX trade (Gold Petal, Crude Oil, Natural Gas) is recorded when the server alerts it as ready (09:45 / 17:00) or when price reaches a waiting plan\'s level.' : 'A credit spread is recorded when your rule passes at the 10:00 check.'}</td></tr>`;
   const body = rows.length ? (gold ? traceGoldRows(rows) : traceNiftyRows(rows)) : empty;
+  /* Win rate per commodity, so you can see which one really works for you. */
+  const perSym = gold ? Object.entries(MCX_TR_NAME).map(([s, n]) => { const rs = rows.filter(r => (r.sym || 'MCX:GOLDPETAL') === s), done = rs.filter(r => r.closed && Number.isFinite(+r.resultR) && r.resultR !== null), w = done.filter(r => +r.resultR > 0).length, avg = done.length ? done.reduce((a, r) => a + (+r.resultR || 0), 0) / done.length : null;
+    return `<tr><td>${n}</td><td>${rs.length}</td><td>${done.length}</td><td>${done.length ? Math.round(w / done.length * 100) + '%' : '—'}</td><td style="color:${trCol(avg)}">${avg == null ? '—' : trR(avg)}</td></tr>`; }).join('') : '';
+  const perSymHtml = gold ? `<div class="j-table-wrap" style="margin-bottom:10px"><table class="ft-table"><thead><tr><th>Commodity</th><th>Records</th><th>Closed</th><th>Win rate</th><th>Avg R</th></tr></thead><tbody>${perSym}</tbody></table></div>` : '';
   const how = gold
-    ? '<b>How it is followed:</b> entry is the plan\'s price - at once when price is already there, else when price reaches it that day ("Not filled" otherwise, left out of the win rate). Then checked once a day, each morning, on the completed daily candles at your MCX calibration: stop-loss = -1R; at T1 half is booked and the stop moves to entry; the rest exits at T2, at entry, or on a daily close through the plan\'s EMA. Still open after 10 trading days: closed at the close of day 10. Result = half T1 + half the rest. The alert day\'s candle is not judged (its high / low may have come before the alert); a day that touched both the stop and a target is marked Ambiguous.'
+    ? '<b>How it is followed:</b> records from 19 Nov 2026 use the tested exit - the whole position at the target (Gold Petal 3R, Crude Oil / Natural Gas T1) or at the stop, else the close of day 20 (gold) / day 10 (others). Older Gold Petal rows: half at T1, the rest at T2 / entry / a close through the EMA. Entry is the plan\'s price - at once when price is already there, else when price reaches it that day ("Not filled" otherwise, left out of the win rate). Then checked once a day, each morning, on the completed daily candles at your MCX calibration: stop-loss = -1R; at T1 half is booked and the stop moves to entry; the rest exits at T2, at entry, or on a daily close through the plan\'s EMA. Still open after 10 trading days: closed at the close of day 10. Result = half T1 + half the rest. The alert day\'s candle is not judged (its high / low may have come before the alert); a day that touched both the stop and a target is marked Ambiguous.'
     : '<b>How it is followed:</b> entry at the 10:00 NSE premiums. Checked each morning at 10:00: closed once 80% of the premium is earned (spread value 20% of the credit or less), or at the stop (loss 2× the credit). Otherwise closed at 15:05 on the last trading day of the week (Friday), or settled at expiry from Nifty\'s close if that comes first. Spread value = short leg minus long leg (NSE bid/ask middle or last trade). 1R = 2× the credit. Brokerage and taxes are not included.';
-  tc.innerHTML = `${traceSubTabs(kind)}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">${gold ? 'Gold Petal - every alerted trade, followed to its exit' : 'Nifty options - every passed rule, followed to its exit'}</div><button onclick="traceClear('${kind}')" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Recorded and checked by the server, also when the app is closed. <span data-sync-status>${typeof syncStatusText === 'function' ? syncStatusText() : ''}</span></div></div>
+  tc.innerHTML = `${traceSubTabs(kind)}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">${gold ? 'MCX - every alerted Gold Petal, Crude Oil and Natural Gas trade, followed to its exit' : 'Nifty options - every passed rule, followed to its exit'}</div><button onclick="traceClear('${kind}')" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Recorded and checked by the server, also when the app is closed. <span data-sync-status>${typeof syncStatusText === 'function' ? syncStatusText() : ''}</span></div></div>
   ${traceSummaryHtml(rows)}
+  ${perSymHtml}
   <div class="j-table-wrap"><table class="ft-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>
   <div class="aib" style="font-size:.72rem;margin-top:10px">${how}</div>`;
 }

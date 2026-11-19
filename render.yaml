@@ -18,6 +18,8 @@ services:
       - key: APP_SECRET
         generateValue: true
       # Optional: Telegram alerts. Paste the token from @BotFather (Render asks once; leave empty to skip).
+      - key: TELEGRAM_CHAT_ID   # optional: keeps Telegram alerts working after each deploy (the app shows the number to paste)
+        sync: false
       - key: TELEGRAM_BOT_TOKEN
         sync: false
       # Optional: Zerodha Kite Connect (live premiums / indices) - see KITE-SETUP.txt. Leave empty to skip.

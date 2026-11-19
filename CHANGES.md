@@ -1,3 +1,42 @@
+# Backtested upgrade (19 Nov 2026 · page version 19 Nov 2026 · 2)
+
+Every change below was backtested first (stock rules: 10 years of the app's own screener signals, 0.25% costs;
+delivery / open interest: NSE's daily files May 2021 - Nov 2026; Nifty options: NSE closing prices Feb 2019 - Nov
+2026; MCX: 10 years of COMEX / NYMEX x USD/INR). Net R per trade after costs.
+
+## Added
+- Stock exit: sell all at 2R or at the close of day 15 (+0.037R a trade vs +0.011R at T1 in 10 days; +0.076R with
+  at most 5 open). Shown as "Exit 2R" on the screener, in the Overview exit plan, alerts and the Track record.
+- Screener tags (information, not rules): higher highs / higher lows (+0.055R vs -0.015R), within 5% of the 52-week
+  high (+0.057R), double bottom above neckline (+0.099R), NSE delivery 50%+ (+0.094R vs -0.026R), stock option PCR
+  0.5+ (skipping PCR < 0.5 lifted +0.030R to +0.083R).
+- Pattern breakouts list: double bottom (+0.065R, 2,912 trades) and flat base on 1.3x volume (+0.134R with at most
+  5 open, 8 of 10 good years); stop under the pattern, 2R target; alerted at the 15:00 scan.
+- MCX: Crude Oil (buy only: 59% wins, +0.23R) and Natural Gas (buy only: 57%, +0.28R) setups like Gold Petal, with
+  alerts at 09:45 / 17:00, level alerts and a Track record. Natural Gas card sized on the Mini (250 mmBtu).
+- Gold Petal exit: 3R or day 20 (+0.88R a trade vs +0.43R at T1).
+- Track record: "Gold Petal" tab renamed MCX (per-commodity win rate); stocks: results by tag.
+- My trades: portfolio check - over 5 open trades, over 2 in one sector, open risk over your limit.
+- Notifications: TELEGRAM_CHAT_ID keeps Telegram working after a deploy; an alert when the 10:00 Nifty options check
+  cannot run (Zerodha not connected); the Telegram card shows how many phones / browsers the server can reach.
+
+## Fixed
+- Credit-spread rule: the minimum credit went by the contract's name - the last weekly expiry of a month counted
+  as "monthly" and needed 20 points even with 4 days left (19 Nov: 25000/24800 PE for 7.8 points said NO TRADE). It
+  now goes by days to expiry: 6+ points up to 10 days, 20+ beyond.
+
+## Removed (false or losing signals)
+- Bear-call spreads in the Nifty rule (87% wins but -Rs 345 a lot on average); a downtrend is now "no trade".
+- Crude Oil / Natural Gas SELL signals (sells won 43-44% and lost or broke even).
+- "Today's options idea" card (iron condor / bear call / calendar ideas - all lost money); the bull-put rule card stays.
+- Candle patterns' vote in the Overview bias (no help in the 10-year test; still shown).
+- Quick Bounce alerts: the list is watch-only (63% wins, but -0.03R with 5 positions open).
+
+## Tested and not added
+Futures long buildup (worse), after-results gap-ups (too few trades), stop under the last swing low (no change), flat
+base without a breakout (worse), calendar / diagonal spreads, naked option buying, stock options instead of stock,
+intraday and scalping (all lost money).
+
 # TradeDesk — fixed release (23 Oct 2026)
 
 ## Before you run it
@@ -838,3 +877,18 @@ Page version 18 Nov 2026 · 3.
 - The Connect Zerodha button shows only when the server has both KITE_API_KEY and KITE_API_SECRET; the card only said "Not set up". Now it shows KITE_API_KEY ✓/✗, KITE_API_SECRET ✓/✗ and the names (never the values) of any variable with KITE / ZERODHA in it, so a typo in the name is visible. KITE_KEY / KITE_SECRET / ZERODHA_API_KEY / ZERODHA_API_SECRET are accepted too.
 - Checked against Zerodha's real instrument lists: all 27 indices (Fin Ex-Bank = NIFTY FINSEREXBNK) and the Nifty / Bank Nifty / FinNifty option expiries are found.
 - Page version 18 Nov 2026 · 4.
+
+## My trades: current price and profit / loss for manual trades (18 Nov 2026)
+
+- A manually added stock showed "price n/a" when Yahoo did not know the typed symbol (a typo, a company name, or a renamed stock such as TATAMOTORS -> TMPV / TMCV) - the form saved any text. The stock box now suggests stocks from the app's search as you type, checks the price before saving (and fills the entry price with it when empty), and a saved trade without a price gets a **Change stock** button.
+- Open trades can be edited (✎): stock, entry, stop, target and quantity (strikes, credit, lots and expiry for a spread) - e.g. after a demerger the entry price must change with the symbol.
+- The Open trades card shows the total profit / loss of the open trades now (green / red, % of capital, before charges); each row adds the % move since entry. Prices load 3 at a time instead of one after another.
+- Page version 18 Nov 2026 · 5.
+
+## Screener: Yahoo vs Kite comparison (19 Nov 2026)
+
+- New Screener view **Yahoo vs Kite**: the same swing screener rules run twice - on Yahoo data (normally the saved scan) and on Zerodha Kite data - and the page lists READY / Watchlist stocks found by both, only by Yahoo and only by Kite, plus each source's data quality (stocks with full data, failures, short history, scan time, how many charts really came from Kite). Tap a stock to open it on Overview.
+- Kite data for the test scan: live price / day OHLC / volume from Kite quotes (up to 250 stocks per request), daily candles from Kite's historical API up to yesterday (fetched once a day) plus today's bar from the quote; weekly / monthly bars built from the daily ones. Kite's history queue is limited to under 3 requests a second, so the Kite scan takes about 2 minutes (time limit 5 minutes instead of 85 s). A plan without historical data, or a stock not on Kite, falls back to Yahoo and the page says so.
+- Kept apart: the Kite scan's results (screener, Nifty trend, breadth, sector strength, response caches) live in their own store - the normal Swing list, Overview, Track record, alerts and saved files stay on Yahoo, unchanged.
+- Checked with a fake Kite that answers in Kite's format from real Yahoo data and Zerodha's real instrument list: 2 years of daily candles came through identical (dates, closes, volumes); differences in a live-market comparison come only from the minutes between the two scans.
+- Page version 19 Nov 2026 · 1.

@@ -58,7 +58,7 @@ function openTradeForm(p = {}){
        ${f('j-t1', 'Target 1', r2(p.t1), 'type="number" step="0.05"')}${f('j-qty', kind === 'mcx' ? `Lots (${p.lotQty || 1} per lot)` : 'Quantity (shares)', qty, 'type="number" min="1" step="1"')}`;
   jModal(`<div class="j-head"><b>📒 I took this trade</b><button class="alert-btn del" onclick="jCloseModal()" aria-label="Close">✕</button></div>
     <div class="j-sub">${p.sym ? escHtml(String(p.sym).replace(/^(NSE|MCX):/, '')) : ''}${p.setup ? ' · ' + escHtml(p.setup) : ''}</div>
-    ${p.sym ? '' : f('j-sym', 'Symbol (e.g. NSE:RELIANCE)', '', 'autocapitalize="characters"')}
+    ${p.sym ? '' : jSymField('')}
     <div class="j-grid">${body}${f('j-date', 'Date', jTodayKey(), 'type="date"')}</div>
     ${f('j-note', 'Note (optional)', '')}
     <div class="j-risk" id="j-risk"></div>
@@ -67,20 +67,116 @@ function openTradeForm(p = {}){
   const upd = () => { const t = jFromForm(p); const el = document.getElementById('j-risk'); if(!el || !t) return; const cap2 = readPosSetting(POS_CAPITAL_KEY, 10000), lim = jLimitPct(), cur = openRiskNow(), tot = cur + jRiskRs(t), pct = cap2 > 0 ? tot / cap2 * 100 : 0;
     el.innerHTML = `Risk on this trade <b>${jInr(jRiskRs(t))}</b> · all open trades with it <b>${jInr(tot)}</b> = <b style="color:${pct > lim ? 'var(--bear)' : 'var(--bull)'}">${pct.toFixed(1)}%</b> of ${jInr(cap2)} (limit ${lim}%)${pct > lim ? ' - over your limit' : ''}`; };
   document.querySelectorAll('#j-modal input').forEach(i => i.addEventListener('input', upd)); upd();
+  if(!p.sym) jSymWire(price => { const e = document.getElementById('j-entry'); if(e && !e.value && kind === 'stock'){ e.value = price; upd(); } });
+}
+/* ── Symbol box for manual trades: suggestions from the app's stock search, and a price check, so a typo,
+   a company name or a renamed stock (TATAMOTORS -> TMPV / TMCV) is caught before the trade is saved. ── */
+function jSymField(val){
+  return `<label class="j-field j-symf"><span>Stock (type the name or NSE symbol)</span><input id="j-sym" value="${escHtml(val)}" autocapitalize="characters" autocomplete="off" placeholder="e.g. Reliance or RELIANCE">
+    <div class="j-sugg" id="j-sugg"></div><small class="j-symchk" id="j-symchk"></small></label>`;
+}
+const jSymNorm = v => { const s = String(v || '').trim().toUpperCase().replace(/\s+/g, ''); return !s ? '' : /^(NSE|MCX):/.test(s) ? s : 'NSE:' + s; };
+let J_SYM_OK = {};   /* symbol -> last price, for symbols that returned a price */
+async function jSymCheck(onPrice){
+  const el = document.getElementById('j-symchk'), sym = jSymNorm(document.getElementById('j-sym')?.value);
+  if(!el) return false;
+  if(!sym){ el.textContent = ''; return false; }
+  if(J_SYM_OK[sym]){ el.innerHTML = `<span style="color:var(--bull)">✓ ${escHtml(sym.replace(/^(NSE|MCX):/, ''))} now ${fmt(J_SYM_OK[sym])}</span>`; return true; }
+  el.innerHTML = '<span style="color:var(--tx3)">checking the price…</span>';
+  try{
+    const q = await apiFetch(`/api/quickprice?sym=${encodeURIComponent(sym)}`, 20000);
+    if(!(+q.price > 0)) throw new Error('no price');
+    J_SYM_OK[sym] = +q.price;
+    if(jSymNorm(document.getElementById('j-sym')?.value) !== sym) return false;
+    el.innerHTML = `<span style="color:var(--bull)">✓ ${escHtml(sym.replace(/^(NSE|MCX):/, ''))} now ${fmt(+q.price)}</span>`;
+    if(onPrice) onPrice(+(+q.price).toFixed(2));
+    return true;
+  }catch{
+    if(jSymNorm(document.getElementById('j-sym')?.value) === sym) el.innerHTML = `<span style="color:var(--bear)">✗ No price for ${escHtml(sym.replace(/^(NSE|MCX):/, ''))} - pick the stock from the list (renamed stocks have a new symbol)</span>`;
+    return false;
+  }
+}
+function jSymWire(onPrice){
+  const inp = document.getElementById('j-sym'), box = document.getElementById('j-sugg'); if(!inp || !box) return;
+  let timer = null, seq = 0;
+  const pick = s => { inp.value = s; box.innerHTML = ''; box.style.display = 'none'; inp.dispatchEvent(new Event('input')); jSymCheck(onPrice); };
+  inp.addEventListener('input', e => {
+    if(!e.isTrusted) return;
+    const chk = document.getElementById('j-symchk'); if(chk) chk.textContent = '';
+    clearTimeout(timer);
+    const q = inp.value.trim().replace(/^(NSE|MCX):/i, '');
+    if(q.length < 2){ box.style.display = 'none'; return; }
+    timer = setTimeout(async () => {
+      const my = ++seq;
+      try{
+        const d = await apiFetch(`/api/search?q=${encodeURIComponent(q)}`, 15000);
+        if(my !== seq) return;
+        const rs = (d.results || []).filter(r => r.type !== 'INDEX').slice(0, 6);
+        box.innerHTML = rs.length ? rs.map(r => { const s = String(r.symbol || '').replace(/[^A-Z0-9._&-]/gi, ''); return `<button type="button" class="j-sugg-i" data-s="${escHtml(s)}"><b>${escHtml(s)}</b> <span>${escHtml(r.name || '')}</span></button>`; }).join('')
+          : '<div class="j-sugg-none">No stock found - check the spelling</div>';
+        box.style.display = 'block';
+        box.querySelectorAll('[data-s]').forEach(b => b.addEventListener('click', () => pick(b.dataset.s)));
+      }catch{ box.style.display = 'none'; }
+    }, 300);
+  });
+  inp.addEventListener('blur', () => setTimeout(() => { box.style.display = 'none'; jSymCheck(onPrice); }, 200));
+}
+/* Edit a saved open trade: the stock (e.g. one saved before the price check, or renamed after a demerger), and
+   entry / stop / target / quantity (or strikes / credit / lots / expiry for a spread). */
+function jEditTrade(id, noPrice){
+  const t = jLoad().find(x => x.id === id); if(!t) return;
+  const opt = t.kind === 'option';
+  const f = (fid, label, val, attrs = '') => `<label class="j-field"><span>${label}</span><input id="${fid}" value="${val == null || !Number.isFinite(+val) && fid !== 'j-exp' ? '' : escHtml(String(val))}" ${attrs}></label>`;
+  const body = opt
+    ? `${f('j-short', 'Sell strike', t.shortStrike, 'type="number" step="50"')}${f('j-long', 'Buy strike', t.longStrike, 'type="number" step="50"')}
+       ${f('j-credit', 'Credit received (points)', t.credit, 'type="number" step="0.05"')}${f('j-qty', 'Lots', t.qty, 'type="number" min="1" step="1"')}${f('j-exp', 'Expiry', t.expiry || '', 'type="date"')}`
+    : `${f('j-entry', 'Entry price', t.entry, 'type="number" step="0.05"')}${f('j-stop', 'Stop-loss', t.stop, 'type="number" step="0.05"')}
+       ${f('j-t1', 'Target 1', t.t1, 'type="number" step="0.05"')}${f('j-qty', t.kind === 'mcx' ? 'Lots' : 'Quantity (shares)', t.qty, 'type="number" min="1" step="1"')}`;
+  jModal(`<div class="j-head"><b>Edit ${escHtml(t.sym.replace(/^(NSE|MCX):/, ''))}${opt ? ' ' + escHtml(t.label || '') : ''}</b><button class="alert-btn del" onclick="jCloseModal()" aria-label="Close">✕</button></div>
+    ${noPrice ? `<div class="j-sub" style="color:var(--bear)">No price was found for ${escHtml(t.sym.replace(/^(NSE|MCX):/, ''))} - pick the stock from the list. After a demerger or split, correct the entry, stop and quantity too.</div>` : ''}
+    ${t.kind === 'stock' ? jSymField(t.sym.replace(/^NSE:/, '')) : ''}
+    <div class="j-grid">${body}</div>
+    <div class="j-risk" id="j-risk"></div>
+    <div class="j-actions"><button class="idea-btn" onclick="jSaveEdit('${escHtml(id)}')">Save</button><button class="idea-btn ghost" onclick="jCloseModal()">Cancel</button></div>`);
+  if(t.kind === 'stock'){ jSymWire(); jSymCheck(); }
+}
+async function jSaveEdit(id){
+  const a = jLoad(), t = a.find(x => x.id === id); if(!t) return jCloseModal();
+  const msg = m => { const el = document.getElementById('j-risk'); if(el) el.innerHTML = `<b style="color:var(--bear)">${escHtml(m)}</b>`; };
+  const n = { ...t, qty: jNum('j-qty') };
+  if(t.kind === 'option'){
+    Object.assign(n, { shortStrike: jNum('j-short'), longStrike: jNum('j-long'), credit: jNum('j-credit'), expiry: document.getElementById('j-exp')?.value || t.expiry });
+    n.wing = Math.abs(n.shortStrike - n.longStrike); n.label = `${t.setup || 'Credit spread'} ${n.shortStrike}/${n.longStrike}`;
+    if(!(n.credit > 0) || !(n.wing > 0)) return msg('Strikes and credit are needed');
+  } else {
+    Object.assign(n, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1') });
+    if(!Number.isFinite(n.t1) || n.t1 <= 0) n.t1 = null;
+    if(!(n.entry > 0) || !(n.stop > 0)) return msg('Entry and stop-loss are needed');
+    if(n.side !== 'SELL' && n.stop >= n.entry) return msg('For a buy, the stop must be below the entry');
+  }
+  if(!(n.qty > 0)) return msg('Quantity / lots must be above 0');
+  if(t.kind === 'stock'){
+    const sym = jSymNorm(document.getElementById('j-sym')?.value);
+    if(sym !== t.sym && !(await jSymCheck())) return msg('No price for this stock - pick it from the list');
+    n.sym = sym || t.sym;
+  }
+  n.riskRs = +jRiskRs(n).toFixed(2);
+  Object.assign(t, n); jSave(a); jCloseModal(); tabJournal();
 }
 function jFromForm(p){
   const kind = p.kind || 'stock';
-  const t = { id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), kind, sym: String(p.sym || document.getElementById('j-sym')?.value || '').trim().toUpperCase(),
+  const t = { id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), kind, sym: p.sym ? String(p.sym).trim().toUpperCase() : jSymNorm(document.getElementById('j-sym')?.value),
     name: p.name || '', setup: p.setup || (kind === 'stock' ? 'Manual' : ''), side: p.side || 'BUY', qty: jNum('j-qty'), lotQty: +p.lotQty || (kind === 'stock' ? 1 : 1),
     openedAt: document.getElementById('j-date')?.value || jTodayKey(), status: 'open', note: document.getElementById('j-note')?.value || '' };
   if(t.sym && !/^(NSE|MCX):/.test(t.sym)) t.sym = 'NSE:' + t.sym;
   if(kind === 'option') Object.assign(t, { optType: p.optType || 'P', shortStrike: jNum('j-short'), longStrike: jNum('j-long'), credit: jNum('j-credit'), expiry: document.getElementById('j-exp')?.value || p.expiry || '',
     wing: Math.abs(jNum('j-short') - jNum('j-long')), label: `${p.setup || 'Credit spread'} ${jNum('j-short')}/${jNum('j-long')}` });
-  else Object.assign(t, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1'), t2: +p.t2 || null, calK: +p.calK || 1 });
+  else Object.assign(t, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1'), t2: +p.t2 || null, calK: +p.calK || 1, exitDays: +p.exitDays || null });
   return t;
 }
-function jSaveTrade(){
+async function jSaveTrade(){
   const p = J_PENDING || {}, t = jFromForm(p);
+  if(!p.sym && t.sym && !(await jSymCheck())){ const el = document.getElementById('j-risk'); if(el) el.innerHTML = `<b style="color:var(--bear)">No price for this stock - pick it from the list so the app can follow it</b>`; return; }
   const bad = !t.sym ? 'Symbol is missing' : !(t.qty > 0) ? 'Quantity / lots must be above 0'
     : t.kind === 'option' ? (!(t.credit > 0) || !(t.wing > 0) ? 'Strikes and credit are needed' : '')
     : !(t.entry > 0) || !(t.stop > 0) ? 'Entry and stop-loss are needed' : t.side !== 'SELL' && t.stop >= t.entry ? 'For a buy, the stop must be below the entry' : '';
@@ -136,8 +232,10 @@ function jTelegramHtml(st){
   const steps = `<ol class="j-steps"><li>In Telegram, open <b>@BotFather</b> → send <code>/newbot</code> → pick a name → copy the token it gives you.</li><li>Render → your service → <b>Environment</b> → add <code>TELEGRAM_BOT_TOKEN</code> = that token → save (it redeploys).</li><li>Open your new bot in Telegram, send <code>/start</code>, then press <b>Link</b> here.</li></ol>`;
   return `<div class="idea-card j-tg">
     <div class="idea-head"><div><div class="idea-kicker">Telegram alerts</div><div class="idea-title">${st.linked ? `Linked to ${escHtml(st.name || 'your chat')}` : st.configured ? 'Bot ready - link your chat' : 'Not set up'}</div></div><div class="idea-view ${st.linked ? 'bull' : 'neutral'}">${st.linked ? 'ON' : 'OFF'}</div></div>
-    <div class="idea-foot">Every alert also goes to Telegram: stop / target on your trades, new READY stocks, the 09:30 brief, Gold Petal 09:45 / 17:00 and Nifty options 10:00 when there is a trade, stock scans 11:00 / 15:00. Free.</div>
+    <div class="idea-foot">Every alert also goes to Telegram: stop / target on your trades, new READY stocks, the 09:30 brief, MCX (Gold Petal, Crude Oil, Natural Gas) 09:45 / 17:00 and Nifty options 10:00 when there is a trade, stock scans 11:00 / 15:00. Free.</div>
     ${st.configured ? '' : steps}
+    ${st.linked && !st.envSet && st.chatId ? `<div class="idea-hedge" style="margin-top:6px"><b>Keep Telegram working after every deploy:</b> Render wipes the server's disk on each deploy, and this link lives there. Add <code>TELEGRAM_CHAT_ID</code> = <code>${escHtml(String(st.chatId))}</code> in Render → Environment once; then alerts keep coming after a deploy without linking again.</div>` : st.fromEnv ? '<div class="idea-foot">Linked through TELEGRAM_CHAT_ID - survives deploys ✓</div>' : ''}
+    ${Number.isFinite(+st.devices) ? `<div class="idea-foot">Phone / browser alerts: the server has ${+st.devices} device${+st.devices === 1 ? '' : 's'}. After a deploy this is 0 until you open TradeDesk once on each device.</div>` : ''}
     <div class="j-actions">${st.configured && !st.linked ? `<button class="idea-btn" onclick="jTelegram('link')">Link</button>` : ''}${st.linked ? `<button class="idea-btn" onclick="jTelegram('test')">Send test</button><button class="idea-btn ghost" onclick="jTelegram('unlink')">Unlink</button>` : ''}${st.configured && !st.linked ? '<span class="idea-foot">Send /start to your bot first.</span>' : ''}</div>
     <div id="j-tg-msg" class="idea-foot"></div>
   </div>`;
@@ -172,6 +270,19 @@ function jKiteHtml(st){
   </div>`;
 }
 
+/* Portfolio limits (backtest: at most 5 open positions changed results more than most entry filters; at most 2 per
+   sector cut the worst drop). Sector names come from the stock list (one /api/universe call, kept for the session). */
+let J_SECTORS = null;
+function jPortfolioWarn(open, sectors, pct, lim){
+  const w = [], stocks = open.filter(t => t.kind === 'stock');
+  if (open.length > 5) w.push(`${open.length} open trades - the backtest used at most 5 at a time; skip new ones until some close`);
+  if (pct > lim) w.push(`open risk ${pct.toFixed(1)}% is above your ${lim}% limit`);
+  if (sectors) { const by = {}; stocks.forEach(t => { const s = sectors[t.sym.replace(/^NSE:/, '')]; if (s) (by[s] = by[s] || []).push(t.sym.replace(/^NSE:/, '')); });
+    for (const [s, list] of Object.entries(by)) if (list.length > 2) w.push(`${list.length} trades in ${s} (${list.join(', ')}) - keep at most 2 per sector`); }
+  return w.length ? `<div class="idea-hedge" style="border-color:var(--bear);margin-top:8px"><b>⚠ Portfolio check:</b> ${w.map(escHtml).join(' · ')}</div>`
+    : open.length ? `<div class="idea-foot" style="margin-top:6px">✓ Portfolio check: ${open.length} of 5 open trades${sectors ? ', no more than 2 per sector' : ''}.</div>` : '';
+}
+
 /* ── The page (Screener → My trades) ── */
 async function tabJournal(){
   const tc = document.getElementById('tc'); if(!tc) return;
@@ -181,14 +292,15 @@ async function tabJournal(){
   const bar = `<div class="idea-card j-risk-card">
     <div class="idea-head"><div><div class="idea-kicker">Total open risk</div><div class="idea-title">${jInr(risk)} = ${pct.toFixed(1)}% of ${jInr(cap)}</div></div><div class="idea-view ${pct > lim ? 'bear' : 'bull'}">${pct > lim ? 'OVER LIMIT' : 'OK'}</div></div>
     <div class="j-meter"><i style="width:${Math.min(100, lim > 0 ? pct / lim * 100 : 0)}%;background:${pct > lim ? 'var(--bear)' : pct > lim * 0.8 ? 'var(--neu)' : 'var(--bull)'}"></i></div>
-    <div class="idea-foot">What you lose if every open trade hits its stop. Limit <input type="number" min="1" max="100" step="0.5" value="${lim}" style="width:60px" onchange="jSetLimit(this.value)">% of capital (capital and risk % come from the position calculator).</div></div>`;
+    <div class="idea-foot">What you lose if every open trade hits its stop. Limit <input type="number" min="1" max="100" step="0.5" value="${lim}" style="width:60px" onchange="jSetLimit(this.value)">% of capital (capital and risk % come from the position calculator).</div>
+    <div data-j-port>${jPortfolioWarn(open, null, pct, lim)}</div></div>`;
   const row = t => {
     const opt = t.kind === 'option';
     return `<div class="j-row" data-jid="${escHtml(t.id)}">
       <div class="j-row-main"><b>${escHtml(t.sym.replace(/^(NSE|MCX):/, ''))}</b> <span class="pl-tag ${opt ? 'watch' : 'ready'}">${escHtml(opt ? (t.label || 'Credit spread') : (t.setup || t.kind))}</span>
         <div class="j-row-sub">${opt ? `Credit ${fmt(t.credit)} pts · ${t.qty} lot${t.qty > 1 ? 's' : ''} · expiry ${escHtml(t.expiry || '—')}` : `Entry ${fmt(t.entry)} · SL ${fmt(t.stop)} · T1 ${t.t1 ? fmt(t.t1) : '—'} · ${t.qty} ${t.kind === 'mcx' ? 'lot' + (t.qty > 1 ? 's' : '') : 'sh'}`} · since ${escHtml(t.openedAt || '')} · risk ${jInr(t.riskRs ?? jRiskRs(t))}</div></div>
       <div class="j-row-live" data-jlive>…</div>
-      <div class="j-row-act"><button class="idea-btn" onclick="closeTradeForm('${escHtml(t.id)}')">Close</button><button class="idea-btn ghost" onclick="jDelete('${escHtml(t.id)}')" aria-label="Delete">✕</button></div>
+      <div class="j-row-act"><button class="idea-btn" onclick="closeTradeForm('${escHtml(t.id)}')">Close</button><button class="idea-btn ghost" onclick="jEditTrade('${escHtml(t.id)}')" aria-label="Edit" title="Edit">✎</button><button class="idea-btn ghost" onclick="jDelete('${escHtml(t.id)}')" aria-label="Delete">✕</button></div>
     </div>`;
   };
   /* Results by setup: count, wins, average R, total rupees (before charges). */
@@ -202,28 +314,43 @@ async function tabJournal(){
     <div class="idea-foot">After 20-30 trades per setup this shows which of your trade types really make money - compare with the app's backtest.</div></div>` : '';
   const closedHtml = closed.length ? `<div class="idea-card"><div class="idea-kicker">Closed (latest 30)</div>${closed.slice(0, 30).map(t => `<div class="j-row closed"><div class="j-row-main"><b>${escHtml(t.sym.replace(/^(NSE|MCX):/, ''))}</b> <span class="j-row-sub">${escHtml(t.setup || t.label || '')} · ${escHtml(t.openedAt || '')} → ${escHtml(t.closedAt || '')} · ${escHtml(t.exitReason || '')}</span></div><div class="j-row-live" style="color:${t.pnlRs >= 0 ? 'var(--bull)' : 'var(--bear)'}">${jInr(t.pnlRs)}${t.r != null ? ` · ${t.r >= 0 ? '+' : ''}${t.r}R` : ''}</div><div class="j-row-act"><button class="idea-btn ghost" onclick="jDelete('${escHtml(t.id)}')" aria-label="Delete">✕</button></div></div>`).join('')}</div>` : '';
   tc.innerHTML = `${screenerModeSwitch('trades')}${bar}
-    <div class="idea-card"><div class="idea-head"><div><div class="idea-kicker">Open trades</div><div class="idea-title">${open.length ? `${open.length} open` : 'No open trade'}</div></div><button class="idea-btn" onclick="openTradeForm({})">+ Add manually</button></div>
+    <div class="idea-card"><div class="idea-head"><div><div class="idea-kicker">Open trades</div><div class="idea-title">${open.length ? `${open.length} open` : 'No open trade'}</div>${open.length ? '<div class="j-total" data-jtotal>Profit / loss now: loading…</div>' : ''}</div><button class="idea-btn" onclick="openTradeForm({})">+ Add manually</button></div>
       ${open.length ? open.map(row).join('') : '<div class="idea-foot">Tap 📒 on a stock\'s trade plan, the Gold Petal idea or the Nifty rule card when you take a trade - or add one here.</div>'}</div>
     ${statsHtml}${closedHtml}<div data-j-kite></div><div data-j-tg><div class="idea-card"><div class="idea-kicker">Telegram alerts</div><div class="idea-foot">Loading…</div></div></div>`;
   apiFetch('/api/kite/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-kite]'); if(el) el.innerHTML = jKiteHtml(st); } }).catch(() => {});
+  if (open.some(t => t.kind === 'stock')) (J_SECTORS ? Promise.resolve(J_SECTORS) : apiFetch('/api/universe', 20000).then(u => (J_SECTORS = Object.fromEntries((u.rows || []).filter(r => r.sym && r.sector).map(r => [r.sym, r.sector])))))
+    .then(sec => { if (!live()) return; const el = tc.querySelector('[data-j-port]'); if (el) el.innerHTML = jPortfolioWarn(open, sec, pct, lim); }).catch(() => {});
   apiFetch('/api/telegram/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-tg]'); if(el) el.innerHTML = jTelegramHtml(st); } }).catch(() => { const el = tc.querySelector('[data-j-tg]'); if(el && live()) el.innerHTML = ''; });
-  /* Live P&L, one quote at a time (same cached quick price as the sidebar). */
-  for(const t of open){
+  /* Live P&L (same cached quick price as the sidebar), 3 at a time, then the total of the open trades. */
+  let pnlSum = 0, priced = 0, missing = 0;
+  const one = async t => {
     if(!live()) return;
-    const el = tc.querySelector(`[data-jid="${CSS.escape(t.id)}"] [data-jlive]`); if(!el) continue;
+    const el = tc.querySelector(`[data-jid="${CSS.escape(t.id)}"] [data-jlive]`); if(!el) return;
     try{
       const q = await apiFetch(`/api/quickprice?sym=${encodeURIComponent(t.kind === 'option' ? 'NSE:NIFTY' : t.sym)}`, 20000);
       if(!live()) return;
+      if(!(+q.price > 0)) throw new Error('no price');
       if(t.kind === 'option'){
         const p = +q.price, k = +t.shortStrike, tested = t.optType === 'P' ? p < k : p > k, dist = Math.abs(p - k) / p * 100;
         el.innerHTML = `<span style="color:${tested ? 'var(--bear)' : 'var(--bull)'}">Nifty ${fmt(p, 0)} · ${tested ? 'through' : `${dist.toFixed(1)}% from`} the short ${k}</span>`;
+        missing++;   /* a spread's P&L needs its option prices, not Nifty - not in the total */
       } else {
         const p = +q.price * (t.kind === 'mcx' ? (+t.calK || 1) : 1), pnl = jPnl(t, p), r = t.riskRs > 0 ? pnl / t.riskRs : null;
+        const mv = t.entry > 0 ? (p - t.entry) / t.entry * 100 * (t.side === 'SELL' ? -1 : 1) : null;
+        pnlSum += pnl; priced++;
         const flag = (t.side !== 'SELL' ? p <= t.stop : p >= t.stop) ? ' · <b style="color:var(--bear)">at / below stop</b>' : t.t1 && (t.side !== 'SELL' ? p >= t.t1 : p <= t.t1) ? ' · <b style="color:var(--bull)">T1 reached - book half</b>' : '';
-        el.innerHTML = `<span style="color:${pnl >= 0 ? 'var(--bull)' : 'var(--bear)'}">Now ${fmt(p)} · ${jInr(pnl)}${r != null ? ` · ${r >= 0 ? '+' : ''}${r.toFixed(2)}R` : ''}</span>${flag}`;
+        el.innerHTML = `<span style="color:${pnl >= 0 ? 'var(--bull)' : 'var(--bear)'}">Now ${fmt(p)} · ${pnl >= 0 ? '+' : '-'}${jInr(Math.abs(pnl))}${mv != null ? ` (${mv >= 0 ? '+' : ''}${mv.toFixed(1)}%)` : ''}${r != null ? ` · ${r >= 0 ? '+' : ''}${r.toFixed(2)}R` : ''}</span>${flag}`;
       }
-    }catch{ el.textContent = 'price n/a'; }
-  }
+    }catch{
+      missing++;
+      el.innerHTML = t.kind === 'option' ? 'Nifty price n/a' : `<span style="color:var(--bear)">No price for ${escHtml(t.sym.replace(/^(NSE|MCX):/, ''))}</span> <button class="idea-btn ghost j-fix" onclick="jEditTrade('${escHtml(t.id)}', 1)">Change stock</button>`;
+    }
+  };
+  const queue = open.slice();
+  await Promise.all([0, 1, 2].map(async () => { while(queue.length && live()) await one(queue.shift()); }));
+  const tot = tc.querySelector('[data-jtotal]'); if(!tot || !live()) return;
+  if(!priced){ tot.textContent = missing ? 'Profit / loss now: no stock price available' : ''; return; }
+  tot.innerHTML = `Profit / loss now: <b style="color:${pnlSum >= 0 ? 'var(--bull)' : 'var(--bear)'}">${pnlSum >= 0 ? '+' : '-'}${jInr(Math.abs(pnlSum))}</b>${cap > 0 ? ` (${pnlSum >= 0 ? '+' : ''}${(pnlSum / cap * 100).toFixed(2)}% of capital)` : ''} · ${pnlSum >= 0 ? 'in profit' : 'in loss'}${missing ? ` · ${missing} trade${missing > 1 ? 's' : ''} not counted` : ''} <span style="color:var(--tx3);font-weight:400">· before charges</span>`;
 }
 
 /* Notification links: /?sym=NSE:GAIL opens that instrument, /?view=trades or /?view=screener opens those pages. */

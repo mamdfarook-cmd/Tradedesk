@@ -323,7 +323,13 @@
   /* Gold is traded BUY-ONLY: over 10 years the app's gold sells made about 0R a trade and its buys +0.35R
      (+0.43R when 2 of the 3 drivers below agreed), in a market where gold rose 362%. A downtrend is therefore
      "no new buys / exit a long", never a short. */
-  const BUY_ONLY_MCX = new Set(['MCX:GOLDPETAL', 'MCX:GOLD']);
+  /* Crude oil and natural gas are BUY-ONLY too (19 Nov 2026, 10-year backtest of these rules on COMEX/NYMEX x USD/INR):
+     crude buys 59% wins +0.23R, sells 43% / -0.02R; natural gas buys 57% / +0.28R, sells 44% / +0.04R. */
+  const BUY_ONLY_MCX = new Set(['MCX:GOLDPETAL', 'MCX:GOLD', 'MCX:CRUDEOIL', 'MCX:NATURALGAS']);
+  const GOLD_MCX = new Set(['MCX:GOLDPETAL', 'MCX:GOLD']);
+  /* Exit tested for each: gold - full exit at 3R or after 20 trading days (+0.88R a trade vs +0.43R at T1 in 10
+     days); crude / natural gas - full exit at T1 or after 10 days (the version that was tested). */
+  const MCX_EXIT = { 'MCX:GOLDPETAL': { r: 3, days: 20 }, 'MCX:GOLD': { r: 3, days: 20 }, 'MCX:CRUDEOIL': { r: null, days: 10 }, 'MCX:NATURALGAS': { r: null, days: 10 } };
   function commodityPlan(sym, { C, H, L, price, sr }, opts = {}) {
     const minRR = opts.minRR || 1.25, fmt = v => Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 });
     const e20 = emaLast(C, 20), e50 = emaLast(C, 50), rsi = rsi14(C);
@@ -334,7 +340,8 @@
     const buyOnly = BUY_ONLY_MCX.has(sym);
     /* Gold sells only when all 3 drivers point down (dollar up, US yield up, rupee stronger) - the one sell case the
        backtest did not lose on: 12 trades in 10 years, 58% wins, +0.04R. Shown as small size (user's choice). */
-    const goldSellOk = buyOnly && !!opts.drivers && opts.drivers.known === 3 && opts.drivers.count === 0;
+    const isGold = GOLD_MCX.has(sym);
+    const goldSellOk = isGold && !!opts.drivers && opts.drivers.known === 3 && opts.drivers.count === 0;
     let smallSize = false;
     let side = 'WAIT', entry = null, sl = null, t1 = null, t2 = null, action = '', why = '';
     if (up) {
@@ -349,7 +356,9 @@
     } else if (down && buyOnly && !goldSellOk) {
       side = 'AVOID';
       action = `No new buys. If you hold a long, exit it - or at the latest on a daily close below your stop`;
-      why = `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold sells only when all 3 drivers point down (the backtest found no edge in selling otherwise), so stay out until price is back above EMA50 with EMA20 above it.`;
+      why = isGold
+        ? `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold sells only when all 3 drivers point down (the backtest found no edge in selling otherwise), so stay out until price is back above EMA50 with EMA20 above it.`
+        : `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. This is buy-only: selling it lost money in the 10-year backtest (43-44% wins), so stay out until price is back above EMA50 with EMA20 above it.`;
     } else if (down) {
       side = 'SELL';
       const extended = e20 - price > 1.5 * atr;
@@ -374,10 +383,17 @@
     }
     /* Gold buys also need 2 of the 3 drivers (dollar index, US 10-year yield, rupee) - the tested filter. */
     let driverBlock = false;
-    if (side === 'BUY' && buyOnly && opts.drivers && opts.drivers.known >= 2) {
+    if (side === 'BUY' && isGold && opts.drivers && opts.drivers.known >= 2) {
       if (opts.drivers.count < 2) { driverBlock = true; action = `Wait: only ${opts.drivers.count} of 3 drivers support gold (${opts.drivers.text}) - buy when 2 of 3 agree`; }
     }
-    return { sym, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, buyOnly, driverBlock, smallSize };
+    /* The tested exit: the target the whole position is sold at, and the time stop. Gold buys: 3R / 20 days; the gold
+       small-size sell and other commodities: T1 / 10 days. */
+    const ex = MCX_EXIT[sym] || { r: null, days: 10 };
+    let exitTarget = t1 != null ? R2(t1) : null, exitDays = 10, exitRule = 'Sell all at T1, or at the close of day 10';
+    if (side === 'BUY' && ex.r && risk > 0) { exitTarget = R2(entry + ex.r * risk); exitDays = ex.days; exitRule = `Sell all at ${ex.r}R, or at the close of day ${ex.days}`; }
+    else if (side === 'BUY' || side === 'SELL') { exitDays = side === 'SELL' ? 10 : ex.days; exitRule = `${side === 'SELL' ? 'Buy back' : 'Sell'} all at T1, or at the close of day ${exitDays}`; }   /* the gold sell was tested with T1 / 10 days */
+    if (side !== 'BUY' && side !== 'SELL') { exitTarget = null; exitDays = null; exitRule = null; }
+    return { sym, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, buyOnly, isGold, driverBlock, smallSize, exitTarget, exitDays, exitRule };
   }
   /* Gold drivers as tested: dollar index below its 50-day EMA, US 10-year yield below its 50-day EMA, USD/INR
      above its 50-day EMA - each supports a rise in INR gold. count = how many of the 3 agree. */
@@ -423,7 +439,10 @@
   function isMonthlyExpiry(exp, list) { return !!exp && Array.isArray(list) && list.length > 1 && !list.some(e => e > exp && String(e).slice(0, 7) === String(exp).slice(0, 7)); }
   function creditSpreadRule(chain, { spot, trendUp, trendDown, daysToExpiry, step = 50, wing = 200, minAway = 0.02, maxDelta = 0.20, monthly: monthlyIn }) {
     const S = +spot || +chain?.spot, T = Math.max(0.5, +daysToExpiry || 1) / 365, monthly = typeof monthlyIn === 'boolean' ? monthlyIn : (+daysToExpiry || 0) > 10;
-    const minCredit = monthly ? 20 : 6;
+    /* Minimum credit by the time left, not by the contract's name: the last weekly expiry of a month is "monthly" but
+       with 4 days left it is a weekly-length trade (19 Nov 2026: 23 Nov expiry, 7.8 pts asked for 20+). The 20-point
+       floor was for month-long trades. */
+    const longTrade = (+daysToExpiry || 0) > 10, minCredit = longTrade ? 20 : 6;
     const px = (k, t) => { const v = ocPremium(chain, k, t); if (v > 0) return v; const row = (chain?.strikes || []).find(r => +r.k === +k), o = row ? (t === 'C' ? row.ce : row.pe) : null; return o && o.ltp > 0 ? +o.ltp : null; };
     const side = ty => {
       const rows = (chain?.strikes || []).filter(r => (ty === 'P' ? r.pe : r.ce));
@@ -445,7 +464,7 @@
           { name: ty === 'P' ? 'Nifty uptrend' : 'Nifty downtrend', pass: trendOk, need: true },
           { name: `Sell strike ${away.toFixed(1)}% from spot (2%+)`, pass: away >= minAway * 100, need: true },
           { name: `Delta ${Math.abs(delta).toFixed(2)} (under ${maxDelta})`, pass: Math.abs(delta) < maxDelta, need: true },
-          { name: `Credit ${credit} pts (${minCredit}+ ${monthly ? 'monthly' : 'weekly'})`, pass: credit >= minCredit, need: true },
+          { name: `Credit ${credit} pts (${minCredit}+ with ${+daysToExpiry || 0} days to expiry)`, pass: credit >= minCredit, need: true },
           { name: `Highest OI ${wall != null ? wall : '--'} ${wallOk ? 'in front of' : 'behind'} the strike`, pass: wallOk, need: false },
         ];
         return { type: ty === 'P' ? 'Bull put spread' : 'Bear call spread', ty, sell: k, buy: w, sellPx: R2(p), buyPx: R2(pw), credit, delta: R2(delta), away: R2(away), wall, wallOk,
@@ -454,14 +473,78 @@
       return { type: ty === 'P' ? 'Bull put spread' : 'Bear call spread', ty, none: true, checks: [], ok: false };
     };
     const put = side('P'), call = side('C');
-    const pick = trendUp ? put : trendDown ? call : null;
-    const verdict = !pick ? 'No trade: Nifty has no clear trend - iron condors and range trades lost money in the backtest'
+    /* Bull puts only (19 Nov 2026 backtest, NSE prices 2019-2026): bull puts in an uptrend 93% wins, +Rs 145 a lot a
+       week; bear calls in a downtrend won 87% but lost Rs 345 a lot on average. The call side is shown for
+       information only. */
+    if (!call.none) { call.checks.unshift({ name: 'Bear calls are not traded (they lost money in the backtest)', pass: false, need: true }); call.ok = false; }
+    const pick = trendUp ? put : null;
+    const verdict = !pick ? (trendDown ? 'No trade: Nifty is in a downtrend - bear-call spreads lost money in the backtest (87% wins, but -Rs 345 a lot on average), so only bull puts are traded'
+      : 'No trade: Nifty has no clear uptrend - iron condors and range trades lost money in the backtest')
       : pick.none ? `No ${pick.type.toLowerCase()} strike meets 2% away and delta under ${maxDelta}`
       : pick.ok ? `${pick.type}: sell ${pick.sell} / buy ${pick.buy} for ${pick.credit} pts`
       : `No trade: ${pick.checks.filter(c => c.need && !c.pass).map(c => c.name).join(', ')}`;
-    return { spot: S, daysToExpiry: +daysToExpiry, monthly, minCredit, put, call, pick, ok: !!(pick && pick.ok), verdict };
+    return { spot: S, daysToExpiry: +daysToExpiry, monthly, longTrade, minCredit, put, call, pick, ok: !!(pick && pick.ok), verdict };
+  }
+
+  /* ── Price structure and chart patterns (19 Nov 2026 10-year backtest on the screener's signals) ──
+     Swing points: the high / low of the 7 bars centred on a bar, known 3 bars later. */
+  function swingPoints(H, L, end) {
+    const sh = [], sl = [];
+    for (let k = 3; k + 3 <= end; k++) {
+      let hi = true, lo = true;
+      for (let j = k - 3; j <= k + 3; j++) { if (j === k) continue; if (H[j] >= H[k]) hi = false; if (L[j] <= L[k]) lo = false; }
+      if (hi) sh.push(k); if (lo) sl.push(k);
+    }
+    return { sh, sl };
+  }
+  /* Tags on a stock's daily bars (last bar = today): higher highs + higher lows intact, distance from the 52-week
+     high, and a double bottom (two swing lows 10-60 bars apart within 3%, the second in the last 20 bars) with the
+     price above its neckline. Backtest (net R a trade): HH/HL +0.055 vs -0.015 broken; within 5% of the 52-week high
+     +0.057; double bottom above neckline +0.099 (7 of 10 years); the app's average +0.011. */
+  function stockTags({ H, L, C }) {
+    const n = (C || []).length, i = n - 1; if (n < 60) return null;
+    const { sh, sl } = swingPoints(H, L, i);
+    const lastH = sh.slice(-2), lastL = sl.slice(-2);
+    const hhhl = lastH.length === 2 && lastL.length === 2 && H[lastH[1]] > H[lastH[0]] && L[lastL[1]] > L[lastL[0]] && C[i] > L[lastL[1]];
+    let hi = 0; for (let j = Math.max(0, i - 251); j <= i; j++) hi = Math.max(hi, +H[j] || 0);
+    const off52 = hi > 0 ? (hi - C[i]) / hi * 100 : null;
+    let db = null; const lows = sl.slice(-6);
+    for (let a = lows.length - 2; a >= 0 && !db; a--) {
+      const p = lows[a], q = lows[lows.length - 1];
+      if (q - p >= 10 && q - p <= 60 && i - q <= 20 && Math.abs(L[p] - L[q]) / L[p] <= 0.03) {
+        let m = 0; for (let j = p; j <= q; j++) m = Math.max(m, H[j]);
+        if (m > L[p] * 1.05) db = { neck: R2(m), low: R2(Math.min(L[p], L[q])), above: C[i] > m };
+      }
+    }
+    return { hhhl, off52: off52 == null ? null : R2(off52), near52: off52 != null && off52 <= 5, doubleBottom: db, dbAbove: !!(db && db.above) };
+  }
+  /* Pattern breakouts for the "Pattern breakouts" list (stock in an uptrend, Nifty in an uptrend - the caller checks):
+     - double bottom: today's close crosses above the neckline (yesterday's close was not above it);
+     - flat base: the 25 bars before today stayed within 12%, today closes above their high on 1.3x+ average volume.
+     Stop under the pattern (minus 0.25 ATR, kept 0.75-3 ATR from the price), target 2R, up to 15 days.
+     Backtest: double bottom 2,912 trades +0.065R; flat base 1,670 trades +0.056R (+0.134R with at most 5 open). */
+  function patternBreakout({ H, L, C, V, atr, vToday }) {
+    const n = (C || []).length, i = n - 1; if (n < 80 || !(atr > 0)) return null;
+    const price = C[i];
+    const plan = (name, low, note) => {
+      let stop = low - 0.25 * atr;
+      if (price - stop > 3 * atr) stop = price - 3 * atr;
+      if (price - stop < 0.75 * atr) stop = price - 0.75 * atr;
+      const risk = price - stop;
+      return { name, price: R2(price), stop: R2(stop), target: R2(price + 2 * risk), riskPct: R2(risk / price * 100), note };
+    };
+    const now = stockTags({ H, L, C }), prev = stockTags({ H: H.slice(0, i), L: L.slice(0, i), C: C.slice(0, i) });
+    if (now?.doubleBottom?.above && !(prev?.doubleBottom?.above) && C[i - 1] <= now.doubleBottom.neck) return plan('Double bottom breakout', now.doubleBottom.low, `Close above the neckline ${now.doubleBottom.neck}`);
+    if (i >= 26) {
+      const bh = Math.max(...H.slice(i - 25, i)), bl = Math.min(...L.slice(i - 25, i));
+      let v20 = 0; for (let j = i - 20; j < i; j++) v20 += +V[j] || 0; v20 /= 20;
+      const vt = Number.isFinite(+vToday) && +vToday > 0 ? +vToday : (+V[i] || 0);   /* today's volume projected to a full day during market hours */
+      if (bh / bl - 1 <= 0.12 && price > bh && C[i - 1] <= bh && v20 > 0 && vt >= 1.3 * v20)
+        return plan('Flat base breakout', bl, `25-day base ${R2(bl)}-${R2(bh)} (${((bh / bl - 1) * 100).toFixed(1)}%), volume ${(vt / v20).toFixed(1)}x`);
+    }
+    return null;
   }
 
   return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
-    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX };
+    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta };
 });
