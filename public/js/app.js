@@ -3461,8 +3461,11 @@ async function buildUnifiedSwingDecisionSnapshot(sym){
   const r1Ok = r1 != null && Number.isFinite(+r1) && +r1 > 0, s1Ok = s1 != null && Number.isFinite(+s1) && +s1 > 0; /* +null is 0, which is finite */
   const choppyBias = SwingPlan.isChoppy({price, r1, s1, rsi:rsiV, adx:adxValForBias});   /* shared with the screener */
   let bias = 'Sideways';
-  if(!choppyBias && rawBiasScore >= 3 && priceOk && e50Ok && price > e50 && (adxValForBias >= 16 || (r1Ok && price > r1*1.002) || (e20Ok && e20 > e50))) bias='Bullish';
-  else if(!choppyBias && rawBiasScore <= -3 && priceOk && e50Ok && price < e50 && (adxValForBias >= 16 || (s1Ok && price < s1*0.998) || (e20Ok && e20 < e50))) bias='Bearish';
+  /* Bias = the screener's (backtested) structure rule: not choppy, price above EMA50 and EMA50 above EMA200 (mirror
+     for Bearish). The old indicator-vote total (3+ needed) disagreed with the screener on pullbacks - TITAN, an EMA50
+     pullback, was READY in the screener but "Sideways" here (19 Nov 2026). The votes still feed the confidence score. */
+  if(!choppyBias && priceOk && e50Ok && e200Ok && price > e50 && e50 > e200) bias='Bullish';
+  else if(!choppyBias && priceOk && e50Ok && e200Ok && price < e50 && e50 < e200) bias='Bearish';
 
   let strategyPlan=null;
   try {
@@ -4255,7 +4258,7 @@ function updateForwardTestsFromPicks(picks=[], source='qualified') {
         final:p.finalQualification||p.decisionScore||null, setup:p.pickedSetup||p.setup||null,
         status:'Open', phase:'entry', resultR:null, retNow:0, d5:null, d10:null, d20:null, closed:false,
         exitMode:'2R', t2r: ftValid(p.plan?.stop) && entry > +p.plan.stop ? ftR(entry + 2 * (entry - +p.plan.stop)) : null, sector: p.sector || null,
-        tags: p.tags ? { hhhl: p.tags.hhhl ?? null, near52: p.tags.near52 ?? null, dbAbove: p.tags.dbAbove ?? null, dpOk: p.tags.dpOk ?? null, pcrOk: p.tags.pcrOk ?? null } : null,
+        tags: p.tags ? { hhhl: p.tags.hhhl ?? null, near52: p.tags.near52 ?? null, dbAbove: p.tags.dbAbove ?? null, pcrOk: p.tags.pcrOk ?? null } : null,
         createdAt:new Date().toISOString()
       };
       rows.push(rec); byKey.set(key, rec);
@@ -4312,10 +4315,10 @@ async function tabForwardTest() {
   const winRate = finished.length ? Math.round(wins/finished.length*100) : '--';
   const openCount = rows.filter(r=>!r.closed).length;
   /* Results by tag: do the backtested tags hold up on real picks? */
-  const tagDefs = [['hhhl','Higher highs & lows'],['near52','Near 52-week high'],['dbAbove','Double bottom'],['dpOk','Delivery 50%+'],['pcrOk','Option PCR 0.5+']];
+  const tagDefs = [['hhhl','Higher highs & lows'],['near52','Near 52-week high'],['dbAbove','Double bottom'],['pcrOk','Option PCR 0.5+'],['dpOk','Delivery 50%+ (older records)']];
   const tagStat = arr => { const n = arr.length, w = arr.filter(r=>+r.resultR>0).length; return n ? `${n} · ${Math.round(w/n*100)}% · ${(arr.reduce((a,r)=>a+(+r.resultR||0),0)/n).toFixed(2)}R` : '—'; };
   const tagged = finished.filter(r=>r.tags);
-  const tagTable = tagged.length ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by tag (closed picks recorded with tags)</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Tag</th><th>With: trades · win · avg</th><th>Without</th></tr></thead><tbody>${tagDefs.map(([k,l]) => `<tr><td>${l}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===true))}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===false))}</td></tr>`).join('')}</tbody></table></div><div class="idea-foot">After 30+ trades per side this shows whether each tag really helps your picks - the backtest said yes for all five.</div></div>` : '';
+  const tagTable = tagged.length ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by tag (closed picks recorded with tags)</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Tag</th><th>With: trades · win · avg</th><th>Without</th></tr></thead><tbody>${tagDefs.map(([k,l]) => `<tr><td>${l}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===true))}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===false))}</td></tr>`).join('')}</tbody></table></div><div class="idea-foot">After 30+ trades per side this shows whether each tag really helps your picks - the backtest said yes for each tag.</div></div>` : '';
   const body = rows.length ? rows.slice(0,120).map(r=>{
     const retCol = (+r.retNow||0)>=0?'var(--bull)':'var(--bear)';
     const resCol = (+r.resultR||0)>0?'var(--bull)':(+r.resultR||0)<0?'var(--bear)':'var(--tx2)';
@@ -4523,8 +4526,7 @@ function screenerTagsHtml(t){
     chip(t.hhhl, 'Higher highs & lows', 'Swing structure intact. 10-year test: +0.055R a trade vs -0.015R when broken.'),
     t.near52 ? chip(true, '52-week high', 'Within 5% of the 52-week high: +0.057R a trade (weak effect).') : '',
     t.dbAbove ? chip(true, 'Double bottom', `Above the double-bottom neckline${t.dbNeck ? ' ' + fmt(t.dbNeck) : ''}: +0.099R a trade, 7 of 10 good years.`) : '',
-    t.dp != null ? chip(t.dpOk, `Delivery ${Math.round(t.dp)}%`, `NSE delivery % on ${t.nseDate || 'the last session'}. 50%+: +0.094R a trade vs -0.026R under 50%.`) : '',
-    t.pcr != null ? chip(t.pcrOk, `Option PCR ${(+t.pcr).toFixed(2)}`, `Put / call open interest of the stock's options on ${t.nseDate || 'the last session'}. Under 0.5 (heavy call writing) lost money; skipping them lifted results.`) : '',
+    t.pcr != null ? chip(t.pcrOk, `Option PCR ${(+t.pcr).toFixed(2)}`, `Put / call open interest of the stock's options (Zerodha, ${t.pcrDate || 'last update'}). Under 0.5 = heavy call writing above the price: skipping those lifted the swing backtest from +0.030R to +0.083R a trade.`) : '',
   ].join('');
   return out ? `<div class="sc-tags">${out}</div>` : '';
 }
@@ -4613,9 +4615,8 @@ function renderMyTradeScreener(data, source='server') {
   }).join('');
   const ts = data.generatedAt ? new Date(data.generatedAt) : null;
   const when = ts ? ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : '--';
-  const ndI = data.nseDaily, ndLine = ndI ? (ndI.date ? ` · Delivery / option PCR tags from NSE's ${escHtml(ndI.date)} session${ndI.pcrStocks ? '' : ' (PCR not loaded)'}` : ` · Delivery / PCR tags: n/a (${escHtml(ndI.error || 'NSE file not loaded')})`) : '';
   tc.innerHTML = `${screenerModeSwitch('mytrade')}${screenerContextHtml(data)}
-    <div class="aib" style="font-size:.72rem;margin-bottom:10px">Scan of ${when}${source === 'server' ? '' : ' (saved - Refresh before trading)'} · ${all.length} stocks${ndLine}. Exit = sell all at 2R or day 15 (the tested exit). Tap a stock for its full Overview.
+    <div class="aib" style="font-size:.72rem;margin-bottom:10px">Scan of ${when}${source === 'server' ? '' : ' (saved - Refresh before trading)'} · ${all.length} stocks${data.pcrInfo ? (data.pcrInfo.date ? ` · Option PCR from Zerodha, ${escHtml(data.pcrInfo.date)}${data.pcrInfo.final ? ' close' : ' (intraday)'}` : ' · Option PCR: connect Zerodha (loads once a day)') : ''}. Exit = sell all at 2R or day 15 (the tested exit). Tap a stock for its full Overview.
       <div id="scrConsistency" style="margin-top:6px"><button class="alert-chip" onclick="checkAllVsOverview()" title="Opens every listed stock's Overview in the background and compares bias, setup, R:R and action (about 4 data calls per stock)">Check all vs Overview</button></div></div>
     ${html}`;
   tc.querySelectorAll('.pl-row[data-sym]').forEach(el => el.addEventListener('click', () => {
@@ -6347,8 +6348,10 @@ async function tabOverview(sym) {
   /* Guard null levels: null*1.002 is 0, so "price > r1*1.002" used to pass whenever R1 was missing. */
   const biasE50Ok = Number.isFinite(e50) && e50 > 0;
   const biasR1Ok = r1 != null && Number.isFinite(+r1) && +r1 > 0, biasS1Ok = s1 != null && Number.isFinite(+s1) && +s1 > 0;
-  if(!choppyBias && rawBiasScore >= 3 && biasE50Ok && price > e50 && (adxValForBias >= 16 || (biasR1Ok && price > r1*1.002) || (Number.isFinite(e20) && e20 > e50))) { bias='Bullish'; biasClass='bull'; biasIcon='▲'; }
-  else if(!choppyBias && rawBiasScore <= -3 && biasE50Ok && price < e50 && (adxValForBias >= 16 || (biasS1Ok && price < s1*0.998) || (Number.isFinite(e20) && e20 < e50))) { bias='Bearish'; biasClass='bear'; biasIcon='▼'; }
+  /* Same structure rule as the screener (see the Analysis copy above): the vote total no longer decides the bias. */
+  const biasE200Ok = Number.isFinite(e200) && e200 > 0;
+  if(!choppyBias && biasE50Ok && biasE200Ok && price > e50 && e50 > e200) { bias='Bullish'; biasClass='bull'; biasIcon='▲'; }
+  else if(!choppyBias && biasE50Ok && biasE200Ok && price < e50 && e50 < e200) { bias='Bearish'; biasClass='bear'; biasIcon='▼'; }
 
   /* Trade plan values — exact match with Strategy tab > Trade Setups This Week */
   const strategyPlan = await getStrategyTradePlan(sym, name, bias);
@@ -6521,6 +6524,18 @@ async function tabOverview(sym) {
     return { ...q, niftyOk, active: niftyOk && !resultsSoon && !swingCtx?.events?.block };
   })();
   if(OVERVIEW_VERDICT[sym]) OVERVIEW_VERDICT[sym].quick = !!qbPlan?.active;
+  /* Pattern breakout: the screener's separate list (double bottom / flat base), its own tested entry, stop and exit.
+     It does not need the swing READY gate, so "WAIT" above and a breakout here can both be right. */
+  const pbPlan = (() => {
+    if(isMCXSymbol(sym) || isIndexSymbol(sym)) return null;
+    const d = CUR_DATA.daily, n = d.C?.length || 0; if(n < 80) return null;
+    const pe50 = emaLast(d.C, 50), pe200 = emaLast(d.C, 200), last = d.C[n-1];
+    if(!(last > pe50 && pe50 > pe200)) return null;
+    const pb = SwingPlan.patternBreakout({ H: d.H, L: d.L, C: d.C, V: d.V, atr: calcATRFromBars(d.C, d.H, d.L, last, d.C[n-2], 14) });
+    if(!pb) return null;
+    const niftyOk = marketRegime?.trendUp !== false;
+    return { ...pb, niftyOk, active: niftyOk && !resultsSoon && !swingCtx?.events?.block };
+  })();
   const noActiveTradeText = bias === 'Sideways'
     ? 'No active trade — sideways/choppy'
     : actionBadge === 'CONFIRM'
@@ -6617,8 +6632,15 @@ async function tabOverview(sym) {
     </div>`;
 
   return `
+    ${pbPlan ? `<div class="tp-limit-card${pbPlan.active ? '' : ' paused'}">
+      <div class="tp-limit-head"><span class="pl-tag ${pbPlan.active ? 'ready' : 'low'}">PATTERN BREAKOUT</span> ${escHtml(pbPlan.name)}${pbPlan.active ? ` · buy near <b>₹${fmt(pbPlan.price)}</b>` : ' · paused'}</div>
+      <div class="tp-limit-sub">${pbPlan.active
+        ? `A separate tested strategy (Screener → Pattern breakouts), not the swing READY gate - so a WAIT in the swing decision and a breakout here can both be right; follow this card's own levels. ${escHtml(pbPlan.note || '')}. Confirm on the day's close: buy near the close or the next open if it holds. Stop ₹${fmt(pbPlan.stop)} (${pbPlan.riskPct}% risk - size from it), sell all at 2R ₹${fmt(pbPlan.target)} or at the close of day 15.`
+        : `The pattern broke out, but it is paused: ${!pbPlan.niftyOk ? 'Nifty is not in its uptrend' : 'results or a corporate event are close'}.`}</div>
+      ${pbPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup: pbPlan.name, entry: pbPlan.price, stop: pbPlan.stop, t1: pbPlan.target, exitDays: 15})})">📒 I took this trade</button>` : ''}
+    </div>` : ''}
     ${qbPlan ? `<div class="tp-limit-card tp-qb-card${qbPlan.active ? '' : ' paused'}">
-      <div class="tp-limit-head"><span class="pl-tag ${qbPlan.active ? 'ready' : 'low'}">QUICK BOUNCE · RSI-2 ${qbPlan.rsi2}</span> ${qbPlan.active ? `Buy near <b>₹${fmt(qbPlan.close)}</b>` : 'Paused'}</div>
+      <div class="tp-limit-head"><span class="pl-tag ${qbPlan.active ? 'watch' : 'low'}">QUICK BOUNCE · WATCH ONLY · RSI-2 ${qbPlan.rsi2}</span> ${qbPlan.active ? `Buy near <b>₹${fmt(qbPlan.close)}</b>` : 'Paused'}</div>
       <div class="tp-limit-sub">${qbPlan.active
         ? `Short dip in an uptrend: close above its 50-day (${fmt(qbPlan.sma50)}) and 200-day (${fmt(qbPlan.sma200)}) averages, 2-day RSI ${qbPlan.rsi2} (under 10). Buy at the next open, stop ₹${fmt(qbPlan.stop)} (2.5 × ATR), sell at the first close above the 5-day average (₹${fmt(qbPlan.sma5)} today - it moves every day) or after 10 trading days. Separate from the swing plan below. Backtest: about 2 in 3 trades win, +0.3% a trade after costs, 3-4 days - but over 10 years with at most 5 positions at a time it lost money overall, so small size only.`
         : `RSI-2 is ${qbPlan.rsi2}, but the setup is paused: ${!qbPlan.niftyOk ? 'Nifty is below its 200-day average' : 'results are due within 5 trading days'}.`}</div>

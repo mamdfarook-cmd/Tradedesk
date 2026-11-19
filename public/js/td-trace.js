@@ -117,7 +117,16 @@ async function tabTrace(kind){
   const how = gold
     ? '<b>How it is followed:</b> records from 19 Nov 2026 use the tested exit - the whole position at the target (Gold Petal 3R, Crude Oil / Natural Gas T1) or at the stop, else the close of day 20 (gold) / day 10 (others). Older Gold Petal rows: half at T1, the rest at T2 / entry / a close through the EMA. Entry is the plan\'s price - at once when price is already there, else when price reaches it that day ("Not filled" otherwise, left out of the win rate). Then checked once a day, each morning, on the completed daily candles at your MCX calibration: stop-loss = -1R; at T1 half is booked and the stop moves to entry; the rest exits at T2, at entry, or on a daily close through the plan\'s EMA. Still open after 10 trading days: closed at the close of day 10. Result = half T1 + half the rest. The alert day\'s candle is not judged (its high / low may have come before the alert); a day that touched both the stop and a target is marked Ambiguous.'
     : '<b>How it is followed:</b> entry at the 10:00 NSE premiums. Checked each morning at 10:00: closed once 80% of the premium is earned (spread value 20% of the credit or less), or at the stop (loss 2× the credit). Otherwise closed at 15:05 on the last trading day of the week (Friday), or settled at expiry from Nifty\'s close if that comes first. Spread value = short leg minus long leg (NSE bid/ask middle or last trade). 1R = 2× the credit. Brokerage and taxes are not included.';
+  let today = '';
+  try {
+    const st = await apiFetch('/api/assistant-status', 10000);
+    const lines = gold ? Object.entries(st.mcxNames || {}).map(([s, n]) => `${n}: ${st.mcx?.[s]?.day === st.day ? st.mcx[s].text : 'not checked yet today (09:45 and 17:00; a missed check runs at the next minute between 10:05 and 23:00)'}`)
+      : [`Nifty: ${st.nifty?.day === st.day ? st.nifty.text : st.kite ? 'not checked yet today (10:00)' : 'not checked - connect Zerodha (checked within a minute after you connect, until 15:00)'}`];
+    today = `<div class="aib" style="font-size:.72rem;margin:8px 0"><b>Today's server check</b> (a trade is recorded only when this says ready / passed):<br>${lines.map(escHtml).join('<br>')}</div>`;
+  } catch {}
+  if (!live()) return;
   tc.innerHTML = `${traceSubTabs(kind)}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">${gold ? 'MCX - every alerted Gold Petal, Crude Oil and Natural Gas trade, followed to its exit' : 'Nifty options - every passed rule, followed to its exit'}</div><button onclick="traceClear('${kind}')" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Recorded and checked by the server, also when the app is closed. <span data-sync-status>${typeof syncStatusText === 'function' ? syncStatusText() : ''}</span></div></div>
+  ${today}
   ${traceSummaryHtml(rows)}
   ${perSymHtml}
   <div class="j-table-wrap"><table class="ft-table"><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>

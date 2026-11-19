@@ -786,16 +786,19 @@ let KITE_INSTR = null, KITE_INSTR_INFLIGHT = null, KITE_INSTR_TRIED = 0;
 try { KITE_INSTR = JSON.parse(require('fs').readFileSync(KITE_INSTR_FILE, 'utf8')); } catch {}
 async function kiteInstruments() {
   const today = istDateKey();
-  if (KITE_INSTR?.day === today && KITE_INSTR.v === 2) return KITE_INSTR;
+  if (KITE_INSTR?.day === today && KITE_INSTR.v === 3) return KITE_INSTR;
   const old = KITE_INSTR && Date.now() - (KITE_INSTR.ts || 0) < 4 * 86400e3 ? KITE_INSTR : null;
   if (old && Date.now() - KITE_INSTR_TRIED < 10 * 60e3) return old;   /* failed recently: keep the last list */
   if (KITE_INSTR_INFLIGHT) return KITE_INSTR_INFLIGHT;
   KITE_INSTR_TRIED = Date.now();
   KITE_INSTR_INFLIGHT = (async () => {
     const [nfo, nse] = await Promise.all([kiteCall('/instruments/NFO', { csv: true }), kiteCall('/instruments/NSE', { csv: true })]);
-    const opt = {}, lot = {};
+    const opt = {}, lot = {}, sopt = {};
     for (const r of kiteCsv(nfo)) {
       const name = String(r.name || '').toUpperCase();
+      /* Stock options (for the option put/call ratio tag): name -> ['NFO:<tradingsymbol>', 'CE'|'PE'] */
+      if (!KITE_OC_NAMES.has(name) && r.segment === 'NFO-OPT' && (r.instrument_type === 'CE' || r.instrument_type === 'PE') && r.tradingsymbol)
+        (sopt[name] = sopt[name] || []).push(['NFO:' + r.tradingsymbol, r.instrument_type]);
       if (!KITE_OC_NAMES.has(name) || (r.instrument_type !== 'CE' && r.instrument_type !== 'PE') || !/^\d{4}-\d{2}-\d{2}$/.test(r.expiry || '')) continue;
       (opt[name] = opt[name] || []).push([r.expiry, +r.strike, r.instrument_type, r.tradingsymbol]);
       if (+r.lot_size > 0 && (!lot[name] || r.expiry < lot[name].exp)) lot[name] = { exp: r.expiry, n: +r.lot_size };
@@ -809,7 +812,7 @@ async function kiteInstruments() {
     }
     /* NSE stocks / ETFs: symbol -> instrument token (historical candles need the token) */
     for (const r of kiteCsv(nse)) if (r.segment === 'NSE' && r.instrument_type === 'EQ' && r.tradingsymbol && +r.instrument_token > 0) { eq[r.tradingsymbol] = +r.instrument_token; if (r.name) eqName[r.tradingsymbol] = r.name; }
-    KITE_INSTR = { v: 2, day: today, ts: Date.now(), opt, lot: Object.fromEntries(Object.entries(lot).map(([k, v]) => [k, v.n])), idx, idxTok, eq, eqName, indexNames: idxRows.length };
+    KITE_INSTR = { v: 3, day: today, ts: Date.now(), opt, sopt, lot: Object.fromEntries(Object.entries(lot).map(([k, v]) => [k, v.n])), idx, idxTok, eq, eqName, indexNames: idxRows.length };
     try { require('fs').mkdirSync(require('path').dirname(KITE_INSTR_FILE), { recursive: true }); require('fs').writeFileSync(KITE_INSTR_FILE, JSON.stringify(KITE_INSTR)); } catch {}
     return KITE_INSTR;
   })().catch(e => { if (old) { console.warn('Kite instruments (keeping the last list):', e.message); return old; } throw e; })
@@ -817,14 +820,58 @@ async function kiteInstruments() {
   return KITE_INSTR_INFLIGHT;
 }
 /* Quotes for many instruments ('NSE:NIFTY 50', 'NFO:NIFTY26N2424000CE'...), 250 per request. */
-async function kiteQuote(list, mode = '') {
+async function kiteQuote(list, mode = '', per = 250) {
   const out = {};
-  for (let i = 0; i < list.length; i += 250) {
-    const part = list.slice(i, i + 250);
+  for (let i = 0; i < list.length; i += per) {
+    const part = list.slice(i, i + per);
     Object.assign(out, await kiteCall(`/quote${mode}?` + part.map(x => 'i=' + encodeURIComponent(x)).join('&')) || {});
   }
   return out;
 }
+/* ── Stock-option put / call ratio from Zerodha (20 Nov 2026; NSE's archive refuses Render) ──
+   Open interest of every option of every F&O stock (about 37,000 contracts, 500 per quote request at Kite's
+   1-a-second limit: ~80 s), once a day after 15:40 when the day's open interest is final - or as soon as Zerodha is
+   connected when nothing (or only an old list) is loaded. PCR = put OI / call OI, all strikes and expiries, the
+   same as the backtest (May 2021 - Nov 2026: skipping stocks under 0.5 lifted the swing average from +0.030R to
+   +0.083R). A tag only. Kept in data/kite-pcr.json. */
+const KITE_PCR_FILE = require('path').join(__dirname, 'data', 'kite-pcr.json');
+let KITE_PCR = { date: null, ts: 0, pcr: {}, final: false, tried: 0, error: null }, KITE_PCR_INFLIGHT = null;
+try { const j = JSON.parse(require('fs').readFileSync(KITE_PCR_FILE, 'utf8')); if (j && j.date) KITE_PCR = { ...KITE_PCR, ...j }; } catch {}
+function kitePcrDue() {
+  const now = new Date(Date.now() + 5.5 * 3600e3), m = now.getUTCHours() * 60 + now.getUTCMinutes(), today = istDateKey();
+  if (KITE_PCR.tried && Date.now() - KITE_PCR.tried < 3 * 3600e3) return false;
+  if (!KITE_PCR.date || Date.now() - KITE_PCR.ts > 4 * 86400e3) return true;            /* nothing / too old: take what is there now */
+  const dow = now.getUTCDay(), tradingDay = dow >= 1 && dow <= 5 && !isNseHoliday(today);
+  return tradingDay && m >= 15 * 60 + 40 && !(KITE_PCR.date === today && KITE_PCR.final);   /* the day's final open interest */
+}
+async function kitePcrRefresh() {
+  if (KITE_PCR_INFLIGHT) return KITE_PCR_INFLIGHT;
+  KITE_PCR_INFLIGHT = (async () => {
+    KITE_PCR.tried = Date.now();
+    try {
+      const ins = await kiteInstruments(), sopt = ins.sopt || {}, all = [];
+      for (const rows of Object.values(sopt)) for (const [id] of rows) all.push(id);
+      if (!all.length) throw new Error('no stock options in Kite\'s instrument list');
+      const q = await kiteQuote(all, '', 500), agg = {};
+      for (const [name, rows] of Object.entries(sopt)) for (const [id, ty] of rows) {
+        const oi = +q[id]?.oi || 0; if (!oi) continue;
+        const x = agg[name] || (agg[name] = { ce: 0, pe: 0 }); if (ty === 'CE') x.ce += oi; else x.pe += oi;
+      }
+      const pcr = {}; for (const [s, x] of Object.entries(agg)) if (x.ce > 0) pcr[s] = Math.round(x.pe / x.ce * 100) / 100;
+      if (Object.keys(pcr).length < 20) throw new Error(`open interest for only ${Object.keys(pcr).length} stocks`);
+      const now = new Date(Date.now() + 5.5 * 3600e3), m = now.getUTCHours() * 60 + now.getUTCMinutes();
+      KITE_PCR = { date: istDateKey(), ts: Date.now(), pcr, final: m >= 15 * 60 + 35 || m < 9 * 60, tried: KITE_PCR.tried, error: null, contracts: all.length };
+      try { require('fs').mkdirSync(require('path').dirname(KITE_PCR_FILE), { recursive: true }); require('fs').writeFileSync(KITE_PCR_FILE, JSON.stringify(KITE_PCR)); } catch {}
+    } catch (e) { KITE_PCR.error = e.message; console.warn('Kite PCR:', e.message); }
+    return KITE_PCR;
+  })().finally(() => { KITE_PCR_INFLIGHT = null; });
+  return KITE_PCR_INFLIGHT;
+}
+function kitePcrFor(sym) {
+  const v = KITE_PCR.pcr?.[String(sym || '').replace(/^NSE:/, '').replace(/\.(NS|BO)$/, '').toUpperCase()];
+  return Number.isFinite(v) ? v : null;
+}
+
 /* Every index (and India VIX) in one request, kept 30 s in market hours, 10 minutes outside. */
 async function kiteIndexQuotes() {
   return (await cacheWrap('kite:idx', istMarketHoursS() ? 30e3 : 10 * 60e3, async () => {
@@ -4731,85 +4778,8 @@ function triggerTextS({ m, rs, rsOk, volOk, weeklyOk, wk, readyCore, selected })
 }
 
 /* Per-stock outcome of the last scan (every eligible stock, not just the top 20) - for /api/screener-diag. */
-/* ── NSE daily delivery % and stock-option put / call open interest (19 Nov 2026 tags) ──
-   Two NSE archive files a day, after the evening update (about 18:30 IST): sec_bhavdata_full (delivery % per stock)
-   and the F&O bhavcopy (stock option open interest -> put/call ratio). Backtest May 2021 - Nov 2026 on the app's
-   swing signals: delivery 50%+ on the signal day +0.094R a trade vs -0.026R under 50%; skipping stocks whose option
-   PCR is under 0.5 lifted the average from +0.030R to +0.083R. They are TAGS (shown, recorded), not READY rules.
-   The data is the last completed session's; when NSE does not answer (it refuses some cloud addresses) the tags
-   show "n/a" and nothing else changes. Retried at most every 3 hours. */
-const NSE_DAILY_FILE = require('path').join(__dirname, 'data', 'nse-daily.json');
-let NSE_DAILY = { date: null, del: {}, pcr: {}, ts: 0, tried: 0, error: null };
-try { const j = JSON.parse(require('fs').readFileSync(NSE_DAILY_FILE, 'utf8')); if (j && j.date) NSE_DAILY = { ...NSE_DAILY, ...j }; } catch {}
-let NSE_DAILY_INFLIGHT = null;
-function unzipFirst(b) {
-  let e = b.length - 22; while (e >= 0 && b.readUInt32LE(e) !== 0x06054b50) e--;
-  if (e < 0) throw new Error('not a zip file');
-  const cd = b.readUInt32LE(e + 16), meth = b.readUInt16LE(cd + 10), csz = b.readUInt32LE(cd + 20), lo = b.readUInt32LE(cd + 42);
-  const n = b.readUInt16LE(lo + 26), x = b.readUInt16LE(lo + 28), data = b.subarray(lo + 30 + n + x, lo + 30 + n + x + csz);
-  return (meth === 8 ? zlib.inflateRawSync(data) : data).toString('utf8');
-}
-function nseCsvRows(t) {
-  const L = String(t || '').split(/\r?\n/).filter(Boolean); if (!L.length) return { h: [], rows: [] };
-  return { h: L[0].split(',').map(s => s.trim()), rows: L.slice(1).map(l => l.split(',').map(s => s.trim())) };
-}
-/* The latest NSE session whose evening files should exist: today after 18:45 IST, else the session before. */
-function nseDailyCandidates() {
-  const now = Date.now(), ist = new Date(now + 5.5 * 3600e3), m = ist.getUTCHours() * 60 + ist.getUTCMinutes(), out = [];
-  let t = m >= 18 * 60 + 45 ? now : now - 86400e3;
-  for (let k = 0; out.length < 4 && k < 12; k++, t -= 86400e3) {
-    const key = istDateKey(t), dow = new Date(key + 'T00:00:00Z').getUTCDay();
-    if (dow >= 1 && dow <= 5 && !isNseHoliday(key)) out.push(key);
-  }
-  return out;
-}
-async function nseDailyRefresh() {
-  const want = nseDailyCandidates();
-  if (NSE_DAILY.date && NSE_DAILY.date >= want[0] && Object.keys(NSE_DAILY.pcr || {}).length) return NSE_DAILY;   /* PCR missing: try again (every 3 h) */
-  if (NSE_DAILY.tried && Date.now() - NSE_DAILY.tried < 3 * 3600e3) return NSE_DAILY;
-  if (NSE_DAILY_INFLIGHT) return NSE_DAILY_INFLIGHT;
-  NSE_DAILY_INFLIGHT = (async () => {
-    NSE_DAILY.tried = Date.now();
-    const H = { Accept: '*/*', Referer: 'https://www.nseindia.com/' };
-    let lastErr = 'no file';
-    for (const key of want) {
-      if (NSE_DAILY.date && (key < NSE_DAILY.date || (key === NSE_DAILY.date && Object.keys(NSE_DAILY.pcr || {}).length))) break;
-      const dd = key.slice(8, 10) + key.slice(5, 7) + key.slice(0, 4);
-      try {
-        const a = await withTimeout(get(`https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_${dd}.csv`, H), 30000, 'NSE delivery file');
-        if (a.status !== 200 || !/DELIV_PER/.test(a.body.slice(0, 400))) { lastErr = `delivery file HTTP ${a.status}`; continue; }
-        const del = {}, d = nseCsvRows(a.body), iS = d.h.indexOf('SYMBOL'), iSe = d.h.indexOf('SERIES'), iP = d.h.indexOf('DELIV_PER');
-        for (const r of d.rows) if (r[iSe] === 'EQ' || r[iSe] === 'BE') { const p = parseFloat(r[iP]); if (Number.isFinite(p)) del[r[iS]] = p; }
-        const pcr = {};
-        try {
-          const f = await withTimeout(get(`https://nsearchives.nseindia.com/content/fo/BhavCopy_NSE_FO_0_0_0_${key.replace(/-/g, '')}_F_0000.csv.zip`, H), 45000, 'NSE F&O file');
-          if (f.status === 200 && f.buf && f.buf.length > 1000) {
-            const o = nseCsvRows(unzipFirst(f.buf)), I = k => o.h.indexOf(k), ty = I('FinInstrmTp'), sy = I('TckrSymb'), op = I('OptnTp'), oi = I('OpnIntrst'), agg = {};
-            for (const r of o.rows) if (r[ty] === 'STO') { const x = agg[r[sy]] || (agg[r[sy]] = { ce: 0, pe: 0 }); if (r[op] === 'CE') x.ce += +r[oi] || 0; else if (r[op] === 'PE') x.pe += +r[oi] || 0; }
-            for (const [s, x] of Object.entries(agg)) if (x.ce > 0) pcr[s] = Math.round(x.pe / x.ce * 100) / 100;
-          }
-        } catch (e) { console.warn('NSE F&O file:', e.message); }
-        NSE_DAILY = { date: key, del, pcr, ts: Date.now(), tried: NSE_DAILY.tried, error: Object.keys(pcr).length ? null : 'option PCR file not loaded' };
-        try { require('fs').mkdirSync(require('path').dirname(NSE_DAILY_FILE), { recursive: true }); require('fs').writeFileSync(NSE_DAILY_FILE, JSON.stringify(NSE_DAILY)); } catch {}
-        return NSE_DAILY;
-      } catch (e) { lastErr = e.message; break; }   /* refused / timed out: try again in 3 hours */
-    }
-    NSE_DAILY.error = lastErr;
-    return NSE_DAILY;
-  })().finally(() => { NSE_DAILY_INFLIGHT = null; });
-  return NSE_DAILY_INFLIGHT;
-}
-function nseDailyFor(sym) {
-  const s = String(sym || '').replace(/^NSE:/, '').replace(/\.(NS|BO)$/, '').toUpperCase();
-  if (!NSE_DAILY.date) return { date: null, dp: null, pcr: null };
-  const dp = NSE_DAILY.del[s], pcr = NSE_DAILY.pcr[s];
-  return { date: NSE_DAILY.date, dp: Number.isFinite(dp) ? dp : null, pcr: Number.isFinite(pcr) ? pcr : null };
-}
-
 async function runMyTradeScreenerScan() {
   const scanDiag = [], sectorRet = [];
-  /* Delivery % / option PCR tags: the last session's NSE files (at most a few seconds when they are due). */
-  try { await withTimeout(nseDailyRefresh(), 25000, 'NSE daily files'); } catch {}
 
   /* Market regime (Nifty vs EMA20/50/200) and the results calendar are loaded once per scan. */
   const [niftyTrend, resultsCal] = await Promise.all([getNiftyRegime(), getResultsCalendar()]);
@@ -4875,9 +4845,11 @@ async function runMyTradeScreenerScan() {
         if (m.bias !== 'Bullish') { dg.out = 'not bullish structure'; return null; }
         biasEligibleCount++;
         /* Tags (backtested, shown and recorded - they do not change READY) and the Pattern breakouts list. */
-        const sym0 = ticker.replace(/\.(NS|BO)$/, ''), stTags = SwingPlan.stockTags({ H, L, C }) || {}, nd = nseDailyFor(sym0);
+        /* Delivery % / option PCR tags were removed (19 Nov 2026): NSE's archive answers Render with 403. */
+        const sym0 = ticker.replace(/\.(NS|BO)$/, ''), stTags = SwingPlan.stockTags({ H, L, C }) || {};
+        const pcrV = kitePcrFor(sym0);   /* option put/call ratio from Zerodha (once a day) - null for non-F&O stocks / not loaded */
         const tags = { hhhl: !!stTags.hhhl, off52: stTags.off52 ?? null, near52: !!stTags.near52, dbAbove: !!stTags.dbAbove, dbNeck: stTags.doubleBottom?.neck ?? null,
-          dp: nd.dp, dpOk: nd.dp == null ? null : nd.dp >= 50, pcr: nd.pcr, pcrOk: nd.pcr == null ? null : nd.pcr >= 0.5, nseDate: nd.date };
+          pcr: pcrV, pcrOk: pcrV == null ? null : pcrV >= 0.5, pcrDate: KITE_PCR.date };
         { const pb = SwingPlan.patternBreakout({ H, L, C, V, atr: m.atr }); if (pb) patternCands.push({ sym: sym0, ticker, ...pb, tags }); }
 
         /* The setup the price is actually in (shared engine, same as the Overview); fall back to the
@@ -5097,7 +5069,7 @@ async function runMyTradeScreenerScan() {
     quickBounceNote,
     patternBreakouts,
     patternNote,
-    nseDaily: { date: NSE_DAILY.date, stocks: Object.keys(NSE_DAILY.del || {}).length, pcrStocks: Object.keys(NSE_DAILY.pcr || {}).length, error: NSE_DAILY.date ? NSE_DAILY.error : (NSE_DAILY.error || 'not loaded yet') },
+    pcrInfo: { date: KITE_PCR.date, final: !!KITE_PCR.final, stocks: Object.keys(KITE_PCR.pcr || {}).length, error: KITE_PCR.error },
     screen1: picks,
     screen2: watchlist,
     duplicateCheck: {readySymbols: readySymsAll.size, watchlistExcludesAllReady: true},
@@ -6971,12 +6943,16 @@ async function assistantTick() {
     else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; an MCX alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });
     /* Gold Petal: an alert only when the plan is a trade (BUY with the drivers, or SELL); otherwise the status is
        kept for the 15:00 "nothing ready" line. The 17:00 check catches the US-data evening. */
-    /* NSE's evening files (delivery %, option PCR) for tomorrow's tags. */
-    if (nseDay && at(19 * 60, 'nse-daily')) nseDailyRefresh().catch(() => {});
-    for (const [min, id] of [[9 * 60 + 45, 'gold-am'], [17 * 60, 'gold-pm']]) {
-      if (at(min, id)) {
+    if (kiteReady() && kitePcrDue()) kitePcrRefresh().catch(() => {});
+    /* A check missed today (the server was deployed / restarted after 09:45 or 17:00) runs once at the next minute,
+       so a new deploy does not mean a silent day. */
+    const mcxMissed = MCX_ALERT_SYMS.some(s => MCX_STATUS[s]?.day !== key);
+    const mcxCatch = mcxMissed && ((m >= 10 * 60 + 5 && m < 17 * 60) || (m >= 17 * 60 + 20 && m < 23 * 60)) && flagOnce(`job|mcx-catchup|${key}|${m < 17 * 60 ? 'am' : 'pm'}`);
+    for (const [min, id] of [[9 * 60 + 45, 'gold-am'], [17 * 60, 'gold-pm'], [-1, 'catch-up']]) {
+      if (min < 0 ? mcxCatch : at(min, id)) {
         if (min < 12 * 60) await traceGoldDaily(key).catch(e => console.warn('MCX trace:', e.message));   /* yesterday's candle first */
         for (const sym of MCX_ALERT_SYMS) {
+          if (min < 0 && MCX_STATUS[sym]?.day === key) continue;
           try {
             /* Ready = a trade plan whose entry is within one day's range (1 ATR) of the price. A plan that waits for a
                bigger dip / rise is alerted later, when price reaches its level (below). */
@@ -6985,24 +6961,28 @@ async function assistantTick() {
             const waiting = !trade && g.entry > 0 && (g.side === 'SELL' || (g.side === 'BUY' && !g.driverBlock));
             MCX_STATUS[sym] = { day: key, text: waiting ? `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - alert when price reaches ${inr(g.entry)} (now ${inr(g.price)})` : goldPlanText(g).split('\n')[0] };
             if (trade) {
-              traceGoldRecord(g, `ready ${min < 12 * 60 ? '09:45' : '17:00'}`, key);
-              await pushAll({ title: `${MCX_EMOJI[sym]} ${MCX_NAME[sym]} · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: `td-mcx-${sym}`, url: `/?sym=${sym}` });
+              const when = min < 0 ? `check at ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : min < 12 * 60 ? '09:45' : '17:00';
+              traceGoldRecord(g, `ready ${when}`, key);
+              await pushAll({ title: `${MCX_EMOJI[sym]} ${MCX_NAME[sym]} · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 0 ? when : min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: `td-mcx-${sym}`, url: `/?sym=${sym}` });
             }
           } catch (e) { MCX_STATUS[sym] = { day: key, text: `plan not available (${e.message})` }; console.warn(`${sym} plan:`, e.message); }
         }
       }
     }
     /* Nifty options at 10:00 (opening premiums settle in the first 30 min): an alert only when your rule passes. */
-    if (nseDay && at(10 * 60, 'nifty-opt')) {
+    /* Missed at 10:00 (deploy after 10:00, or Zerodha connected later): checked once as soon as Zerodha is connected,
+       until 15:00. */
+    const niftyCatch = nseDay && m >= 10 * 60 + 20 && m < 15 * 60 && (NIFTY_STATUS?.day !== key || NIFTY_STATUS.failed) && kiteReady() && flagOnce(`job|nifty-catchup|${key}`);
+    if (nseDay && (at(10 * 60, 'nifty-opt') || niftyCatch)) {
       try {
         const r = await niftyRuleS();
-        NIFTY_STATUS = { day: key, text: String(r.rule.verdict || (r.rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) };
+        NIFTY_STATUS = { day: key, text: String(r.rule.verdict || (r.rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) + (niftyCatch ? ` (checked at ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')})` : '') };
         if (r.rule.ok) { traceNiftyRecord(r, key); await pushAll({ title: `📊 Nifty options · your rule passed`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
       } catch (e) {
-        NIFTY_STATUS = { day: key, text: `option premiums not available at 10:00 (${e.message})` };
+        NIFTY_STATUS = { day: key, failed: true, text: `option premiums not available (${e.message})` };
         /* Silent before: since 18 Nov 2026 premiums come only from Zerodha Kite, whose login ends at 06:00 every day -
            a day without "Connect Zerodha" sent nothing at all, which looked like a broken app. */
-        await pushAll({ title: 'Nifty options: not checked at 10:00', body: `${/Zerodha/i.test(e.message) ? 'Zerodha is not connected today (its login ends at 06:00 daily).' : 'Option premiums were not available.'} Connect Zerodha (My trades -> Connect Zerodha), then open Markets -> Nifty to see your credit-spread rule.`, tag: 'td-nifty-opt', url: '/?view=trades' });
+        if (!niftyCatch) await pushAll({ title: 'Nifty options: not checked at 10:00', body: `${/Zerodha/i.test(e.message) ? 'Zerodha is not connected today (its login ends at 06:00 daily).' : 'Option premiums were not available.'} Connect Zerodha (My trades -> Connect Zerodha), then open Markets -> Nifty to see your credit-spread rule.`, tag: 'td-nifty-opt', url: '/?view=trades' });
       }
       await traceNiftyCheck(key, m, 'morning').catch(e => console.warn('Nifty trace:', e.message));
     }
@@ -7093,7 +7073,7 @@ function traceStockRecord(picks, key) {
     t.rows.push({ id: `stock|${key}|${sym}`, kind: 'stock', sym, date: key, createdAt: now, upd: now, entry: r2(price),
       sl: +pl.stop > 0 ? r2(pl.stop) : null, t1: +pl.target > 0 ? r2(pl.target) : null, setup: x.pickedSetup || x.selectedStrategy || null,
       exitMode: '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
-      tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, dpOk: tg.dpOk ?? null, pcrOk: tg.pcrOk ?? null },
+      tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, pcrOk: tg.pcrOk ?? null },
       bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null });
     added++;
   }
@@ -7408,6 +7388,8 @@ async function handleRequest(req,res){
   if(pn==='/api/health')           return apiHealth(req,res);
   /* Zerodha Kite: daily login (redirect to Zerodha and back), status, disconnect */
   if(pn==='/api/kite/status')      return send(res, kiteStatus());
+  if(pn==='/api/assistant-status') return send(res, { day: istDateKey(), mcx: MCX_STATUS, mcxNames: MCX_NAME, nifty: NIFTY_STATUS, kite: kiteReady(),
+    pcr: { date: KITE_PCR.date, final: !!KITE_PCR.final, stocks: Object.keys(KITE_PCR.pcr || {}).length, error: KITE_PCR.error } });
   if(pn==='/api/screener-compare') return apiScreenerCompare(req,res,ps);
   if(pn==='/api/kite/login') {
     if (!KITE.key || !KITE.secret) return err(res, 'Set KITE_API_KEY and KITE_API_SECRET on Render first', 400);

@@ -132,9 +132,14 @@ Swing list, Overview, Track record and alerts stay on Yahoo. Needs a Kite plan w
 
 Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
 - Stock exit: sell all at 2R or day 15 (T1 stays the R:R check). Tags on every screener row: higher highs / higher
-  lows, near the 52-week high, double bottom above its neckline, NSE delivery % (50%+) and the stock-option put/call
-  ratio (0.5+) - delivery and PCR come from two NSE archive files read once a day (data/nse-daily.json; "n/a" when NSE
-  does not answer the server). New list: Pattern breakouts (double bottom / flat base).
+  lows, near the 52-week high, double bottom above its neckline, and the stock-option put/call ratio (0.5+) from
+  Zerodha: open interest of every stock option (~80 quote requests, ~1.5 min) once a day after 15:40, or as soon as
+  Zerodha is connected when none is loaded (data/kite-pcr.json). NSE delivery % was removed: NSE's archive answers
+  Render with 403. New list: Pattern breakouts (double bottom / flat base), also
+  shown as a card on the stock's Overview. The Overview's trend (bias) uses the screener's rule, so the two agree.
+- Missed checks catch up: an MCX check missed at 09:45 / 17:00 (deploy or restart) runs at the next minute between
+  10:05 and 23:00; the Nifty 10:00 check runs as soon as Zerodha is connected, until 15:00. The Track record's MCX /
+  Nifty tabs show today's server check, i.e. why a signal was or was not recorded.
 - Quick Bounce is watch-only; candle patterns no longer vote in the Overview bias.
 - Nifty options: bull puts only (bear calls lost money); minimum credit by days to expiry (6+ up to 10 days, 20+
   beyond). The generic "Today's options idea" card was removed.

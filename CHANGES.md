@@ -1,3 +1,27 @@
+# Option PCR from Zerodha (20 Nov 2026 · page version 20 Nov 2026 · 2)
+
+- The stock-option put/call ratio tag is back, now from Zerodha instead of NSE's archive (which refuses Render): the
+  open interest of every option of every F&O stock (~40,000 contracts, 500 per quote request at Zerodha's
+  1-a-second limit: ~80 requests, ~1.5 minutes), once a day after 15:40 when the day's open interest is final, or as
+  soon as Zerodha is connected when none is loaded. Runs in the background; the screener never waits for it.
+  Checked against NSE's own F&O file for 19 Nov 2026: identical (RELIANCE 0.76, HDFCBANK 0.83, TATASTEEL 0.75).
+- Screener header shows the PCR date (close or intraday); the Track record's results-by-tag table counts it again.
+
+# Follow-up fixes (20 Nov 2026 · page version 20 Nov 2026 · 1)
+
+- Screener vs Overview: the Overview decided the trend by an indicator vote (3+ needed) while the screener uses the
+  backtested structure rule (price above EMA50, EMA50 above EMA200, not choppy). After the candle vote was removed,
+  pullbacks like TITAN were READY in the screener but "Sideways" on the Overview, so the list showed 1 READY while
+  the Track record had 2. The Overview now uses the screener's rule (TITAN, LGEINDIA: READY in both).
+- Pattern breakouts now also show as a card on the stock's Overview with the same levels as the screener: it is a
+  separate tested strategy and does not need the swing READY gate.
+- Removed the NSE delivery % / option PCR download and tags: NSE's archive answers Render with 403.
+- Catch-up checks: MCX (Gold Petal, Crude Oil, Natural Gas) checks missed at 09:45 / 17:00 because of a deploy run
+  at the next minute (10:05-23:00); the Nifty 10:00 check runs once Zerodha is connected (until 15:00). Before, a
+  deploy after 09:45 / 10:00 meant nothing was checked or recorded until the next day.
+- Track record (MCX / Nifty): "Today's server check" line - what the server saw today and why a trade was or was
+  not recorded. A signal is recorded when the server alerts it, not when a page shows it.
+
 # Backtested upgrade (19 Nov 2026 · page version 19 Nov 2026 · 2)
 
 Every change below was backtested first (stock rules: 10 years of the app's own screener signals, 0.25% costs;
