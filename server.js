@@ -18,11 +18,9 @@ const https = require('https');
 const url   = require('url');
 const zlib  = require('zlib');
 const PORT  = process.env.PORT || 3000;
-/* ── YAHOO vs KITE SCREENER TEST (19 Nov 2026) ──
-   The whole app uses Yahoo, exactly as before. Only the "Yahoo vs Kite" screener comparison (/api/screener-compare)
-   runs a second screener scan in the 'kite' context: there NSE stock and index charts come from Zerodha Kite (quotes +
-   historical candles, see kiteChart) and the scan's results (screener, Nifty trend, breadth, sector strength, response
-   caches) are kept apart from Yahoo's - the normal screener, Overview, Track record and alerts never see them. */
+/* ── Data-source context ──
+   Stock charts come from Yahoo. The "Yahoo vs Kite" screener comparison that ran a second scan in a 'kite' context
+   was removed on 20 Nov 2026; the per-source stores below stay (always 'yahoo') so the screener code is unchanged. */
 const SRC_ALS = new (require('async_hooks').AsyncLocalStorage)();
 const dataSrc = () => (SRC_ALS.getStore() && SRC_ALS.getStore().src) || 'yahoo';
 const srcStoreInit = () => ({ MY_TRADE_SCREENER_CACHE: null, MY_TRADE_SCREENER_TS: 0, MY_TRADE_SCREENER_INFLIGHT: null, NIFTY_REGIME_CACHE: null, NIFTY_REGIME_TS: 0,
@@ -398,7 +396,6 @@ function chartTtlMs(interval, range) {
   return 30e3; /* live price series: 2m/1d, 1d/5d, 1d/1d */
 }
 async function yfChart(ticker, interval, range) {
-  if (dataSrc() === 'kite') return kiteChartOrYahoo(ticker, interval, range);
   const st = SRC_STATS.yahoo, t0 = Date.now(); st.charts++;
   try { const v = await yfChartYahoo(ticker, interval, range); st.ok++; st.ms += Date.now() - t0; return v; }
   catch (e) { st.failed++; throw e; }
@@ -895,173 +892,6 @@ async function kiteIndexPrice(sym, ticker) {
     todayOpen: +q.ohlc?.open || live, todayHigh: +q.ohlc?.high || live, todayLow: +q.ohlc?.low || live, todayVol: 0,
     changeBasis: 'previousClose', basisTime: null, marketTime: y?.marketTime || Math.round(Date.now() / 1000), spark: spark.slice(-6), source: 'Zerodha Kite' };
 }
-/* ── KITE CHARTS FOR THE SCREENER TEST (19 Nov 2026) ──
-   In the 'kite' data context (only the "Yahoo vs Kite" screener comparison) yfChart() answers from Zerodha Kite in
-   Yahoo's chart shape, so the screener code runs unchanged on Kite data:
-     - live price, day open / high / low / volume and the previous close: Kite quotes, many stocks per request (250);
-     - daily candles: Kite historical 'day' candles up to yesterday (kept for the day) + today's bar from the quote;
-       weekly / monthly bars are built from the daily ones; 15- / 60-minute bars: Kite intraday candles.
-   Anything Kite does not have (global tickers, a stock missing from Kite's list, a failed call, a plan without
-   historical data) falls back to Yahoo and is counted. */
-const KQ = { wait: new Map(), timer: null, cache: new Map() };
-const kiteIst = s => Date.parse(String(s).replace(' ', 'T').replace(/([+-]\d\d)(\d\d)$/, '$1:$2') + (/[+-]\d\d:?\d\d$|Z$/.test(String(s)) ? '' : '+05:30'));
-const kiteDayTs = d => Math.round(Date.parse(d + 'T09:15:00+05:30') / 1000);   /* daily bars stamped 09:15 IST, like Yahoo */
-const istDay = ms => new Date(ms + 5.5 * 3600e3).toISOString().slice(0, 10);
-const kiteFmt = ms => new Date(ms + 5.5 * 3600e3).toISOString().slice(0, 19).replace('T', ' ');
-function kiteQuoteOne(key) {
-  const hit = KQ.cache.get(key), ttl = istMarketHoursS() ? 15e3 : 5 * 60e3;
-  if (hit && Date.now() - hit.ts < ttl) return Promise.resolve(hit.q);
-  if (KQ.wait.has(key)) return KQ.wait.get(key).p;
-  let res, rej; const p = new Promise((a, b) => { res = a; rej = b; });
-  KQ.wait.set(key, { p, res, rej });
-  if (!KQ.timer) KQ.timer = setTimeout(kiteQuoteFlush, 120);
-  return p;
-}
-async function kiteQuoteFlush() {
-  KQ.timer = null;
-  const batch = [...KQ.wait.entries()].slice(0, 250);
-  batch.forEach(([k]) => KQ.wait.delete(k));
-  if (KQ.wait.size) KQ.timer = setTimeout(kiteQuoteFlush, 120);
-  SRC_STATS.kite.quoteCalls++;
-  try {
-    const d = await kiteCall('/quote?' + batch.map(([k]) => 'i=' + encodeURIComponent(k)).join('&'));
-    for (const [k, w] of batch) {
-      const q = d?.[k];
-      if (q && +q.last_price > 0) { KQ.cache.set(k, { q, ts: Date.now() }); w.res(q); } else w.rej(new Error('Kite gave no quote for ' + k));
-    }
-  } catch (e) { batch.forEach(([, w]) => w.rej(e)); }
-  if (KQ.cache.size > 3000) [...KQ.cache.keys()].slice(0, 1000).forEach(k => KQ.cache.delete(k));
-}
-const KH_CACHE = new Map(), KH_INFLIGHT = new Map();
-/* Historical candles -> [{t, o, h, l, c, v}] (t = unix seconds). */
-async function kiteHist(token, kint, fromMs, toMs, key, fresh) {
-  const hit = KH_CACHE.get(key);
-  if (hit && fresh(hit)) return hit.bars;
-  if (KITE_STATE.noHistorical && Date.now() - KITE_STATE.noHistorical < 3600e3) throw new Error('your Kite plan has no historical data');
-  if (KH_INFLIGHT.has(key)) return KH_INFLIGHT.get(key);
-  const p = (async () => {
-    SRC_STATS.kite.histCalls++;
-    const d = await kiteCall(`/instruments/historical/${token}/${kint}?from=${encodeURIComponent(kiteFmt(fromMs))}&to=${encodeURIComponent(kiteFmt(toMs))}`, { queue: 'kite-hist' });
-    const bars = (d?.candles || []).map(c => {
-      const ms = kiteIst(c[0]);
-      return { t: kint === 'day' ? kiteDayTs(istDay(ms)) : Math.round(ms / 1000), o: +c[1], h: +c[2], l: +c[3], c: +c[4], v: +c[5] || 0 };
-    }).filter(b => b.c > 0 && b.o > 0 && b.h > 0 && b.l > 0);
-    KH_CACHE.set(key, { bars, ts: Date.now(), day: istDateKey() });
-    if (KH_CACHE.size > 1500) [...KH_CACHE.keys()].slice(0, 500).forEach(k => KH_CACHE.delete(k));
-    return bars;
-  })().finally(() => KH_INFLIGHT.delete(key));
-  KH_INFLIGHT.set(key, p);
-  return p;
-}
-/* Daily candles up to yesterday: past days are final, so one fetch serves the whole day. 2-year or 5-year tier. */
-function kiteDaily(token, days) {
-  const tier = days > 740 ? 1830 : 740, now = Date.now(), y = Date.parse(istDay(now) + 'T00:00:00+05:30') - 1000;
-  return kiteHist(token, 'day', now - tier * 86400e3, y, `${token}|day|${tier}`, h => h.day === istDateKey());
-}
-const KITE_RANGE_DAYS = { '1d': 1, '5d': 7, '1mo': 31, '3mo': 92, '6mo': 183, '1y': 366, '2y': 731, '5y': 1827, '10y': 1827, max: 1827 };
-let YF_REV = null;
-async function kiteInstrumentFor(ticker) {
-  const ins = await kiteInstruments();
-  if (!ins?.eq) return null;
-  if (!YF_REV) YF_REV = Object.fromEntries(Object.entries(YF_MAP).map(([s, t]) => [t, s]));
-  if (ticker === '^INDIAVIX') return ins.idxTok?.VIX ? { token: ins.idxTok.VIX, key: ins.idx.VIX, index: true } : null;
-  const sym = ticker !== 'FINIETF.NS' && YF_REV[ticker];   /* FINIETF is an ETF the callers scale themselves */
-  if (sym) return ins.idx?.[sym] && ins.idxTok?.[sym] ? { token: ins.idxTok[sym], key: ins.idx[sym], index: true } : null;
-  const m = /^(.+)\.NS$/i.exec(ticker), code = m && m[1].toUpperCase();
-  return code && ins.eq[code] ? { token: ins.eq[code], key: 'NSE:' + code, name: ins.eqName?.[code] || code } : null;
-}
-function kiteGroup(bars, keyOf) {
-  const out = [];
-  for (const b of bars) {
-    const k = keyOf(b.t), g = out[out.length - 1];
-    if (g && g.k === k) { g.h = Math.max(g.h, b.h); g.l = Math.min(g.l, b.l); g.c = b.c; g.v += b.v; }
-    else out.push({ k, t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v });
-  }
-  return out;
-}
-const weekKey = t => { const d = new Date(t * 1000 + 5.5 * 3600e3); d.setUTCDate(d.getUTCDate() - (d.getUTCDay() + 6) % 7); return d.toISOString().slice(0, 10); };
-async function kiteChart(inst, ticker, interval, range) {
-  const q = await kiteQuoteOne(inst.key), last = +q.last_price;
-  const tradeMs = q.last_trade_time ? kiteIst(q.last_trade_time) : (q.timestamp ? kiteIst(q.timestamp) : Date.now());
-  const tradeDay = istDay(Number.isFinite(tradeMs) ? tradeMs : Date.now());
-  const qo = +q.ohlc?.open, qh = +q.ohlc?.high, ql = +q.ohlc?.low, qPrev = +q.ohlc?.close;
-  const todayBar = { t: kiteDayTs(tradeDay), o: qo > 0 ? qo : last, h: Math.max(qh > 0 ? qh : last, last), l: Math.min(ql > 0 ? ql : last, last), c: last, v: +q.volume || 0 };
-  const liveOnly = !/^(1d|1wk|1mo|15m|30m|60m|90m|1h)$/.test(interval) || (interval === '1d' && (range === '1d' || range === '5d'));
-  let daily = null;
-  if (!/m$|h$/.test(interval) || liveOnly) {
-    try { daily = await kiteDaily(inst.token, Math.max(KITE_RANGE_DAYS[range] || 731, 400)); }
-    catch (e) { if (!liveOnly) throw e; }   /* live price without history: quote only */
-  }
-  let prev = null, dbars = [];
-  if (daily) {
-    dbars = daily.slice();
-    const lastDay = dbars.length ? istDay(dbars[dbars.length - 1].t * 1000) : '';
-    if (lastDay === tradeDay) dbars[dbars.length - 1] = { ...dbars[dbars.length - 1], h: Math.max(dbars[dbars.length - 1].h, last), l: Math.min(dbars[dbars.length - 1].l, last), c: last };
-    else if (lastDay < tradeDay) dbars.push(todayBar);
-    for (let i = dbars.length - 1; i >= 0; i--) if (istDay(dbars[i].t * 1000) < tradeDay) { prev = dbars[i].c; break; }
-  }
-  if (!(prev > 0)) prev = qPrev > 0 ? qPrev : last;
-  let bars;
-  if (interval === '1d') { const cut = kiteDayTs(istDay(Date.now() - (KITE_RANGE_DAYS[range] || 731) * 86400e3)); bars = daily ? dbars.filter(b => b.t >= cut) : [{ ...todayBar, t: todayBar.t - 86400, o: prev, h: prev, l: prev, c: prev, v: 0 }, todayBar]; }
-  else if (interval === '1wk') bars = kiteGroup(dbars.filter(b => b.t >= Date.now() / 1000 - (KITE_RANGE_DAYS[range] || 731) * 86400), b => weekKey(b));
-  else if (interval === '1mo') bars = kiteGroup(dbars.filter(b => b.t >= Date.now() / 1000 - (KITE_RANGE_DAYS[range] || 1827) * 86400), t => istDay(t * 1000).slice(0, 7));
-  else if (/^(15m|30m|60m|1h|90m)$/.test(interval)) {
-    const kint = interval === '15m' ? '15minute' : interval === '30m' ? '30minute' : '60minute', days = Math.min(KITE_RANGE_DAYS[range] || 7, 60);
-    bars = await kiteHist(inst.token, kint, Date.now() - days * 86400e3, Date.now(), `${inst.token}|${kint}|${days}`, h => Date.now() - h.ts < 3 * 60e3);
-  } else bars = [{ ...todayBar, t: Math.round((Number.isFinite(tradeMs) ? tradeMs : Date.now()) / 1000) }];   /* 1m / 2m / 5m: today's bar from the quote */
-  const yr = (daily ? dbars : []).filter(b => b.t >= Date.now() / 1000 - 365 * 86400);
-  const meta = { symbol: ticker, currency: 'INR', exchangeName: 'NSE', exchangeTimezoneName: 'Asia/Kolkata', instrumentType: inst.index ? 'INDEX' : 'EQUITY',
-    longName: inst.name || null, shortName: inst.name || null, regularMarketPrice: last, regularMarketTime: Math.round((Number.isFinite(tradeMs) ? tradeMs : Date.now()) / 1000),
-    regularMarketOpen: todayBar.o, regularMarketDayHigh: todayBar.h, regularMarketDayLow: todayBar.l, regularMarketVolume: todayBar.v,
-    regularMarketPreviousClose: prev, previousClose: prev, chartPreviousClose: prev,
-    fiftyTwoWeekHigh: yr.length ? Math.max(...yr.map(b => b.h)) : null, fiftyTwoWeekLow: yr.length ? Math.min(...yr.map(b => b.l)) : null, tdSource: 'Zerodha Kite' };
-  return { meta, timestamp: bars.map(b => b.t), indicators: { quote: [{ open: bars.map(b => b.o), high: bars.map(b => b.h), low: bars.map(b => b.l), close: bars.map(b => b.c), volume: bars.map(b => b.v) }] } };
-}
-async function kiteChartOrYahoo(ticker, interval, range) {
-  const st = SRC_STATS.kite, used = SRC_ALS.getStore()?.used, t0 = Date.now(); st.charts++;
-  let inst = null;
-  try { inst = await kiteInstrumentFor(ticker); } catch {}
-  if (inst) {
-    try { const v = await kiteChart(inst, ticker, interval, range); st.ok++; st.ms += Date.now() - t0; if (used) used.kite++; return v; }
-    catch (e) { st.fallbacks++; st.lastFallbacks.unshift(`${ticker} ${interval}/${range}: ${String(e.message).slice(0, 90)}`); st.lastFallbacks.length = Math.min(st.lastFallbacks.length, 8); }
-  } else st.notOnKite++;
-  if (used) used.yahoo++;
-  return yfChartYahoo(ticker, interval, range);
-}
-
-/* ── /api/screener-compare: the same screener on Yahoo and on Kite data, side by side ──
-   The Kite run is kept apart (SRCV.kite): it never changes the normal screener, Overview, Track record or alerts. */
-const SCREENER_CMP = { inflight: null };
-async function apiScreenerCompare(req, res, p) {
-  const ks = kiteStatus();
-  if (!kiteReady()) return send(res, { ready: false, configured: ks.configured, connected: ks.connected, noMarketData: ks.noMarketData,
-    note: !ks.configured ? 'Zerodha is not set up on the server (KITE_API_KEY / KITE_API_SECRET).' : ks.noMarketData ? 'Your Kite plan has no market data.' : 'Connect Zerodha first (Screener -> My trades -> Connect Zerodha), then run the comparison.' });
-  const force = p.get('refresh') === '1';
-  const run = src => SRC_ALS.run({ src, used: { kite: 0, yahoo: 0 } }, async () => {
-    const st = SV(), t0 = Date.now(), used = SRC_ALS.getStore().used;
-    const fresh = st.MY_TRADE_SCREENER_CACHE && !scanPredatesCloseS(st.MY_TRADE_SCREENER_CACHE.generatedAt) && Date.now() - st.MY_TRADE_SCREENER_TS < MY_TRADE_SCREENER_TTL;
-    let r, reused = false;
-    if (fresh && !(force && src === 'kite')) { r = st.MY_TRADE_SCREENER_CACHE; reused = true; }
-    else {
-      if (!st.MY_TRADE_SCREENER_INFLIGHT) st.MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { st.MY_TRADE_SCREENER_INFLIGHT = null; });
-      r = await st.MY_TRADE_SCREENER_INFLIGHT;
-      if (used.kite + used.yahoo > 0) st.CMP_USED = { ...used, ms: Date.now() - t0 };   /* shown again when the scan is reused */
-    }
-    return { r, reused, ms: reused ? (st.CMP_USED?.ms ?? null) : Date.now() - t0, used: reused && st.CMP_USED ? st.CMP_USED : { ...used } };
-  });
-  if (!SCREENER_CMP.inflight) SCREENER_CMP.inflight = Promise.all([run('yahoo'), run('kite')]).finally(() => { SCREENER_CMP.inflight = null; });
-  let both;
-  try { both = await SCREENER_CMP.inflight; } catch (e) { return err(res, 'Comparison failed: ' + e.message); }
-  const pick = x => ({ sym: x.sym || String(x.ticker || '').replace(/\.(NS|BO)$/, ''), price: x.price ?? x.currentPrice ?? null, setup: x.selectedStrategy || x.setup || x.picked || null,
-    score: x.selectedStrategyScore ?? x.finalQualification ?? x.decisionScore ?? null, rr: x.rr ?? x.rrBull ?? null, entry: x.entry ?? x.entryPrice ?? null, sl: x.sl ?? x.stopLoss ?? x.stop ?? null });
-  const side = (o, src) => ({ ready: (o.r.picks || []).map(pick), watch: (o.r.watchlist || []).map(pick), quick: (o.r.quickBounce || []).map(q => q.sym),
-    stats: { generatedAt: o.r.generatedAt, reused: o.reused, ms: o.ms, partial: !!o.r.partial, scanned: o.r.scanned, attempted: o.r.scannedAttempted,
-      dataOk: o.r.universeStats?.dataOk, dataFailed: o.r.universeStats?.dataFailed, dataFailedSample: o.r.universeStats?.dataFailedSample || [],
-      shortHistory: (o.r.universeStats?.shortHistory || []).length, bullish: o.r.universeStats?.biasEligible, niftyOk: o.r.marketTrend?.readyAllowed ?? o.r.marketTrend?.aboveEma50 ?? null,
-      chartsFromKite: src === 'kite' ? o.used.kite : 0, chartsFromYahoo: src === 'kite' ? o.used.yahoo : null } });
-  send(res, { ready: true, yahoo: side(both[0], 'yahoo'), kite: side(both[1], 'kite'), sourceStats: SRC_STATS, kiteHistorical: !(KITE_STATE.noHistorical && Date.now() - KITE_STATE.noHistorical < 3600e3) });
-}
-
 async function kiteVix() {
   const ins = await kiteInstruments(), id = ins.idx?.VIX;
   if (!id) throw new Error('India VIX not in Kite\'s index list');
@@ -4357,144 +4187,7 @@ function screenerCardPayloadS({ticker, m, selected, status, reason, rankScore, e
   };
 }
 
-/* ══════════════════════════════════════════════════════════════════
-   BACKTEST - the screener's own READY / Ready-on-limit rules (readyChecksS) replayed day by day over the last
-   ~15 months of the current universe, on the same 2-year daily candles the scan uses (chart cache, so a scan
-   just before costs no extra Yahoo calls).
-   Trade rules: signal at a day's close; READY buys the next open; Ready-on-limit buys if the next 3 days trade
-   down to the limit. Exit at the setup's SL or T1, or at the close of day 10. A day that touches both SL and T1
-   counts as a stop (conservative). One open trade per stock. R = result / (entry - SL). No charges.
-   Not replayed: results-date blocks and the sector part of the strength gate (no history for them); the
-   relative-strength part (beats Nifty over 3 months) is applied.
-══════════════════════════════════════════════════════════════════ */
-const BACKTEST_FILE = require('path').join(__dirname, 'data', 'backtest.json');   /* fs / path are declared further down */
-let BACKTEST_CACHE = null, BACKTEST_INFLIGHT = null;
-try { BACKTEST_CACHE = JSON.parse(require('fs').readFileSync(BACKTEST_FILE, 'utf8')); } catch {}
-function simulateTradeS(bars, i0, entry, stop, target, maxDays = 10) {
-  const { O, H, L, C } = bars, risk = entry - stop;
-  if (!(risk > 0) || !(target > entry)) return null;
-  for (let j = i0, d = 1; j < C.length && d <= maxDays; j++, d++) {
-    const o = j === i0 ? entry : O[j];
-    if (L[j] <= stop) { const px = Math.min(o, stop); return { exit: px, r: (px - entry) / risk, days: d, how: 'SL', exitIdx: j }; }
-    if (H[j] >= target) { const px = Math.max(o, target); return { exit: px, r: (px - entry) / risk, days: d, how: 'T1', exitIdx: j }; }
-    if (d === maxDays) return { exit: C[j], r: (C[j] - entry) / risk, days: d, how: 'Time', exitIdx: j };
-  }
-  return null;   /* still open at the end of the data */
-}
-async function runBacktestS() {
-  const started = Date.now();
-  const universe = screenerEligibleUniverseS();
-  const niftyRaw = await safeFetch(() => yfChart('^NSEI', '1d', '2y'), 1);
-  const nifty = niftyRaw ? parseBars(niftyRaw) : null;
-  if (nifty) { const cl = completedLenS(nifty.T); if (cl < nifty.T.length) ['T', 'O', 'H', 'L', 'C', 'V'].forEach(k => { nifty[k] = nifty[k].slice(0, cl); }); }
-  const niftyByT = nifty ? new Map(nifty.T.map((t, k) => [istDateKeyS(t), k])) : new Map();
-  /* Nifty trend (READY gate) and 200-day average (Quick Bounce) for every date, as the live scan uses them. */
-  const nEma = p => { if (!nifty) return []; const k = 2 / (p + 1), o = []; nifty.C.forEach((v, i) => o.push(i ? v * k + o[i - 1] * (1 - k) : v)); return o; };
-  const nE20 = nEma(20), nE50 = nEma(50);
-  const nUp = k => k != null && nifty.C[k] > nE50[k] && nE20[k] > nE50[k];
-  const nAbove200 = k => k != null && k >= 199 && nifty.C[k] > nifty.C.slice(k - 199, k + 1).reduce((a, b) => a + b, 0) / 200;
-  const trades = [];
-  let stocks = 0;
-  for (const ticker of universe) {
-    let raw = null;
-    try { raw = await withTimeout(safeFetch(() => yfChart(ticker, '1d', '2y'), 1), 20000, ticker + ' backtest'); } catch {}
-    const bars = raw ? parseBars(raw) : null;
-    if (bars) { const cl = completedLenS(bars.T); if (cl < bars.T.length) ['T', 'O', 'H', 'L', 'C', 'V'].forEach(k => { bars[k] = bars[k].slice(0, cl); }); }
-    if (!bars || bars.C.length < 320) continue;
-    stocks++;
-    let busyUntil = -1;
-    const n = bars.C.length;
-    for (let i = 250; i < n - 1; i++) {
-      if (i <= busyUntil) continue;
-      const sl = k => bars[k].slice(0, i + 1);
-      const C = sl('C'), H = sl('H'), L = sl('L'), V = sl('V'), T = sl('T');
-      const nk = niftyByT.get(istDateKeyS(T[T.length - 1]));
-      /* Quick Bounce (RSI-2): signal at the close, buy the next open, sell at the first close above the 5-day
-         average or day 10, stop 2.5 ATR under the signal close. */
-      const qb = SwingPlan.quickBounce({ C, H, L });
-      if (qb?.ok && nifty && nAbove200(nk)) {
-        const entry = bars.O[i + 1];
-        if (entry > qb.stop) {
-          let t = null;
-          for (let j = i + 1, d = 1; j < n && d <= 10; j++, d++) {
-            const o = j === i + 1 ? entry : bars.O[j];
-            if (bars.L[j] <= qb.stop) { const px = Math.min(o, qb.stop); t = { exit: px, days: d, how: 'SL', exitIdx: j }; break; }
-            const s5 = bars.C.slice(j - 4, j + 1).reduce((a, b) => a + b, 0) / 5;
-            if (bars.C[j] > s5 || d === 10) { t = { exit: bars.C[j], days: d, how: bars.C[j] > s5 ? 'SMA5' : 'Time', exitIdx: j }; break; }
-          }
-          if (t) {
-            const risk = entry - qb.stop;
-            trades.push({ sym: ticker.replace(/\.(NS|BO)$/, ''), date: istDateKeyS(T[T.length - 1]), setup: 'Quick Bounce (RSI-2)', kind: 'Quick',
-              r: +((t.exit - entry) / risk).toFixed(2), days: t.days, how: t.how, entry: +entry.toFixed(2), entryDate: istDateKeyS(bars.T[i + 1]),
-              stop: qb.stop, target: null, exit: +t.exit.toFixed(2), exitDate: istDateKeyS(bars.T[t.exitIdx]) });
-            busyUntil = t.exitIdx;
-            continue;
-          }
-        }
-      }
-      const m = qualifiedMetricsS({ C, H, L, V, weekly: null, marketCapCr: null, prevIdx: i - 1 });
-      if (m.bias !== 'Bullish' || !m.picked) continue;
-      const chk = readyChecksS(m, T, C);
-      if (!chk.readyCore && !chk.limitCore) continue;
-      if (nifty && !nUp(nk)) continue;   /* Nifty trend gate, as the live scan */
-      if (nifty) {   /* relative strength (3 months) as the strength gate's measurable half */
-        const ni = nk;
-        const rs = ni != null ? SwingPlan.relStrength(C, nifty.C.slice(0, ni + 1)) : null;
-        if (rs && Number.isFinite(rs.rs3m) && rs.rs3m <= 0) continue;
-      }
-      const date = istDateKeyS(T[T.length - 1]), plan = m.plan;
-      let t = null, kind, entryPx = null, entryIdx = null;
-      if (chk.readyCore) {
-        kind = 'READY';
-        const entry = bars.O[i + 1];
-        if (entry > plan.stop && entry < plan.target) { t = simulateTradeS(bars, i + 1, entry, plan.stop, plan.target); entryPx = entry; entryIdx = i + 1; }
-      } else {
-        kind = 'Limit';
-        for (let j = i + 1; j <= Math.min(n - 1, i + 3); j++) {
-          if (bars.L[j] <= m.limit.price) { const fill = Math.min(bars.O[j], m.limit.price); if (fill > plan.stop) { t = simulateTradeS(bars, j, fill, plan.stop, plan.target); entryPx = fill; entryIdx = j; } break; }
-        }
-        if (!t) continue;   /* limit never filled: no trade */
-      }
-      if (!t) continue;
-      trades.push({ sym: ticker.replace(/\.(NS|BO)$/, ''), date, setup: m.picked, kind, r: +t.r.toFixed(2), days: t.days, how: t.how,
-        entry: +entryPx.toFixed(2), entryDate: istDateKeyS(bars.T[entryIdx]), stop: plan.stop, target: plan.target, exit: +t.exit.toFixed(2), exitDate: istDateKeyS(bars.T[t.exitIdx]) });
-      busyUntil = t.exitIdx;
-    }
-    await new Promise(r => setImmediate(r));   /* keep the server responsive */
-  }
-  const stat = list => {
-    const wins = list.filter(t => t.r > 0), losses = list.filter(t => t.r <= 0);
-    const sum = list.reduce((a, t) => a + t.r, 0);
-    let streak = 0, worst = 0; list.slice().sort((a, b) => a.date < b.date ? -1 : 1).forEach(t => { streak = t.r <= 0 ? streak + 1 : 0; worst = Math.max(worst, streak); });
-    return { trades: list.length, winPct: list.length ? Math.round(wins.length / list.length * 100) : null,
-      avgR: list.length ? +(sum / list.length).toFixed(2) : null, totalR: +sum.toFixed(1),
-      avgWinR: wins.length ? +(wins.reduce((a, t) => a + t.r, 0) / wins.length).toFixed(2) : null,
-      avgLossR: losses.length ? +(losses.reduce((a, t) => a + t.r, 0) / losses.length).toFixed(2) : null,
-      avgDays: list.length ? +(list.reduce((a, t) => a + t.days, 0) / list.length).toFixed(1) : null,
-      byExit: { T1: list.filter(t => t.how === 'T1' || t.how === 'SMA5').length, SL: list.filter(t => t.how === 'SL').length, Time: list.filter(t => t.how === 'Time').length },   /* SMA5 = Quick Bounce's target exit */
-      worstLosingStreak: worst };
-  };
-  const groups = {};
-  trades.forEach(t => { const k = `${t.setup}${t.kind === 'Limit' ? ' (limit)' : ''}`; (groups[k] = groups[k] || []).push(t); });
-  const dates = trades.map(t => t.date).sort();
-  const out = { generatedAt: new Date().toISOString(), seconds: Math.round((Date.now() - started) / 1000), stocks,
-    from: dates[0] || null, to: dates[dates.length - 1] || null,
-    all: stat(trades), ready: stat(trades.filter(t => t.kind === 'READY')), limit: stat(trades.filter(t => t.kind === 'Limit')), quick: stat(trades.filter(t => t.kind === 'Quick')),
-    bySetup: Object.fromEntries(Object.entries(groups).map(([k, v]) => [k, stat(v)]).sort((a, b) => b[1].trades - a[1].trades)),
-    recent: trades.slice().sort((a, b) => a.date < b.date ? 1 : -1).slice(0, 40),
-    rules: 'Signal at the close; READY buys the next open, Ready-on-limit buys when the next 3 days reach the limit. Exit at SL, T1 or the day-10 close; SL and T1 on the same day counts as SL. Quick Bounce buys the next open and sells at the first close above the 5-day average or day 10. One trade per stock at a time. No charges (about 0.25% a round trip for delivery). Nifty trend, 3-month relative strength and breakout watch-only are replayed; results dates and sector strength are not.' };
-  BACKTEST_CACHE = out;
-  try { require('fs').mkdirSync(require('path').dirname(BACKTEST_FILE), { recursive: true }); require('fs').writeFileSync(BACKTEST_FILE, JSON.stringify(out)); } catch {}
-  return out;
-}
 function istDateKeyS(unixSec) { return new Date(unixSec * 1000 + 5.5 * 3600000).toISOString().slice(0, 10); }
-async function apiBacktest(req, res, p) {
-  const fresh = p.get('refresh') === '1';
-  if (!fresh && BACKTEST_CACHE) return send(res, { ...BACKTEST_CACHE, cached: true, ageHours: +((Date.now() - Date.parse(BACKTEST_CACHE.generatedAt)) / 3600000).toFixed(1) });
-  if (!fresh) return send(res, { none: true });
-  if (!BACKTEST_INFLIGHT) BACKTEST_INFLIGHT = runBacktestS().finally(() => { BACKTEST_INFLIGHT = null; });
-  try { send(res, await BACKTEST_INFLIGHT); } catch (e) { err(res, 'Backtest failed: ' + e.message); }
-}
 
 /* ══════════════════════════════════════════════════════════════════
    MONTHLY MOMENTUM (separate from the swing screener) - the method that backtested best on 8.8 years
@@ -7390,7 +7083,6 @@ async function handleRequest(req,res){
   if(pn==='/api/kite/status')      return send(res, kiteStatus());
   if(pn==='/api/assistant-status') return send(res, { day: istDateKey(), mcx: MCX_STATUS, mcxNames: MCX_NAME, nifty: NIFTY_STATUS, kite: kiteReady(),
     pcr: { date: KITE_PCR.date, final: !!KITE_PCR.final, stocks: Object.keys(KITE_PCR.pcr || {}).length, error: KITE_PCR.error } });
-  if(pn==='/api/screener-compare') return apiScreenerCompare(req,res,ps);
   if(pn==='/api/kite/login') {
     if (!KITE.key || !KITE.secret) return err(res, 'Set KITE_API_KEY and KITE_API_SECRET on Render first', 400);
     res.writeHead(302, { Location: kiteLoginUrl(), 'Cache-Control': 'no-store' }); return res.end();
@@ -7417,7 +7109,6 @@ async function handleRequest(req,res){
   if(pn==='/api/swing-context')    return apiSwingContext(req,res,ps);
   if(pn==='/api/option-chain')     return apiOptionChain(req,res,ps);
   if(pn==='/api/store')            return apiStore(req,res);
-  if(pn==='/api/backtest')         return apiBacktest(req,res,ps);
   if(pn==='/api/momentum')         return apiMomentum(req,res,ps);
   if(pn.startsWith('/api/push/'))  return apiPush(req,res,pn);
   if(pn==='/api/screener-explain') return apiScreenerExplain(req,res,ps);

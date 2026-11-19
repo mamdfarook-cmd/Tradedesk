@@ -126,3 +126,21 @@
 .td-trace-sum{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:14px}
 @media(max-width:620px){.td-trace-sum{grid-template-columns:repeat(3,minmax(0,1fr));gap:6px}}
 .td-trace-sub .scr-tab{padding:5px 12px;font-size:.74rem}
+
+/* 20 Nov 2026: folded details (MCX page, stock Overview) */
+.mcx-more,.tp-more{margin-top:10px;border:1px solid var(--brd);border-radius:12px;padding:4px 10px 8px}
+.mcx-more>summary,.tp-more>summary{cursor:pointer;font-size:.8rem;font-weight:800;color:var(--tx2);padding:8px 0;list-style:none}
+.mcx-more>summary::before,.tp-more>summary::before{content:'▸ ';color:var(--acc)}
+.mcx-more[open]>summary::before,.tp-more[open]>summary::before{content:'▾ '}
+.mcx-more>summary::-webkit-details-marker,.tp-more>summary::-webkit-details-marker{display:none}
+/* Indices / MCX lists fold after a pick on wide screens too (phones already did) */
+@media(min-width:821px){
+  #view-indices .selector-toggle,#view-commodities .selector-toggle{display:flex;width:100%;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;margin-bottom:8px;border-radius:12px;border:1px solid rgba(0,188,212,.35);background:linear-gradient(135deg,rgba(0,188,212,.16),rgba(0,230,118,.08));color:var(--tx);font-weight:800;font-size:.82rem;cursor:pointer}
+  #view-indices .selector-toggle .sel-sub,#view-commodities .selector-toggle .sel-sub{font-size:.68rem;font-weight:700;color:var(--tx3);margin-left:auto}
+  #view-indices.selector-open .selector-toggle .sel-arrow,#view-commodities.selector-open .selector-toggle .sel-arrow{transform:rotate(180deg)}
+  #view-indices.active:not(.selector-open)>:not(.selector-toggle),#view-commodities.active:not(.selector-open)>:not(.selector-toggle){display:none!important}
+  #view-indices.selector-open .vt,#view-commodities.selector-open .vt{display:none}
+}
+/* Phones: the folded list must hide its rows - "#sidebar .ic{display:grid!important}" (td-ui-polish) outranked the
+   picker's hide rule, so the Indices / MCX rows stayed on screen after a pick. */
+@media(max-width:820px){ #sidebar .view.active:not(.selector-open)>.ic{display:none!important} }

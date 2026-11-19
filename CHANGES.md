@@ -1,3 +1,20 @@
+# Cleaner layout (20 Nov 2026 · page version 20 Nov 2026 · 3)
+
+- Indices list: Nifty 50, Nifty Next 50, Nifty Midcap 150 only (sector indices stay on Markets -> Sectors). MCX list:
+  Gold Petal, Crude Oil, Natural Gas only (the backtested ones; Gold / Silver / Copper hidden).
+- The Indices / MCX list folds after a pick and the bar shows the chosen one - on phones a styling rule
+  (#sidebar .ic display:grid !important) kept the rows on screen; on wide screens the list now folds too.
+- Gold Petal uses the same compact page as Crude Oil / Natural Gas: price calibration, the trade idea, urgent
+  warnings (event within a day, expiry), then "More" (zones, drivers, events, news, market context) folded. The old
+  accumulation / level-check / data-validation blocks were removed. About 1.5 screens instead of 4.
+- Stock Overview: the plan and calculator first; Fresh Entry / Hold score and price / volume status folded under
+  "More details". The Exit Plan box shows the tested exit (sell all at 2R or day 15) instead of the old T2 / trail.
+- Analysis: Indicators and S&R + Patterns are one Technicals page. Removed: Decision (it repeated the Overview) and
+  the stock Strategy page (the Overview carries the selected plan). Nifty keeps Market Pulse (its main page),
+  Technicals and the Option Builder.
+- Screener: Backtest and Yahoo vs Kite tabs removed (with their server code: /api/backtest, /api/screener-compare and
+  the Kite chart layer).
+
 # Option PCR from Zerodha (20 Nov 2026 · page version 20 Nov 2026 · 2)
 
 - The stock-option put/call ratio tag is back, now from Zerodha instead of NSE's archive (which refuses Render): the

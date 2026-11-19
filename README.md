@@ -125,10 +125,10 @@ Zerodha Kite Connect (optional, recommended): with KITE_API_KEY / KITE_API_SECRE
 "Connect Zerodha" login (Screener -> My trades; Zerodha ends it at 06:00), option premiums of every expiry, every NSE
 index (Fin Services Ex-Bank included) and India VIX come live from Kite - no NSE call. Read-only, no orders.
 Setup in KITE-SETUP.txt; /api/health -> kite, /api/kite/status.
-Screener -> Yahoo vs Kite (test): runs the same swing screener on Yahoo data and on Kite data (live quotes + historical
-candles) and lists the READY / Watchlist stocks found by both, only by Yahoo and only by Kite, with each source's data
-gaps. The Kite scan takes about 2 minutes (Kite allows ~3 history requests a second) and is kept apart: the normal
-Swing list, Overview, Track record and alerts stay on Yahoo. Needs a Kite plan with historical data. /api/screener-compare.
+Layout (20 Nov 2026): Indices = Nifty 50 / Next 50 / Midcap 150 (sectors are on Markets -> Sectors); MCX = Gold Petal,
+Crude Oil, Natural Gas (the backtested ones). The list folds after a pick. Stock / MCX: Overview · Analysis (one
+Technicals page) · News. Nifty: Market Pulse · Technicals · Option Builder. Removed: Decision, the stock Strategy page,
+the Backtest and Yahoo vs Kite screener tabs.
 
 Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
 - Stock exit: sell all at 2R or day 15 (T1 stays the R:R check). Tags on every screener row: higher highs / higher

@@ -2485,7 +2485,12 @@ function mcxOverviewHtml(sym){
   /* Nearest level on the right side of price (the raw 7-day low was shown as "support" even after today broke
      below it). Names like "Swing S2 — 14D Low"; scaled by the calibration like the other levels. */
   const lvNear = (n, o) => o && +o.v > 0 ? `<div><span>${n} (${escHtml(String(o.n || '').replace(/^Swing [SR]\d — /, ''))})</span><b>${fmt(+o.v * D.k)}</b></div>` : `<div><span>${n}</span><b>none nearby</b></div>`;
-  return `${mcxCalHtml(sym)}${commodityIdeaHtml(sym, x)}${mcxExtrasHtml(sym, D, x)}
+  /* 20 Nov 2026: the trade (idea card) first; urgent warnings (event within a day, contract expiry) right under it;
+     zones, drivers, events, news and market context folded under "More". Gold Petal's old accumulation / level-check
+     / data-validation blocks were removed (they came before the tested rules and could contradict the idea card). */
+  return `${mcxCalHtml(sym)}${commodityIdeaHtml(sym, x)}<div data-mcx-alert></div>
+    <details class="mcx-more"><summary>More: zones · global drivers · events · news · market context</summary>
+    ${mcxExtrasHtml(sym, D, x)}
     <div class="idea-card" style="border-color:var(--brd)">
       <div class="idea-kicker">Market context</div>
       <div class="idea-grid" style="margin-top:8px">
@@ -2495,7 +2500,7 @@ function mcxOverviewHtml(sym){
         ${lvNear('Support', sr.nearestSupport)}${lv('Pivot', sr.pp)}${lvNear('Resistance', sr.nearestResistance)}
       </div>
       <div class="idea-foot">${escHtml(loc.note || '')}</div>
-    </div>`;
+    </div></details>`;
 }
 function mcxCalHtml(sym){
   const c = mcxCal(sym), proxy = getCurrentLivePrice();
@@ -2645,7 +2650,17 @@ function mcxFillAsync(sym){
       put('[data-mcx-drivers]', mcxDriversHtml(d, sd));
     })
     .catch(e => put('[data-mcx-drivers]', `<div class="idea-kicker">Global drivers · why</div><div class="idea-foot">Not loaded: ${escHtml(e.message || 'error')}</div>`));
-  ideaCalendar().then(cal => put('[data-mcx-events]', mcxEventsHtml(sym, cal)));
+  ideaCalendar().then(cal => {
+    put('[data-mcx-events]', mcxEventsHtml(sym, cal));
+    /* Shown above the fold: a high-impact event today / tomorrow, and Gold Petal's expiry within 5 trading days. */
+    const cats = MCX_EVENT_CATS[sym] || [], t = istDateKey(), tom = new Date(Date.now() + 86400e3 + 330*60000).toISOString().slice(0, 10);
+    const soon = (cal || []).filter(e => cats.includes(e.category) && !(e.category === 'CPI' && e.country === 'IN') && e.date >= t && e.date <= tom && e.impact === 'HIGH');
+    const exp = sym === 'MCX:GOLDPETAL' ? goldPetalExpiryNow() : null;
+    const parts = [];
+    if(soon.length) parts.push(`⚠ ${escHtml(soon.map(e => `${e.event} ${evDay(e.date).toLowerCase()}${e.time ? ' ' + e.time : ''}`).join('; '))} - no fresh entry in the hour before; keep the stop order in place.`);
+    if(exp && exp.tradingDaysLeft <= 5) parts.push(`⚠ Contract expires ${escHtml(exp.date)} (${exp.tradingDaysLeft} trading day${exp.tradingDaysLeft === 1 ? '' : 's'}) - roll or exit before then.`);
+    put('[data-mcx-alert]', parts.length ? `<div class="idea-hedge" style="border-color:var(--bear)">${parts.join('<br>')}</div>` : '');
+  });
   const key = `news_${sym}`, st = sym.replace(/NSE:|MCX:|CRYPTO:/g, '');
   (AI_CACHE[key] ? Promise.resolve(AI_CACHE[key]) : fetchLiveNews(sym, CLIENT_NAMES[st] || document.getElementById('ihn')?.textContent || st).then(r => (AI_CACHE[key] = r)))
     .then(r => put('[data-mcx-news]', mcxNewsHtml(r))).catch(() => put('[data-mcx-news]', mcxNewsHtml(null)));
@@ -4381,10 +4396,9 @@ async function tabScreener(mode = CURRENT_SCREENER_MODE, force = false) {
      the old scan's verdicts into the new rows). */
   tcBeginRender();
   if (mode === 'qualified' || mode === 'picklist' || mode === 'stockweek') mode = 'mytrade';   /* one screener list */
-  if (mode === 'backtest') { CURRENT_SCREENER_MODE = mode; await tabBacktest(); return; }
+  if (mode === 'backtest' || mode === 'srccmp') mode = 'mytrade';   /* removed 20 Nov 2026 */
   if (mode === 'momentum') { CURRENT_SCREENER_MODE = mode; await tabMomentum(force); return; }
   if (mode === 'trades') { CURRENT_SCREENER_MODE = mode; await tabJournal(); return; }
-  if (mode === 'srccmp') { CURRENT_SCREENER_MODE = mode; await tabSrcCompare(force); return; }
   CURRENT_SCREENER_MODE = mode;
   if (mode === 'mytrade') { await tabMyTradeScreener(force); return; }
   if (mode === 'stockweek') { await tabStockOfWeekScreener(); return; }
@@ -4873,34 +4887,6 @@ function renderMomentum(d){
 }
 
 /* ── BACKTEST: the screener's READY / Ready-on-limit rules replayed on the last ~15 months (server /api/backtest) ── */
-async function tabBacktest(run = false){
-  const tc = document.getElementById('tc');
-  CURRENT_SCREENER_MODE = 'backtest';
-  tc.innerHTML = `${screenerModeSwitch('backtest')}<div class="scr-loading"><div class="sp"></div><div class="lt">${run ? 'Replaying the rules on ~270 stocks (1-2 minutes)…' : 'Loading the last backtest…'}</div></div>`;
-  const live = tcGuard();
-  let d;
-  try { d = await apiFetch('/api/backtest' + (run ? '?refresh=1' : ''), 590000); }
-  catch(e){ if(live()) tc.innerHTML = `${screenerModeSwitch('backtest')}<div class="eb">Backtest error: ${escHtml(e.message)}</div>`; return; }
-  if(!live() || CURRENT_SCREENER_MODE !== 'backtest') return;
-  if(d.none){ tc.innerHTML = `${screenerModeSwitch('backtest')}<div class="scr-empty">No backtest yet. Press <b>Run again</b> - it replays the screener's rules day by day over ~15 months (uses the scan's cached charts).</div>`; return; }
-  const col = v => v == null ? 'var(--tx3)' : v > 0.05 ? 'var(--bull)' : v < -0.05 ? 'var(--bear)' : 'var(--neu)';
-  const row = (name, s, strong) => `<tr${strong ? ' class="bt-strong"' : ''}><td>${escHtml(name)}</td><td>${s.trades}</td><td>${s.winPct ?? '--'}%</td>
-    <td style="color:${col(s.avgR)};font-weight:800">${s.avgR != null ? (s.avgR > 0 ? '+' : '') + s.avgR.toFixed(2) + 'R' : '--'}</td>
-    <td style="color:${col(s.totalR)}">${s.totalR > 0 ? '+' : ''}${s.totalR}R</td><td>${s.avgWinR ?? '--'} / ${s.avgLossR ?? '--'}</td>
-    <td>${s.byExit.T1} / ${s.byExit.SL} / ${s.byExit.Time}</td><td>${s.avgDays ?? '--'}</td><td>${s.worstLosingStreak}</td></tr>`;
-  const verdict = d.all.avgR > 0.1 ? 'The rules made money over this period.'
-    : d.all.avgR < -0.05 ? 'The rules as a whole lost money over this period - favour the setups with a positive average R and use smaller size on the rest.'
-    : 'The rules were close to break-even over this period.';
-  const recent = (d.recent || []).slice(0, 25).map(t => `<tr><td>${escHtml(t.date)}</td><td>${escHtml(t.sym)}</td><td>${escHtml(t.setup)}${t.kind === 'Limit' ? ' (limit)' : ''}</td><td>${fmt(t.entry)}</td><td>${fmt(t.stop)} / ${t.target != null ? fmt(t.target) : '5-day avg'}</td><td>${escHtml(t.how === 'SMA5' ? '5-day avg' : t.how)} ${fmt(t.exit)}</td><td style="color:${col(t.r)};font-weight:800">${t.r > 0 ? '+' : ''}${t.r}R</td></tr>`).join('');
-  tc.innerHTML = `${screenerModeSwitch('backtest')}
-    <div class="aib" style="font-size:.74rem;margin-bottom:10px"><b>${d.all.trades} trades</b> on ${d.stocks} stocks, signals ${escHtml(d.from || '')} → ${escHtml(d.to || '')} · run ${new Date(d.generatedAt).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'})}. <b>${verdict}</b><br><span style="color:var(--tx3)">${escHtml(d.rules)} Past results only - the universe is today's large caps, so stocks that dropped out of it are missing.</span></div>
-    <div class="bt-wrap"><table class="bt-table"><thead><tr><th>Setup</th><th>Trades</th><th>Win</th><th>Avg R</th><th>Total R</th><th>Avg win / loss</th><th>Target / SL / day 10</th><th>Days</th><th>Worst losing run</th></tr></thead><tbody>
-      ${row('All signals', d.all, true)}${row('READY', d.ready, true)}${row('Ready on limit', d.limit, true)}${d.quick ? row('Quick bounce (RSI-2)', d.quick, true) : ''}
-      ${Object.entries(d.bySetup).map(([k, s]) => row(k, s)).join('')}
-    </tbody></table></div>
-    <div class="aib" style="font-size:.72rem;margin:10px 0">Avg R = average result per trade in units of the risk taken (+1R = made what was risked). Above 0 means the setup paid over this period; at 40% wins a setup needs its wins to be about 1.5x its losses.</div>
-    <div class="bt-wrap"><table class="bt-table"><thead><tr><th>Signal</th><th>Stock</th><th>Setup</th><th>Entry</th><th>SL / T1</th><th>Exit</th><th>Result</th></tr></thead><tbody>${recent}</tbody></table></div>`;
-}
 
 /* ── Screener vs Overview: every listed stock checked against its own Overview (bias, setup, R:R, action) ── */
 async function checkAllVsOverview(){
@@ -4985,13 +4971,11 @@ function screenerResultsChip(s) {
 }
 function screenerModeSwitch(active='mytrade') {
   /* Four views of the Screener page; the button on the right refreshes the one that is open. */
-  const tabs = [['mytrade', 'Swing'], ['trades', 'My trades'], ['momentum', 'Monthly momentum'], ['track', 'Track record'], ['backtest', 'Backtest'], ['srccmp', 'Yahoo vs Kite']];
+  const tabs = [['mytrade', 'Swing'], ['trades', 'My trades'], ['momentum', 'Monthly momentum'], ['track', 'Track record']];
   const action = active === 'mytrade' ? `<button class="scr-act" onclick="clearMyTradeScreenerCache();tabScreener('mytrade', true)" title="New scan (at most one every 5 minutes)">↻ Refresh</button>`
     : active === 'momentum' ? `<button class="scr-act" onclick="tabScreener('momentum', true)" title="Re-rank with the latest prices">↻ Refresh</button>`
     : active === 'track' ? `<button class="scr-act" onclick="tabScreener('track')">↻ Refresh</button>`
-    : active === 'trades' ? `<button class="scr-act" onclick="tabScreener('trades')">↻ Refresh</button>`
-    : active === 'srccmp' ? `<button class="scr-act" onclick="tabScreener('srccmp', true)" title="New Kite scan (Yahoo reuses its last scan)">↻ Rescan Kite</button>`
-    : `<button class="scr-act" onclick="tabBacktest(true)">↻ Run again</button>`;
+    : `<button class="scr-act" onclick="tabScreener('trades')">↻ Refresh</button>`;
   return `<div class="scr-tabs-row scr-tabs-v2">
     ${tabs.map(([id, label]) => `<button class="scr-tab${active === id ? ' active' : ''}" onclick="tabScreener('${id}')">${label}</button>`).join('')}
     ${action}
@@ -6189,43 +6173,6 @@ function buildFinalSetupPill(setupInfo, simpleDecision){
    OVERVIEW TAB — summary card of all analysis at a glance
 ══════════════════════════════════════════════════════════════════ */
 
-function tabGoldPetalOverview(sym){
-  const kCal = mcxCalK(sym), price = getCurrentLivePrice() * kCal;   /* calibrated, like the cards above */
-  const d = CUR_DATA || {}, ds = d.dataSource || {};
-  const sr = getSRTradeLevels();
-  const loc = getPriceLocationSnapshot(sr);
-  const validity = getTradeValiditySnapshot(sym);
-  const confidence = getDataConfidenceSnapshot(sym);
-  const col = validity.cls==='bull'?'var(--bull)':validity.cls==='bear'?'var(--bear)':'var(--neu)';
-  const dqCol = confidence.cls==='bull'?'var(--bull)':confidence.cls==='bear'?'var(--bear)':'var(--neu)';
-  const warn = ds.warning || 'Continuous proxy: COMEX Gold × USD/INR × 1.159 MCX factor converted to ₹/1g. Verify broker MCX price before orders.';
-  const support = sr.nearestSupport?.v != null ? sr.nearestSupport.v * kCal : undefined;
-  const resistance = sr.nearestResistance?.v != null ? sr.nearestResistance.v * kCal : undefined;
-  const supportName = sr.nearestSupport?.n || 'Nearest support';
-  const resistanceName = sr.nearestResistance?.n || 'Nearest resistance';
-  const buyPanel = goldPetalDashboard(sym) || '<div class="aib">Gold Petal dashboard needs more candle data.</div>';
-  const confRows = (confidence.checks||[]).map(c=>`<div class="tp-qrow"><div><strong>${c.pass?'✅':'⚠️'} ${escHtml(c.name)}</strong><span>${escHtml(c.note)}</span></div><b>${c.pts}/${c.max}</b></div>`).join('');
-  return `
-    <div class="tp-decision conditional" style="border-color:var(--neu)">
-      <div class="tp-decision-top"><div><div class="tp-decision-label">MCX Gold Petal Overview</div><div class="tp-decision-main" style="color:var(--neu)">PROXY PRICE — ACCUMULATION VIEW</div></div><div class="tp-confidence"><div class="tp-conf-num">${fmt(price)}</div><div class="tp-conf-lbl">₹ / 1g proxy</div></div></div>
-      <div class="tp-summary">${escHtml(warn)} This tab does not use stock sector score or stock Fresh Entry Score for Gold Petal.</div>
-    </div>
-    ${buyPanel}
-    <div class="tp-section"><div class="tp-section-title">Gold Petal Level Check</div>
-      <div class="tp-grid">
-        <div class="tp-item"><div class="tp-label">Current Price Location</div><div class="tp-val" style="color:${loc.cls==='bull'?'var(--bull)':loc.cls==='bear'?'var(--bear)':'var(--neu)'}">${escHtml(loc.label)}</div><div class="tp-sub">${escHtml(loc.note)}</div></div>
-        <div class="tp-item"><div class="tp-label">Nearest Support</div><div class="tp-val" style="color:var(--bull)">${Number.isFinite(+support)?fmt(support):'--'}</div><div class="tp-sub">${escHtml(supportName)}</div></div>
-        <div class="tp-item"><div class="tp-label">Nearest Resistance</div><div class="tp-val" style="color:var(--bear)">${Number.isFinite(+resistance)?fmt(resistance):'--'}</div><div class="tp-sub">${escHtml(resistanceName)}</div></div>
-        <div class="tp-item"><div class="tp-label">USD/INR Used</div><div class="tp-val">${d.usdInr || '--'}</div><div class="tp-sub">Previous basis: ${d.prevUsdInr || '--'} · ${escHtml(d.changeBasis || 'proxy')}</div></div>
-      </div>
-    </div>
-    <div class="tp-section"><div class="tp-section-title">Data Validation</div>
-      <div class="tp-score-head ${confidence.cls}"><div><span class="tp-score-num">${confidence.score}</span><span class="tp-score-total">/100</span></div><div class="tp-grade" style="color:${dqCol}">${confidence.label}</div></div>
-      <div class="tp-quality-list">${confRows}</div>
-      <div class="aib">Proxy source is expected for Gold Petal. Medium data confidence is normal because this is not an official MCX feed.</div>
-    </div>
-    <div class="aib"><strong style="color:var(--warn)">Execution rule:</strong> Do not place Gold Petal orders from this proxy alone. Check live MCX/broker quote, spread, circuit limit and contract liquidity before entry.</div>`;
-}
 
 /* Live NSE results date for a stock (server: /api/earnings, NSE event calendar). Cached 30 min per symbol;
    any failure returns null so the Overview still renders. */
@@ -6284,9 +6231,6 @@ async function tabOverview(sym) {
   const marketRegime = swingCtx?.regime || null, relStrength = swingCtx?.rs || null;
   if(isIndexSymbol(sym)) {
     return renderIndexOptionsDecision(sym);
-  }
-  if(sym === 'MCX:GOLDPETAL') {
-    return tabGoldPetalOverview(sym);
   }
   const {C,H,L,V,O} = CUR_DATA.daily, n=C.length;
   const price = getCurrentLivePrice(), prev = firstFiniteNumber(CUR_DATA.pc, C[n-2], C[n-1], price);
@@ -6697,14 +6641,16 @@ async function tabOverview(sym) {
             ? `<span class="tp-planned">Planned ${escHtml(strategyPlan.setupName || 'setup')}: buy ${fmt(rrFromPrice)}${Math.abs(rrFromPrice - (+strategyPlan.entryPrice || rrFromPrice)) > 0.005 && !/breakout/i.test(strategyPlan.setupName || '') ? ` (zone ${fmt(strategyPlan.entryPrice)})` : ''} · SL ${fmt(strategyPlan.stopLoss)} · T1 ${fmt(strategyPlan.target1)}${rrNum ? ` · R:R ${rr}` : ''}</span>`
             : 'No entry, stop or target until a setup is confirmed', 'Levels become active only when the decision is READY.', 'is-wait tp-wide')}
         ${planItem('Daily + Weekly Trend', trendCombo, trendSub, trendClass)}`}
-        ${activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `T2 ${escHtml(strategyPlan.setup.target2 || '--')} · trail ${escHtml(strategyPlan.setup.trailStop || '--')}`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan:\s*/,'')), 'plan-exit') : ''}
+        ${activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
       </div>
-      ${scoreMini}
       ${positionCalc}
+      <details class="tp-more"><summary>More details: Fresh Entry / Hold score, price and volume status</summary>
+      ${scoreMini}
       <div class="tp-status-grid">
         ${priceLocationMini}
         ${volumePressureMini}
       </div>
+      </details>
     </div>`;
 }
 
@@ -6721,31 +6667,24 @@ async function tabAnalysis(sym) {
   /* Strategy and Decision moved inside Analysis to keep the bottom tab bar clean. */
   /* Trend lives at the top of Indicators; Validation checks live under Decision (they showed the same
      score breakdowns twice). */
-  if(ANALYSIS_VIEW === 'trend') ANALYSIS_VIEW = 'indicators';
-  if(ANALYSIS_VIEW === 'validity') ANALYSIS_VIEW = 'decision';
-  /* Candle patterns live inside S&R (one page for levels, the latest candle and its patterns). */
-  if(ANALYSIS_VIEW === 'patterns') ANALYSIS_VIEW = 'sr';
+  /* 20 Nov 2026: Indicators and S&R + Patterns are one "Technicals" page; Decision (it repeated the Overview's decision)
+     and the stock Strategy page (the Overview carries the selected plan and the tested exit) were removed. */
+  if(['trend','indicators','sr','patterns','decision','validity'].includes(ANALYSIS_VIEW)) ANALYSIS_VIEW = 'technicals';
   /* Indices: the Strategy page is only the Option Builder, and only where options trade (Nifty, Bank Nifty,
      FinNifty). MCX: no Strategy / Decision pages - the Overview card carries the MCX plan. */
   const hasOptions = isIndex && !!IDX_OPT[sym];
   const views = isIndex ? [
     {id:'pulse',      label:'Market Pulse'},
-    {id:'indicators', label:'Indicators'},
-    {id:'sr',         label:'S&R + Patterns'},
+    {id:'technicals', label:'Technicals'},
     ...(hasOptions ? [{id:'strategy', label:'Option Builder'}] : []),
-  ] : isMCXSymbol(sym) ? [
-    {id:'indicators', label:'Indicators'},
-    {id:'sr',         label:'S&R + Patterns'},
   ] : [
-    {id:'indicators', label:'Indicators'},
-    {id:'sr',         label:'S&R + Patterns'},
-    {id:'strategy',   label:'Strategy'},
-    {id:'decision',   label:'Decision'},
+    {id:'technicals', label:'Technicals'},
   ];
 
-  if(!views.some(v => v.id === ANALYSIS_VIEW)) ANALYSIS_VIEW = isIndex ? 'pulse' : 'indicators';
+  if(!views.some(v => v.id === ANALYSIS_VIEW)) ANALYSIS_VIEW = isIndex ? 'pulse' : 'technicals';
 
-  const btnBar = `<div class="analysis-bar analysis-bar-v14">
+  /* One view (stocks, MCX): no sub-tab bar. */
+  const btnBar = views.length < 2 ? '' : `<div class="analysis-bar analysis-bar-v14">
     ${views.map(v=>`<button class="anl-btn${ANALYSIS_VIEW===v.id?' active':''}" onclick="switchAnalysis('${v.id}')">${v.label}</button>`).join('')}
   </div>`;
 
@@ -6757,9 +6696,7 @@ async function tabAnalysis(sym) {
   /* Only the backtested rule card: the old "Today's options idea" card suggested iron condors, bear calls and
      calendars, which all lost money in the 2019-2026 NSE-price backtest (removed 19 Nov 2026). */
   if      (ANALYSIS_VIEW==='pulse')      { const ix = await buildIndexOptionsIdea(sym), idea = creditRuleHtml(ix); if(!live() || CUR_SYM !== sym) return; inner = idea + await tabPulse(sym); }
-  else if (ANALYSIS_VIEW==='indicators') inner = tabTrend() + tabIndicators();
-  else if (ANALYSIS_VIEW==='sr')         inner = tabSR();
-  else if (ANALYSIS_VIEW==='decision')   inner = (await tabScore(sym)) + `<div class="td-merged-head">Validation checks</div>` + (await tabValidity(sym, {merged:true}));
+  else if (ANALYSIS_VIEW==='technicals') inner = tabTrend() + tabIndicators() + `<div class="td-merged-head">Support / resistance and candles</div>` + tabSR();
   else if (ANALYSIS_VIEW==='strategy') {
     tc.innerHTML = btnBar + '<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div></div>';
     await tabStrategy(sym);
@@ -7071,7 +7008,7 @@ async function renderTab(tab){
     if(CUR_SYM?.startsWith('NSE:') && !isIndexSymbol(CUR_SYM) && ['overview','analysis','score','strategy'].includes(tab)) await getSwingContext(CUR_SYM);
     if(!live()) return; /* user clicked another tab meanwhile - do not start a stale render */
     let html='';
-    if(tab==='overview')         html = (isMCXSymbol(CUR_SYM) && CUR_SYM !== 'MCX:GOLDPETAL' && MCX_IDEA[CUR_SYM]) ? mcxOverviewHtml(CUR_SYM) : await tabOverview(CUR_SYM);
+    if(tab==='overview')         html = (isMCXSymbol(CUR_SYM) && MCX_IDEA[CUR_SYM]) ? mcxOverviewHtml(CUR_SYM) : await tabOverview(CUR_SYM);
     else if(tab==='analysis')   { await tabAnalysis(CUR_SYM); return; }
     else if(tab==='marketinfo') { await tabMarketInfo(); return; }
     else if(tab==='indicators')  html=tabIndicators();
@@ -7086,10 +7023,6 @@ async function renderTab(tab){
     else if(tab==='news')        html=await tabNews(CUR_SYM);
     else if(tab==='score')       html=await tabScore(CUR_SYM);
     else if(tab==='alerts')      html=tabAlerts();
-    if(tab==='overview' && CUR_SYM === 'MCX:GOLDPETAL'){   /* Gold Petal keeps its accumulation dashboard below the MCX cards */
-      const D = mcxData(CUR_SYM), x = buildCommodityIdea(CUR_SYM, D);
-      html = mcxCalHtml(CUR_SYM) + commodityIdeaHtml(CUR_SYM, x) + mcxExtrasHtml(CUR_SYM, D, x) + html;
-    }
     if(!live()) return;
     tc.innerHTML=html;
     if(tab==='overview' && isMCXSymbol(CUR_SYM) && MCX_IDEA[CUR_SYM]) mcxFillAsync(CUR_SYM);
@@ -7532,9 +7465,10 @@ function setupCompactPickers(){
   });
 }
 function closeCompactPickers(){
-  if(window.matchMedia('(max-width:820px)').matches){
-    document.querySelectorAll('.view.selector-open').forEach(v=>v.classList.remove('selector-open'));
-  }
+  /* Phones: every list folds after a pick. Wider screens: the Indices and MCX lists fold too (20 Nov 2026), so the
+     page shows only the chosen one - tap the bar to change it. */
+  const small = window.matchMedia('(max-width:820px)').matches;
+  document.querySelectorAll('.view.selector-open').forEach(v=>{ if(small || v.id === 'view-indices' || v.id === 'view-commodities') v.classList.remove('selector-open'); });
 }
 
 document.addEventListener('DOMContentLoaded',()=>{
@@ -7568,10 +7502,11 @@ document.addEventListener('DOMContentLoaded',()=>{
       return;
     }
     show('ls','none'); show('ih','none'); show('tbar','none'); show('tc','none'); show('es','flex');
+    if(view === 'indices' || view === 'commodities') document.getElementById('view-' + view)?.classList.add('selector-open');   /* nothing chosen yet: show the list */
     const copy = {
-      indices: ['Select an index', 'Pick Nifty 50, Bank Nifty or any sector index from the list for trend, breadth and options view.'],
+      indices: ['Select an index', 'Pick Nifty 50, Nifty Next 50 or Nifty Midcap 150. Sector indices are on the Markets page (Sectors).'],
       stocks: ['Search a stock', 'Type a symbol in the search box, open a recent stock, or open the Screener (top menu) for swing candidates and the monthly momentum list.'],
-      commodities: ['Select a commodity', 'Pick Gold, Gold Petal, Silver, Crude, Natural Gas or Copper from the list.']
+      commodities: ['Select a commodity', 'Pick Gold Petal, Crude Oil or Natural Gas - the three with a backtested buy setup.']
     }[view];
     if(es && copy) es.innerHTML = `<div class="ei"><svg width="34" height="34" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 3v18h18"/><path d="M7 15l4-4 3 3 5-6"/></svg></div><div class="et">${copy[0]}</div><div class="es2">${copy[1]}</div>`;
   }
@@ -7657,7 +7592,11 @@ document.addEventListener('DOMContentLoaded',()=>{
   document.querySelectorAll('.mkt-row').forEach(row=>row.addEventListener('click',()=>showGlobalTab(row.dataset.globalTab||'marketinfo')));
   document.querySelectorAll('.tbt').forEach(btn=>btn.addEventListener('click',()=>renderTab(btn.dataset.tab)));
   document.addEventListener('click',e=>{
-    if(e.target.closest('.ic[data-symbol], .chip')) closeCompactPickers();
+    if(e.target.closest('.ic[data-symbol], .chip')){
+      const ic = e.target.closest('.ic[data-symbol]'), lab = ic?.closest('.view')?.querySelector('.selector-toggle span');
+      if(lab && ic.dataset.name) lab.textContent = ic.dataset.name.replace(/ \(MCX\)$/, '');   /* the bar shows what is open */
+      closeCompactPickers();
+    }
   });
 
 
