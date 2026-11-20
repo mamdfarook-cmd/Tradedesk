@@ -1114,8 +1114,9 @@ function tabIndicators(){
   const bullCount=allSigs.filter(s=>s.c==='bull'||s.c==='strong-bull').length;
   const bearCount=allSigs.filter(s=>s.c==='bear'||s.c==='strong-bear').length;
   const overallC=bullCount>bearCount?'bull':bearCount>bullCount?'bear':'neutral';
+  TECH_SUM.ind = { bull: bullCount, bear: bearCount, n: allSigs.length, rsi };
   return`<div class="ov-box">
-    <div class="ov-title">Overall Indicator Summary — Live Data</div>
+    <div class="ov-title">2 · Indicators</div>
     <div style="display:flex;align-items:center;gap:12px;margin-bottom:14px;flex-wrap:wrap">
       ${bdg({l:`${bullCount} Bullish · ${bearCount} Bearish`,c:overallC})}
       <span style="font-size:.75rem;color:var(--tx3)">${rec.buy} MA Buy · ${rec.sell} MA Sell · ${rec.neu} Neutral</span>
@@ -1130,7 +1131,8 @@ function tabIndicators(){
       <div class="ov-item"><span class="ov-label">Bollinger</span><span class="ov-val" style="color:${bs.c==='bull'||bs.c==='strong-bull'?'var(--bull)':bs.c==='bear'||bs.c==='strong-bear'?'var(--bear)':'var(--neu)'}; font-size:.78rem">${bs.l}</span><span style="font-size:.68rem;color:var(--tx3)">${bs.note}</span></div>
       <div class="ov-item"><span class="ov-label">Volume</span><span class="ov-val" style="color:${vs.c==='bull'?'var(--bull)':vs.c==='bear'?'var(--bear)':'var(--neu)'}">${indexInstrument?'N/A':(volRatio*100).toFixed(0)+'% avg'}</span><span style="font-size:.68rem;color:var(--tx3)">${vs.l}</span></div>
     </div>
-  </div>`+
+  </div>
+  <details class="tp-more ind-more"><summary>Indicator details: RSI, MACD, VWAP, SuperTrend, ADX, EMAs, Bollinger, volume</summary>`+
   secT('Momentum / Oscillators')+
   sRow('RSI (14)',rs,`Value: ${rsi!=null?fmt(rsi,1):'--'}`)+
   sRow('MACD (12,26,9)',ms,`MACD: ${macdD?fmt(macdD.macd):'-'} · Signal: ${macdD?fmt(macdD.signal):'-'}`)+
@@ -1144,7 +1146,24 @@ function tabIndicators(){
   (indexInstrument
     ? sRow('Index Volume',vs,'Nifty/BankNifty index volume from Yahoo is not reliable tradable volume. Use A/D breadth, sector trend and futures/options data instead.')
     : sRow('Today Volume',vs,`Vol: ${volShown} · Avg20: ${fmtVol(Math.round(avgVol20))} · Chg: ${volChg>=0?'+':''}${volChg.toFixed(1)}%`)+
-      sRow('Volume vs Avg',{l:volRatio>1.5?'Very High':volRatio>1.2?'Above Average':volRatio<0.7?'Below Average':'Normal',c:volRatio>1.2?(priceChg>=0?'bull':'bear'):'neutral'},`${(volRatio*100).toFixed(0)}% of 20-day average`));
+      sRow('Volume vs Avg',{l:volRatio>1.5?'Very High':volRatio>1.2?'Above Average':volRatio<0.7?'Below Average':'Normal',c:volRatio>1.2?(priceChg>=0?'bull':'bear'):'neutral'},`${(volRatio*100).toFixed(0)}% of 20-day average`))+
+  `</details>`;
+}
+
+/* Quick read at the top of Technicals: one line per section, filled in while the sections are built. */
+let TECH_SUM = {};
+function techSummaryHtml(){
+  const t = TECH_SUM.trend, i = TECH_SUM.ind, s = TECH_SUM.sr; if(!t || !i || !s) return '';
+  const col = (b, r) => b > r ? 'var(--bull)' : r > b ? 'var(--bear)' : 'var(--neu)';
+  const pct = v => s.price ? ((v - s.price) / s.price * 100) : 0, pf = x => x.toFixed(Math.abs(x) < 1 ? 2 : 1);
+  const cell = (k, v, sub, c) => `<div class="tq-cell"><span>${k}</span><b style="color:${c || 'var(--tx)'}">${v}</b><em>${sub}</em></div>`;
+  return `<div class="tq-strip">
+    ${cell('Trend', t.bull > t.bear ? `${t.bull}/${t.denom} up` : t.bear > t.bull ? `${t.bear}/${t.denom} down` : 'Mixed', `Daily ${escHtml(t.d)} · Weekly ${escHtml(t.w)}`, col(t.bull, t.bear))}
+    ${cell('Indicators', `${i.bull} bull · ${i.bear} bear`, `of ${i.n}${i.rsi != null ? ` · RSI ${fmt(i.rsi, 1)}` : ''}`, col(i.bull, i.bear))}
+    ${cell('Support', s.sup != null ? fmt(s.sup) : '--', s.sup != null ? `${pf(pct(s.sup))}% away` : 'none below', 'var(--bull)')}
+    ${cell('Resistance', s.res != null ? fmt(s.res) : '--', s.res != null ? `+${pf(pct(s.res))}% away` : 'none above', 'var(--bear)')}
+    ${cell('52-week range', `${s.fib}%`, '0 = low · 100 = high', 'var(--acc)')}
+  </div>`;
 }
 
 function tabTrend(){
@@ -1158,7 +1177,8 @@ function tabTrend(){
   const bear=signals.filter(s=>s.c==='bear'||s.c==='strong-bear').length;
   /* One small box per timeframe (4 across, 2 on a phone) instead of four full-width rows. */
   const box=(lbl,sig,rec)=>`<div class="ov-item mtf-box"><span class="ov-label">${lbl}</span>${bdg(sig)}<span class="mtf-cnt">${rec ? `${rec.buy??0}↑ ${rec.sell??0}↓ ${rec.neu??0}→` : 'No data'}</span></div>`;
-  return secT('Multi-Timeframe Trend (Live Data)')+
+  TECH_SUM.trend = { bull, bear, denom, d: dr.l, w: wr.l };
+  return secT('1 · Trend (1 hour → monthly)')+
     `<div class="ov-grid mtf-grid">${box('1 Hour',ir,d.intra?.rec)}${box('Daily',dr,d.daily.rec)}${box('Weekly',wr,d.weekly?.rec)}${box('Monthly',mr,d.monthly?.rec)}</div>`+
     `<div style="margin-top:10px;padding:10px 14px;background:var(--bgc);border:1px solid var(--brd);border-radius:var(--rs);font-size:.82rem;color:var(--tx2)">
       Confluence: <strong style="color:${bull>bear?'var(--bull)':bear>bull?'var(--bear)':'var(--neu)'}">${bull>bear?bull+'/'+denom+' Bullish':bear>bull?bear+'/'+denom+' Bearish':'Mixed signals'}</strong>
@@ -1210,7 +1230,17 @@ function tabSR(){
   ].map(f=>({...f, pos:1-f.ratio, dist:+((f.price-price)/price*100).toFixed(2), isNear:Math.abs(f.price-price)/price<0.01})) : [];
 
   const pricePos = fibRange > 0 ? ((price - yw_low)/fibRange*100).toFixed(1) : '--';
-  const fibHtml = secT('Fibonacci Retracement (52-Week Low → High)')+
+  /* Levels at the same price (the 7 / 14 / 21-day highs are often one candle) shown once with all their names. */
+  const mergedLevels = [];
+  for (const lv of levels) { const m = mergedLevels.find(x => Math.abs(x.v - lv.v) < 1e-6); if (m) m.names.push(lv.n); else mergedLevels.push({ ...lv, names: [lv.n] }); }
+  for (const m of mergedLevels) {   /* "Swing R3 — 21D High" + "Swing R1 — 7D High" -> "Swing R1 / R3 — 7 / 21-day high" */
+    const sw = m.names.map(n => /^Swing ([RS]\d) — (\d+)D (High|Low)$/.exec(n));
+    if (m.names.length > 1 && sw.every(Boolean)) { const o = sw.sort((x, y) => +x[2] - +y[2]); m.n = `Swing ${o.map(x => x[1]).join(' / ')} — ${o.map(x => x[2]).join(' / ')}-day ${o[0][3].toLowerCase()}`; m.type = 'Same level on all of them'; }
+    else if (m.names.length > 1) m.n = m.names.join(' · ');
+  }
+  const below = levels.filter(l => l.v < price).sort((a, b) => b.v - a.v)[0], above = levels.filter(l => l.v > price).sort((a, b) => a.v - b.v)[0];
+  TECH_SUM.sr = { sup: below?.v ?? null, res: above?.v ?? null, price, fib: pricePos };
+  const fibHtml = secT('5 · Fibonacci (52-week low → high)')+
     `<div style="background:var(--bgc);border:1px solid var(--brd);border-radius:var(--r);padding:12px 14px;margin-bottom:14px">
       <div style="font-size:.72rem;color:var(--tx3);margin-bottom:10px">
         Range: <strong style="color:var(--bull)">${fmt(yw_low)}</strong> ↔ <strong style="color:var(--bear)">${fmt(yw_high)}</strong>
@@ -1231,8 +1261,8 @@ function tabSR(){
     </div>`;
 
   return`<div class="cur-price-bar"><div><div class="cpb-label">Live Price</div><div class="cpb-val">${fmt(price)}</div></div><div><div class="cpb-label">Prev Close</div><div style="font-size:.9rem;font-weight:700;font-variant-numeric:tabular-nums">${fmt(pc)}</div></div><div><div class="cpb-label">Prev H / L</div><div style="font-size:.82rem;font-weight:600"><span style="color:var(--bear)">${fmt(ph)}</span> / <span style="color:var(--bull)">${fmt(pl)}</span></div></div><div style="margin-left:auto;font-size:.72rem;color:var(--tx3)">◀ = Nearest level</div></div>`+
-  `<div class="lvl-card"><div class="lvl-header"><span>Key Support &amp; Resistance (from live data)</span><span style="font-weight:400;color:var(--tx3)">Dist from ${fmt(price,0)}</span></div>${levels.map(lv=>{const d=((lv.v-price)/price*100);return`<div class="lvl-row${near(lv.v)?' near':''}"><div><div class="lvl-name" style="color:${colClass[lv.k]}">${lv.n}${near(lv.v)?' ◀':''}</div><div class="lvl-type">${lv.type}</div></div><div style="text-align:right"><div class="lvl-price" style="color:${colClass[lv.k]}">${fmt(lv.v)}</div><div class="lvl-dist">${(+d>0?'+':'')+d.toFixed(2)}%</div></div></div>`;}).join('')}</div>`+
-  secT('Candles & Patterns')+tabPatterns()+
+  `<div class="lvl-card"><div class="lvl-header"><span>Key support &amp; resistance</span><span style="font-weight:400;color:var(--tx3)">Dist from ${fmt(price,0)}</span></div>${mergedLevels.map(lv=>{const d=((lv.v-price)/price*100);return`<div class="lvl-row${near(lv.v)?' near':''}"><div><div class="lvl-name" style="color:${colClass[lv.k]}">${lv.n}${near(lv.v)?' ◀':''}</div><div class="lvl-type">${lv.type}</div></div><div style="text-align:right"><div class="lvl-price" style="color:${colClass[lv.k]}">${fmt(lv.v)}</div><div class="lvl-dist">${(+d>0?'+':'')+d.toFixed(2)}%</div></div></div>`;}).join('')}</div>`+
+  secT('4 · Candles')+tabPatterns()+
   fibHtml;
 }
 
@@ -4333,7 +4363,13 @@ async function tabForwardTest() {
   const tagDefs = [['hhhl','Higher highs & lows'],['near52','Near 52-week high'],['dbAbove','Double bottom'],['pcrOk','Option PCR 0.5+'],['dpOk','Delivery 50%+ (older records)']];
   const tagStat = arr => { const n = arr.length, w = arr.filter(r=>+r.resultR>0).length; return n ? `${n} · ${Math.round(w/n*100)}% · ${(arr.reduce((a,r)=>a+(+r.resultR||0),0)/n).toFixed(2)}R` : '—'; };
   const tagged = finished.filter(r=>r.tags);
-  const tagTable = tagged.length ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by tag (closed picks recorded with tags)</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Tag</th><th>With: trades · win · avg</th><th>Without</th></tr></thead><tbody>${tagDefs.map(([k,l]) => `<tr><td>${l}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===true))}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===false))}</td></tr>`).join('')}</tbody></table></div><div class="idea-foot">After 30+ trades per side this shows whether each tag really helps your picks - the backtest said yes for each tag.</div></div>` : '';
+  /* Results by strategy: swing READY picks vs the two pattern breakouts (recorded from 20 Nov 2026). */
+  const isPat = (r, n) => r.pattern === true && new RegExp(n, 'i').test(String(r.setup || ''));
+  const stratDefs = [['Swing READY / buy limit', r => !r.pattern, 'Backtest: 44% win, +0.08R (max 5 open)'],
+    ['Flat base breakout', r => isPat(r, 'flat base'), 'Backtest: 53% win, +0.13R (max 5 open)'],
+    ['Double bottom breakout', r => isPat(r, 'double bottom'), 'Backtest: 49% win, +0.07R']];
+  const stratTable = rows.some(r => r.pattern) ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by strategy</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Strategy</th><th>Open</th><th>Closed: trades · win · avg</th><th>Backtest</th></tr></thead><tbody>${stratDefs.map(([l, f, bt]) => `<tr><td>${l}</td><td>${rows.filter(r => !r.closed && f(r)).length}</td><td>${tagStat(finished.filter(f))}</td><td style="color:var(--tx3)">${bt}</td></tr>`).join('')}</tbody></table></div></div>` : '';
+  const tagTable = stratTable + (tagged.length ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by tag (closed picks recorded with tags)</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Tag</th><th>With: trades · win · avg</th><th>Without</th></tr></thead><tbody>${tagDefs.map(([k,l]) => `<tr><td>${l}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===true))}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===false))}</td></tr>`).join('')}</tbody></table></div><div class="idea-foot">After 30+ trades per side this shows whether each tag really helps your picks - the backtest said yes for each tag.</div></div>` : '');
   const body = rows.length ? rows.slice(0,120).map(r=>{
     const retCol = (+r.retNow||0)>=0?'var(--bull)':'var(--bear)';
     const resCol = (+r.resultR||0)>0?'var(--bull)':(+r.resultR||0)<0?'var(--bear)':'var(--tx2)';
@@ -6568,7 +6604,7 @@ async function tabOverview(sym) {
   const displayRRSub = activeTradeAllowed ? (rr==='Wait'?'Invalid / wait':rrNum>=SWING_MIN_RR?'Current-price RR acceptable':'Current-price RR weak') : 'No active setup';
   const trendClass = (dr.c?.includes('bull') && wr.c?.includes('bull')) ? 'bull' : (dr.c?.includes('bear') && wr.c?.includes('bear')) ? 'bear' : 'neutral';
   const trendCombo = `<div class="tp-trend-combo"><span>Daily: <b>${dr.l}</b></span><span>Weekly: <b>${wr.l}</b></span></div>`;
-  const trendSub = trendClass === 'bull' ? 'Both timeframes support long bias' : trendClass === 'bear' ? 'Both timeframes support short bias' : 'Mixed / neutral confirmation';
+  const trendSub = trendClass === 'bull' ? 'Both timeframes support a buy' : trendClass === 'bear' ? 'Both timeframes are down - no buy' : 'Mixed / neutral confirmation';
   const scoreMini = `
     <div class="tp-score-mini-grid">
       <div class="tp-score-mini ${gradeClass}"><div class="tp-score-mini-label">Fresh Entry</div><div class="tp-score-mini-val">${qScore}/100</div><div class="tp-score-mini-sub">${grade}</div></div>
@@ -6643,7 +6679,7 @@ async function tabOverview(sym) {
         ${planItem('Daily + Weekly Trend', trendCombo, trendSub, trendClass)}`}
         ${activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
       </div>
-      ${positionCalc}
+      ${activeTradeAllowed || limitPlan || plannedOk ? positionCalc : `<details class="tp-more"><summary>Position size calculator (fills in when a trade is ready)</summary>${positionCalc}</details>`}
       <details class="tp-more"><summary>More details: Fresh Entry / Hold score, price and volume status</summary>
       ${scoreMini}
       <div class="tp-status-grid">
@@ -6696,7 +6732,7 @@ async function tabAnalysis(sym) {
   /* Only the backtested rule card: the old "Today's options idea" card suggested iron condors, bear calls and
      calendars, which all lost money in the 2019-2026 NSE-price backtest (removed 19 Nov 2026). */
   if      (ANALYSIS_VIEW==='pulse')      { const ix = await buildIndexOptionsIdea(sym), idea = creditRuleHtml(ix); if(!live() || CUR_SYM !== sym) return; inner = idea + await tabPulse(sym); }
-  else if (ANALYSIS_VIEW==='technicals') inner = tabTrend() + tabIndicators() + `<div class="td-merged-head">Support / resistance and candles</div>` + tabSR();
+  else if (ANALYSIS_VIEW==='technicals') { TECH_SUM = {}; const t = tabTrend(), ind = tabIndicators(), sr = tabSR(); inner = techSummaryHtml() + t + ind + `<div class="td-merged-head">3 · Support &amp; resistance</div>` + sr; }
   else if (ANALYSIS_VIEW==='strategy') {
     tc.innerHTML = btnBar + '<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div></div>';
     await tabStrategy(sym);

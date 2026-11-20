@@ -1,3 +1,15 @@
+# Quicker reading + pattern breakouts in the Track record (20 Nov 2026 · page version 20 Nov 2026 · 4)
+
+- Analysis -> Technicals reads top to bottom: a quick-read strip (trend, indicators, nearest support and resistance,
+  place in the 52-week range), then 1 Trend, 2 Indicators, 3 Support & resistance, 4 Candles, 5 Fibonacci. The
+  per-indicator detail rows are folded under "Indicator details" (the summary grid shows the same numbers).
+- Support / resistance levels at the same price are shown once (e.g. "Swing R1 / R2 / R3 - 7 / 14 / 21-day high").
+- Overview: the position size calculator is folded while there is no trade to size; the trend line says
+  "Both timeframes are down - no buy" instead of "short bias" (stocks are buy-only).
+- Track record: the top 5 pattern breakouts of the 15:00 scan are recorded with their own stop and 2R target (sell
+  all at 2R or the close of day 15), and a "Results by strategy" table compares swing READY picks, flat-base and
+  double-bottom breakouts with their backtests.
+
 # Cleaner layout (20 Nov 2026 · page version 20 Nov 2026 · 3)
 
 - Indices list: Nifty 50, Nifty Next 50, Nifty Midcap 150 only (sector indices stay on Markets -> Sectors). MCX list:

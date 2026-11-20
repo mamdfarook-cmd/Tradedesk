@@ -46,6 +46,7 @@ function importStockTrace(){
     rows.push({ date: r.date, source: 'server scan', rank: '-', sym: r.sym, side: 'Long', bias: r.bias || 'Bullish', entry: ftR(r.entry), current: ftR(r.entry),
       sl: ftR(r.sl), t1: ftR(r.t1), t2: null, trailSl: null, atr: null, rr1: null, rr2: null, score10: r.score10 || null, final: r.final || null, setup: r.setup || null,
       exitMode: r.exitMode || null, t2r: r.t2r ? ftR(r.t2r) : null, tags: r.tags || null, sector: r.sector || null,
+      ...(r.pattern ? { pattern: true, planLocked: true, side: 'Long', source: 'pattern breakout' } : {}),
       status: 'Open', phase: 'entry', resultR: null, retNow: 0, d5: null, d10: null, d20: null, closed: false, createdAt: new Date(+r.createdAt || Date.now()).toISOString() });
     have.add(`${r.date}_${r.sym}`); n++;
   }

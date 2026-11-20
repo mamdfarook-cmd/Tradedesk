@@ -6318,6 +6318,11 @@ async function scheduledScanTick() {
   }
   const sig = scanSignals(data, slot), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
   try { traceStockRecord(data?.picks || [], key); } catch (e) { console.warn('Stock trace:', e.message); }
+  /* Pattern breakouts are judged on the day's close: recorded at the last scan with their own stop and 2R target. */
+  if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) try {
+    traceStockRecord((data?.patternBreakouts || []).slice(0, 5).map(x => ({ sym: x.sym, price: x.price, plan: { stop: x.stop, target: x.target },
+      pickedSetup: x.name, exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true })), key);
+  } catch (e) { console.warn('Pattern trace:', e.message); }
   if (sig.length) {
     await pushAll({ title: `🟢 ${sig.length} stock${sig.length > 1 ? 's' : ''} ready · ${hhmm} scan`, body: sig.map(x => x.text).join('\n'), tag: 'td-scan', url: '/?view=screener' });
   } else if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) {
@@ -6767,7 +6772,7 @@ function traceStockRecord(picks, key) {
       sl: +pl.stop > 0 ? r2(pl.stop) : null, t1: +pl.target > 0 ? r2(pl.target) : null, setup: x.pickedSetup || x.selectedStrategy || null,
       exitMode: '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
       tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, pcrOk: tg.pcrOk ?? null },
-      bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null });
+      bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null, pattern: !!x.pattern });
     added++;
   }
   if (added) traceSave(t);

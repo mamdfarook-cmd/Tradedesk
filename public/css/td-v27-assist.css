@@ -144,3 +144,12 @@
 /* Phones: the folded list must hide its rows - "#sidebar .ic{display:grid!important}" (td-ui-polish) outranked the
    picker's hide rule, so the Indices / MCX rows stayed on screen after a pick. */
 @media(max-width:820px){ #sidebar .view.active:not(.selector-open)>.ic{display:none!important} }
+
+/* Technicals quick read (20 Nov 2026) */
+.tq-strip{display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin:0 0 14px}
+.tq-cell{background:var(--bgc);border:1px solid var(--brd);border-radius:12px;padding:9px 11px;display:flex;flex-direction:column;gap:2px;min-width:0}
+.tq-cell span{font-size:.64rem;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:var(--tx3)}
+.tq-cell b{font-size:.95rem;font-weight:900;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tq-cell em{font-style:normal;font-size:.68rem;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:820px){.tq-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.tq-strip .tq-cell:last-child{grid-column:1/-1}}
+.ind-more{margin:12px 0 4px}
