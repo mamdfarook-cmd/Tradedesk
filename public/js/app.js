@@ -4996,6 +4996,12 @@ async function checkAllVsOverview(){
     const why = [];
     if(!v) why.push('Overview did not load');
     else {
+      if(s.gateV2 && v.gateV2){
+        const sReady = String(s.tradeStatus).toUpperCase() === 'READY';
+        if(sReady !== (v.action === 'READY')) why.push(`action ${v.action} vs ${s.tradeStatus}`);
+        if((v.setup || '') !== (s.pickedSetup || '') && sReady) why.push(`signal ${v.setup || 'none'} vs ${s.pickedSetup || 'none'}`);
+        if(sReady && v.stop > 0 && +s.plan?.stop > 0 && Math.abs(v.stop - s.plan.stop) / s.plan.stop > 0.005) why.push(`stop ${fmt(v.stop)} vs ${fmt(s.plan.stop)}`);
+      } else {
       if(v.bias !== 'Bullish') why.push(`Overview bias ${v.bias}`);
       const noSetup = x => !x || /no active strategy|wait for breakout/i.test(x);   /* the Overview's wording for "no setup" */
       const oSet = noSetup(v.setup) ? '' : v.setup, sSet = s.pickedSetup || '';
@@ -5004,6 +5010,7 @@ async function checkAllVsOverview(){
       const sReady = String(s.tradeStatus).toUpperCase() === 'READY';
       if(sReady !== (v.action === 'READY')) why.push(`action ${v.action} vs ${s.tradeStatus}`);
       if(s.limitReady && s.limitEntry && !(Math.abs((+v.limit || 0) - +s.limitEntry.price) < 0.06)) why.push(`limit ${v.limit ?? 'none'} vs ${s.limitEntry.price}`);
+      }
       /* Different price = different R:R and setup by design: say so, it is not a rule mismatch. */
       const sp = +s.price, op = +v.price;
       if(why.length && sp > 0 && op > 0 && Math.abs(op - sp) / sp > 0.001) why.push(`price moved ${op > sp ? '+' : ''}${((op - sp) / sp * 100).toFixed(2)}% since the scan (₹${fmt(sp)} → ₹${fmt(op)}) - Refresh the scan to compare like for like`);
@@ -5018,7 +5025,7 @@ async function checkAllVsOverview(){
     n++;
     if(!v) bad.push(`<b>${escHtml(q.sym)}</b>: Overview did not load`); else if(!v.quick) bad.push(`<b>${escHtml(q.sym)}</b>: no quick bounce on the Overview`); else ok++;
   }
-  box.innerHTML = `<b style="color:${bad.length ? 'var(--bear)' : 'var(--bull)'}">Screener vs Overview: ${ok} of ${n} match</b>${bad.length ? ` · ${bad.join(' · ')}` : ' - same bias, setup, R:R and action on every stock.'}`;
+  box.innerHTML = `<b style="color:${bad.length ? 'var(--bear)' : 'var(--bull)'}">Screener vs Overview: ${ok} of ${n} match</b>${bad.length ? ` · ${bad.join(' · ')}` : ' - same action, signal and stop on every stock.'}`;
 }
 
 /* Market regime + results-calendar status shown above both screener lists. */
@@ -6534,6 +6541,9 @@ async function tabOverview(sym) {
     const niftyOk = marketRegime?.trendUp !== false, blocked = !!resultsSoon || !!swingCtx?.events?.block;
     return { g, signalDay, forming, niftyOk, blocked, active: g.ok && !forming && niftyOk && !blocked, near: g.ok ? null : (gNow?.near || gPrev?.near || null) };
   })();
+  const isStockOv = !isMCXSymbol(sym) && !isIndexSymbol(sym);
+  const stockTrend = price > e50 && e50 > e200 ? 'Uptrend' : price < e50 && e50 < e200 ? 'Downtrend' : 'Mixed';
+  const stockTrendSub = `Price ${fmt(price)} vs EMA50 ${fmt(e50)} and EMA200 ${fmt(e200)}${sgPlan?.g?.ok && sgPlan.g.setup === 'EMA20/50 cross' && stockTrend !== 'Uptrend' ? ' - normal for a fresh EMA20/50 cross: the new uptrend starts before EMA50 rises above EMA200' : ''}`;
   const sgWhy = sgPlan?.active ? '' : !sgPlan ? 'Not enough daily history for the READY check'
     : sgPlan.g.ok ? (sgPlan.forming ? `${sgPlan.g.setup} forming today - READY if it holds at the close (from 15:00)` : !sgPlan.niftyOk ? `${sgPlan.g.setup}, but Nifty is not in its uptrend` : `${sgPlan.g.setup}, but results or a corporate event are close`)
     : (sgPlan.near || 'No tested signal today (EMA20/50 cross with relative strength, or a gap-up near the 52-week high)');
@@ -6546,8 +6556,10 @@ async function tabOverview(sym) {
     decisionMain = sgPlan?.forming ? 'Signal forming - confirm at the close' : 'Wait - no tested swing signal';
     actionLine = `READY needs a tested signal: ${escHtml(sgWhy)}.`;
   }
-  OVERVIEW_VERDICT[sym] = {action: actionBadge, gate: readyGate.label, bias, setup: strategyPlan?.setupName || '', confidence, score: qScore,
-    reasons: readyGate.reasons.slice(), classified: setupInfo?.label || '', rr: rrNum, price,
+  OVERVIEW_VERDICT[sym] = {action: actionBadge, gate: isStockOv ? 'tested' : readyGate.label, bias: isStockOv ? stockTrend : bias,
+    setup: isStockOv ? (sgPlan?.g?.ok ? sgPlan.g.setup : '') : strategyPlan?.setupName || '', confidence, score: qScore, gateV2: isStockOv,
+    stop: isStockOv && sgPlan?.g?.ok ? sgPlan.g.stop : null,
+    reasons: readyGate.reasons.slice(), classified: setupInfo?.label || '', rr: isStockOv ? (sgPlan?.g?.ok ? 2 : null) : rrNum, price,
     reason: actionBadge === 'READY' ? '' : sgWhy || actionBadgeSub || '', ts: Date.now()};
   const biasDetailClass = bias==='Bullish' ? 'bull' : bias==='Bearish' ? 'bear' : 'neutral';
   const entryDetailClass = decisionClass==='qualified' ? 'bull' : decisionClass==='reject' ? 'bear' : 'neutral';
@@ -6596,7 +6608,7 @@ async function tabOverview(sym) {
     const niftyOk = marketRegime?.trendUp !== false;
     return { ...pb, niftyOk, active: niftyOk && !resultsSoon && !swingCtx?.events?.block };
   })();
-  const noActiveTradeText = bias === 'Sideways'
+  const noActiveTradeText = isStockOv ? 'No active trade — no tested signal' : bias === 'Sideways'
     ? 'No active trade — sideways/choppy'
     : actionBadge === 'CONFIRM'
       ? 'No active trade — wait for confirmation'
@@ -6613,9 +6625,10 @@ async function tabOverview(sym) {
   }
   const topDecisionDetails = `
     <div class="tp-decision-details">
-      <div class="tp-detail ${sgPlan?.active ? 'bull' : biasDetailClass}"><div class="tp-detail-label">Bias</div><div class="tp-detail-value">${sgPlan?.active ? 'Long (tested signal)' : bias}</div><div class="tp-detail-sub">Trend / momentum direction.</div></div>
-      <div class="tp-detail ${setupInfoForDecision?.cls || 'neutral'}"><div class="tp-detail-label">Selected Setup</div><div class="tp-detail-value">${sgPlan?.g?.ok ? escHtml(sgPlan.g.setup) : setupCleanLabel}</div><div class="tp-detail-sub">${sgPlan?.g?.ok ? escHtml(sgPlan.g.why) : `${setupInfo?.simple || setupInfo?.note || 'Setup is not clean yet.'}${!isMCXSymbol(sym) ? ' · chart reading only - READY needs a tested signal' : readyGate.passed ? '' : ' · not active until the Ready Gate passes'}`}</div></div>
-      <div class="tp-detail tp-decision-box ${entryDetailClass}"><div class="tp-detail-label">Decision · ${isMCXSymbol(sym) ? `Ready Gate ${readyGate.label}` : 'tested READY gate'}</div><div class="tp-detail-value">${actionBadge} · ${isMCXSymbol(sym) ? finalActionValue : sgPlan?.active ? escHtml(sgPlan.g.setup) : escHtml(sgWhy)}</div><div class="tp-detail-sub">${!isMCXSymbol(sym) ? `<span class="tp-conf">Old setup check (information only): ${escHtml(readyGate.label)} · score ${qScore}/100</span>` : readyGate.passed ? `All Ready Gate checks passed · score ${qScore}/100 · confidence ${confidence}/100 · recheck before next-day entry.${readyGate.notes?.length ? ' ' + escHtml(readyGate.notes.join(' · ')) + '.' : ''}${bias==='Bearish' ? ' Short setup: the Screener lists long setups only.' : ''}` : `<span class="tp-missing">What is missing (${readyGate.reasons.length}):</span><ul class="tp-reasons">${readyGate.reasons.map(r=>`<li>${escHtml(r)}</li>`).join('')}</ul><span class="tp-conf">Score ${qScore}/100 · confidence ${confidence}/100 (information only)</span>`}</div></div>
+      ${isStockOv ? `<div class="tp-detail ${stockTrend === 'Uptrend' ? 'bull' : stockTrend === 'Downtrend' ? 'bear' : 'neutral'}"><div class="tp-detail-label">Trend</div><div class="tp-detail-value">${stockTrend}</div><div class="tp-detail-sub">${stockTrendSub}</div></div>`
+        : `<div class="tp-detail ${biasDetailClass}"><div class="tp-detail-label">Bias</div><div class="tp-detail-value">${bias}</div><div class="tp-detail-sub">Trend / momentum direction.</div></div>`}
+      <div class="tp-detail ${setupInfoForDecision?.cls || 'neutral'}"><div class="tp-detail-label">${isStockOv ? 'Tested signal' : 'Selected Setup'}</div><div class="tp-detail-value">${sgPlan?.g?.ok ? escHtml(sgPlan.g.setup) : isStockOv ? 'None today' : setupCleanLabel}</div><div class="tp-detail-sub">${sgPlan?.g?.ok ? escHtml(sgPlan.g.why) : isStockOv ? escHtml(sgPlan?.near || 'Watching for an EMA20/50 cross with relative strength, or a 2%+ gap-up on 2x volume near the 52-week high') : `${setupInfo?.simple || setupInfo?.note || 'Setup is not clean yet.'}${readyGate.passed ? '' : ' · not active until the Ready Gate passes'}`}</div></div>
+      <div class="tp-detail tp-decision-box ${entryDetailClass}"><div class="tp-detail-label">Decision · ${isMCXSymbol(sym) ? `Ready Gate ${readyGate.label}` : 'tested READY gate'}</div><div class="tp-detail-value">${actionBadge} · ${isMCXSymbol(sym) ? finalActionValue : sgPlan?.active ? escHtml(sgPlan.g.setup) : escHtml(sgWhy)}</div><div class="tp-detail-sub">${isStockOv ? `<span class="tp-conf">${sgPlan?.active ? 'Buy at the price · stop under the setup · sell all at 2R or the close of day 15 (10-year test: 49% wins, 8 of 10 years)' : 'READY = EMA20/50 cross with the stock beating Nifty, or a 2%+ gap-up on 2x volume near the 52-week high, with Nifty in its uptrend'}</span>` : readyGate.passed ? `All Ready Gate checks passed · score ${qScore}/100 · confidence ${confidence}/100 · recheck before next-day entry.${readyGate.notes?.length ? ' ' + escHtml(readyGate.notes.join(' · ')) + '.' : ''}${bias==='Bearish' ? ' Short setup: the Screener lists long setups only.' : ''}` : `<span class="tp-missing">What is missing (${readyGate.reasons.length}):</span><ul class="tp-reasons">${readyGate.reasons.map(r=>`<li>${escHtml(r)}</li>`).join('')}</ul><span class="tp-conf">Score ${qScore}/100 · confidence ${confidence}/100 (information only)</span>`}</div></div>
     </div>`;
 
   const topRisk = warnings.length ? warnings.slice(0,3).map(w=>`${w.t}: ${w.d}`).join(' · ') : 'No major warning from loaded technical data. Still verify earnings, calendar events and fresh news manually.';
@@ -6720,7 +6733,7 @@ async function tabOverview(sym) {
         <div class="tp-action-badge">
           <div class="tp-action-word">${actionBadge}</div>
           <div class="tp-action-lbl">${actionBadgeSub}</div>
-          <div class="tp-action-lbl" title="Score = Fresh Entry Score (the gate needs 70+). Confidence = 55% score + 25% R:R + 20% trend strength, minus warnings, so it is usually below the score.">Score ${qScore}/100 · Confidence ${confidence}/100</div>
+          <div class="tp-action-lbl" title="Score = Fresh Entry Score (the gate needs 70+). Confidence = 55% score + 25% R:R + 20% trend strength, minus warnings, so it is usually below the score.">${isStockOv ? (sgPlan?.g?.ok ? `Risk ${fmt(sgPlan.g.riskPct)}% · exit 2R or day 15` : 'Tested READY gate') : `Score ${qScore}/100 · Confidence ${confidence}/100`}</div>
         </div>
       </div>
       ${topDecisionDetails}
@@ -6735,7 +6748,7 @@ async function tabOverview(sym) {
           <div class="tp-kicker-row">
             <div class="tp-kicker">Trade Plan</div>
             <div class="tp-actions">
-              <button type="button" class="tp-share-btn tp-alert-btn" onclick="openAlertPopup(${jsArg(sym)}, ${jsArg(isMCXSymbol(sym) ? {} : {limit:limitPlan ? limitPlan.price : null, entry:+strategyPlan?.entryPrice || null, sl:+stopLoss || null, t1:+target1 || null})})" title="Price alert for ${escHtml(name)}" aria-label="Set a price alert">🔔${ALERTS.some(a => a.sym === sym && !a.triggered) ? '<i class="tp-alert-dot"></i>' : ''}</button>
+              <button type="button" class="tp-share-btn tp-alert-btn" onclick="openAlertPopup(${jsArg(sym)}, ${jsArg(isMCXSymbol(sym) ? {} : (isStockOv ? (sgPlan?.g?.ok ? {entry: sgPlan.g.entry, sl: sgPlan.g.stop, t1: sgPlan.g.target} : {}) : {limit:limitPlan ? limitPlan.price : null, entry:+strategyPlan?.entryPrice || null, sl:+stopLoss || null, t1:+target1 || null}))})" title="Price alert for ${escHtml(name)}" aria-label="Set a price alert">🔔${ALERTS.some(a => a.sym === sym && !a.triggered) ? '<i class="tp-alert-dot"></i>' : ''}</button>
               <a class="tp-share-btn" href="${shareUrl}" target="_blank" rel="noopener" title="Share trade plan on WhatsApp" aria-label="Share trade plan on WhatsApp">💬</a>
               ${!isMCXSymbol(sym) && (bias === 'Bullish' || sgPlan?.active) && (activeTradeAllowed || plannedOk || limitPlan) ? `<button type="button" class="tp-share-btn" onclick="openTradeForm(${jsArg((() => { const e = limitPlan ? limitPlan.price : activeTradeAllowed ? price : plannedEntry, st = limitPlan ? limitPlan.stop : activeTradeAllowed ? activeStopLoss : +strategyPlan.stopLoss;
                 return {kind:'stock', sym, name, setup: sgPlan?.active ? sgPlan.g.setup : strategyPlan?.setupName || '', entry: e, stop: st, t1: +e > +st ? R2(+e + 2 * (+e - +st)) : null, t2: limitPlan ? limitPlan.target : activeTradeAllowed ? activeTarget : +strategyPlan.target1, exitDays: 15}; })())})" title="I took this trade - add it to My trades (stop / target alerts)" aria-label="I took this trade">📒</button>` : ''}
@@ -6762,8 +6775,8 @@ async function tabOverview(sym) {
         ${sgPlan?.active ? planItem('Exit Plan', `Sell all at 2R ${fmt(sgPlan.g.target)} or the close of day 15`, 'Tested exit (10-year backtest)', 'plan-exit') : activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
       </div>
       ${activeTradeAllowed || limitPlan || plannedOk ? positionCalc : `<details class="tp-more"><summary>Position size calculator (fills in when a trade is ready)</summary>${positionCalc}</details>`}
-      <details class="tp-more"><summary>More details: Fresh Entry / Hold score, price and volume status</summary>
-      ${scoreMini}
+      <details class="tp-more"><summary>More details: ${isStockOv ? 'price and volume status' : 'Fresh Entry / Hold score, price and volume status'}</summary>
+      ${isStockOv ? '' : scoreMini}
       <div class="tp-status-grid">
         ${priceLocationMini}
         ${volumePressureMini}

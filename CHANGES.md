@@ -1,3 +1,12 @@
+# Stock Overview in one style (20 Nov 2026 · page version 20 Nov 2026 · 7)
+
+- The stock Overview shows only the tested READY gate: a Trend box (price vs EMA50 / EMA200) and a Tested signal box
+  (EMA20/50 cross or gap-up, or what is close) replace the old setup engine's bias, setup names (EMA50 pullback, wait
+  breakout...) and Fresh Entry / Hold scores. A fresh EMA20/50 cross with a "Mixed" trend says why that is normal.
+- Screener "Check all vs Overview" compares the tested gate (action, signal, stop) instead of the old bias / R:R -
+  MAXHEALTH no longer reports "Overview bias Sideways". The stock 🔔 alert fills in the tested entry, stop and 2R.
+- MCX pages keep their own plan (unchanged).
+
 # Tested READY gate, Nifty weekly sells, Gold buy-only at T1 (20 Nov 2026 · page version 20 Nov 2026 · 6)
 
 - Swing READY is now the tested gate (17 well-known swing entries backtested on 235 large caps over 10 years with the
