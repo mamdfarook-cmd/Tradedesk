@@ -25,7 +25,7 @@ Needs the paid Kite Connect plan (market data). The free "Personal" plan has no 
    You log in on Zerodha's own page (TradeDesk never sees your Zerodha password or 2FA) and come back connected.
 
 Every morning: Zerodha ends every API login at 06:00 (exchange rule - no app can skip it). Press Connect Zerodha once
-before the market opens; at 08:45 on trading days a notification / Telegram message reminds you when it is not
+before the market opens; at 08:45 on trading days a phone / browser notification reminds you when it is not
 connected. Also press it again after an upload (a deploy wipes the saved login).
 
 Check: /api/health -> "kite": connected true, ready true, "indices" = how many NSE indices were matched,

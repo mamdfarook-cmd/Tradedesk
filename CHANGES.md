@@ -1,3 +1,41 @@
+# Tested READY gate, Nifty weekly sells, Gold buy-only at T1 (20 Nov 2026 · page version 20 Nov 2026 · 6)
+
+- Swing READY is now the tested gate (17 well-known swing entries backtested on 235 large caps over 10 years with the
+  same exit - 2R or day 15, at most 5 open, Nifty-uptrend filter, costs): READY = EMA20 crosses above EMA50, close
+  above EMA200 and the stock beats Nifty over 3 months, OR a 2%+ gap-up on 2x the 20-day volume that closes above its
+  open, in an uptrend, within 10% of the 52-week high. Together: 49% wins, +0.18R a trade, profit in 8 of 10 years
+  (9-10 with 3 or 8 open, both halves 2017-21 / 2022-26 positive), worst fall -13%. The old pullback / breakout READY
+  was 44%, 6 of 10 years. The signal is a close: during the session yesterday's candle counts (buy now), today's
+  from 15:00. Stop 0.25 ATR under the setup low (kept 0.75-3 ATR away). The app's gate reproduces all 449 backtest
+  signals with the same stops. Screener, Overview, alerts and the Track record use it; the old buy-limit plan is
+  retired; the Watchlist shows signals forming today and EMA20 about to cross EMA50 (relative strength positive).
+- Nifty: two weekly sells next to the bull-put rule - trend sell (one side, 2%+ away, delta under 0.20, exit on a
+  close at 2x the premium; 86% wins, 8 of 8 years) and short strangle (2%+ both sides, exit at 2x the credit; 78%,
+  7 of 8 years). Entry at the close of the first trading day after a weekly expiry; an alert at 15:05 that day.
+  Strikes match the backtest in every week (281 / 281 and 404 / 404). My trades accepts naked sells (no buy strike)
+  and the strangle's call strike, which the watcher also checks.
+- Gold Petal: buy-only without the driver filter, sold at T1 or day 10 (59% wins, 8 of 10 years); the small-size
+  gold sell (44%, 5 of 8 years) and the 3R / 20-day exit are removed. Drivers are shown as information only.
+
+# MCX contract roll, one list per stock, Telegram removed (20 Nov 2026 · page version 20 Nov 2026 · 5)
+
+- Natural gas showed +11.6% on 20 Nov (real move about -0.2% in US$, -1.2% in rupees). Yahoo's continuous future
+  switched from the December to the January contract that day and the change was measured from the old contract's
+  close; crude oil the same (-2.0% instead of -0.6%). The previous close now comes from the same contract as the
+  live price, the day's open / high / low too, and the bars before the switch are scaled to the new contract so the
+  chart, EMAs and the MCX plan do not see a fake 12% jump (a false breakout). An MCX calibration saved before the
+  switch is dropped - calibrate again with your broker's price.
+- Weekly / monthly charts: Yahoo adds today as an extra bar (a Mon-Thu week plus a one-day "week"), which the weekly
+  and monthly trend counted twice; today is merged into its week and month, and the current bar is built from the
+  daily bars (Gold's November bar was today only).
+- Screener: a stock shows in one list only - READY / Ready on limit, then Pattern breakouts, Quick bounce, Watchlist,
+  Low score. A pattern breakout that the swing check calls "Wait breakout" or "Low R:R" says so on its row.
+- Telegram alerts removed (not used): alerts come only as phone / browser notifications. My trades shows how many
+  devices get them, with "Turn on for this device" and "Send test". TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID on Render
+  are no longer read and can be deleted there.
+- 17:00 MCX check: one "nothing ready" line with the three commodities' status when no trade is ready, so a quiet
+  evening is not mistaken for a broken alert.
+
 # Quicker reading + pattern breakouts in the Track record (20 Nov 2026 · page version 20 Nov 2026 · 4)
 
 - Analysis -> Technicals reads top to bottom: a quick-read strip (trend, indicators, nearest support and resistance,

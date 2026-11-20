@@ -329,7 +329,10 @@
   const GOLD_MCX = new Set(['MCX:GOLDPETAL', 'MCX:GOLD']);
   /* Exit tested for each: gold - full exit at 3R or after 20 trading days (+0.88R a trade vs +0.43R at T1 in 10
      days); crude / natural gas - full exit at T1 or after 10 days (the version that was tested). */
-  const MCX_EXIT = { 'MCX:GOLDPETAL': { r: 3, days: 20 }, 'MCX:GOLD': { r: 3, days: 20 }, 'MCX:CRUDEOIL': { r: null, days: 10 }, 'MCX:NATURALGAS': { r: null, days: 10 } };
+  /* 20 Nov 2026 (user's bar: over 50% wins and profit in 75% of years): gold buys without the driver filter, sold at
+     T1 or day 10 - 59% wins, 8 of 10 years (140 trades). With the 2-of-3 driver filter and 3R / 20 days it was 62% but
+     only 7 of 10 years, and the gold sell 44% / 5 of 8 years - both dropped. */
+  const MCX_EXIT = { 'MCX:GOLDPETAL': { r: null, days: 10 }, 'MCX:GOLD': { r: null, days: 10 }, 'MCX:CRUDEOIL': { r: null, days: 10 }, 'MCX:NATURALGAS': { r: null, days: 10 } };
   function commodityPlan(sym, { C, H, L, price, sr }, opts = {}) {
     const minRR = opts.minRR || 1.25, fmt = v => Number(v).toLocaleString('en-IN', { maximumFractionDigits: 2 });
     const e20 = emaLast(C, 20), e50 = emaLast(C, 50), rsi = rsi14(C);
@@ -341,7 +344,7 @@
     /* Gold sells only when all 3 drivers point down (dollar up, US yield up, rupee stronger) - the one sell case the
        backtest did not lose on: 12 trades in 10 years, 58% wins, +0.04R. Shown as small size (user's choice). */
     const isGold = GOLD_MCX.has(sym);
-    const goldSellOk = isGold && !!opts.drivers && opts.drivers.known === 3 && opts.drivers.count === 0;
+    const goldSellOk = false;   /* gold sell removed 20 Nov 2026: 44% wins, 5 of 8 years in the backtest */
     let smallSize = false;
     let side = 'WAIT', entry = null, sl = null, t1 = null, t2 = null, action = '', why = '';
     if (up) {
@@ -357,7 +360,7 @@
       side = 'AVOID';
       action = `No new buys. If you hold a long, exit it - or at the latest on a daily close below your stop`;
       why = isGold
-        ? `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold sells only when all 3 drivers point down (the backtest found no edge in selling otherwise), so stay out until price is back above EMA50 with EMA20 above it.`
+        ? `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. Gold is buy-only (selling it: 44% wins, profit in 5 of 8 years in the backtest), so stay out until price is back above EMA50 with EMA20 above it.`
         : `Downtrend: price below EMA50 ${fmt(e50)} and EMA20 below EMA50. This is buy-only: selling it lost money in the 10-year backtest (43-44% wins), so stay out until price is back above EMA50 with EMA20 above it.`;
     } else if (down) {
       side = 'SELL';
@@ -383,9 +386,7 @@
     }
     /* Gold buys also need 2 of the 3 drivers (dollar index, US 10-year yield, rupee) - the tested filter. */
     let driverBlock = false;
-    if (side === 'BUY' && isGold && opts.drivers && opts.drivers.known >= 2) {
-      if (opts.drivers.count < 2) { driverBlock = true; action = `Wait: only ${opts.drivers.count} of 3 drivers support gold (${opts.drivers.text}) - buy when 2 of 3 agree`; }
-    }
+    /* 20 Nov 2026: the drivers are shown as information only - the buy without them passed the user's bar (8 of 10 years). */
     /* The tested exit: the target the whole position is sold at, and the time stop. Gold buys: 3R / 20 days; the gold
        small-size sell and other commodities: T1 / 10 days. */
     const ex = MCX_EXIT[sym] || { r: null, days: 10 };
@@ -434,6 +435,58 @@
       let lo = 0.01, hi = 3; for (let k = 0; k < 60; k++) { const m = (lo + hi) / 2; bsPx(S, K, T, m, ty, r) > px ? hi = m : lo = m; } s = (lo + hi) / 2;
     }
     const d = ncdf(bsD1(S, K, T, s, r)); return ty === 'C' ? d : d - 1;
+  }
+  /* Weekly Nifty option selling (added 20 Nov 2026). Backtest on NSE closing prices Feb 2019 - Nov 2026, lot 65, 1 point
+     cost per leg each way; entry at the close of the FIRST trading day after a weekly expiry, held to the next expiry,
+     stops checked on closes:
+       1. Trend sell: Nifty close > EMA20 > EMA50 -> sell a put, close < EMA20 < EMA50 -> sell a call (no trend, no
+          trade); the first strike 2%+ from spot with delta under 0.20; exit when the option closes at 2x its premium.
+          282 trades, 86% wins, profit in 8 of 8 years, about Rs 17,700 a lot a year, worst run -Rs 26,700 a lot.
+       2. Short strangle: sell the put 2%+ below and the call 2%+ above (first 50-point strikes), every week; exit when
+          the pair closes at 2x the credit. 404 trades, 78% wins, 7 of 8 years, about Rs 40,000 a lot a year, worst run
+          -Rs 66,000 a lot.
+     Both are NAKED (no bought wing): margin about Rs 1.5 lakh a lot, and the stop is the only protection. */
+  function niftyWeeklySells(chain, { spot, trendUp, trendDown, daysToExpiry, step = 50, minAway = 0.02, maxDelta = 0.20 }) {
+    const S = +spot || +chain?.spot, T = Math.max(0.5, +daysToExpiry || 1) / 365;
+    if (!(S > 0) || !chain?.strikes?.length) return null;
+    const px = (k, t) => { const v = ocPremium(chain, k, t); if (v > 0) return v; const row = (chain.strikes || []).find(r => +r.k === +k), o = row ? (t === 'C' ? row.ce : row.pe) : null; return o && o.ltp > 0 ? +o.ltp : null; };
+    const ks = (chain.strikes || []).map(r => +r.k).filter(k => k % step === 0);
+    const far = ty => ks.filter(k => ty === 'P' ? k <= S * (1 - minAway) : k >= S * (1 + minAway)).sort((a, b) => ty === 'P' ? b - a : a - b);
+    let trend;
+    if (!trendUp && !trendDown) trend = { ok: false, why: 'No clear Nifty trend (close, EMA20 and EMA50 not in order) - the tested rule sells only with the trend' };
+    else {
+      const ty = trendUp ? 'P' : 'C'; trend = { ok: false, ty, why: `No ${ty === 'P' ? 'put' : 'call'} 2%+ away with delta under ${maxDelta} and a quoted premium` };
+      for (const k of far(ty)) {
+        const p = px(k, ty); if (!(p > 0)) continue;
+        const row = chain.strikes.find(r => +r.k === k), o = ty === 'P' ? row.pe : row.ce, d = optionDelta(S, k, T, p, ty, o && o.iv);
+        if (Math.abs(d) >= maxDelta) continue;
+        trend = { ok: true, ty, strike: k, premium: R2(p), delta: R2(d), away: R2(Math.abs(k - S) / S * 100), exitAt: R2(2 * p),
+          why: `Nifty ${trendUp ? 'uptrend: sell the put' : 'downtrend: sell the call'} ${k} ${ty === 'P' ? 'PE' : 'CE'} at ${R2(p)}, exit if it closes at ${R2(2 * p)} or more` };
+        break;
+      }
+    }
+    const kp = far('P')[0], kc = far('C')[0], pp = kp != null ? px(kp, 'P') : null, pc = kc != null ? px(kc, 'C') : null;
+    const credit = pp > 0 && pc > 0 ? R2(pp + pc) : null;
+    const strangle = credit ? { ok: true, put: kp, call: kc, putPx: R2(pp), callPx: R2(pc), credit, exitAt: R2(2 * credit),
+      why: `Sell ${kp} PE + ${kc} CE for ${credit} points, exit if the two together close at ${R2(2 * credit)} or more` }
+      : { ok: false, why: 'No quoted premium for the 2%-away put and call' };
+    return { trend, strangle, spot: R2(S) };
+  }
+  /* Entry day of the weekly sells: the first trading day after the previous weekly expiry (an expiry on a holiday moves
+     to the trading day before). nearestExp = the next expiry on or after today; expiries = the exchange's list, whose
+     usual weekday is the regular expiry day (an expiry moved by a holiday must not move the previous one). */
+  function weeklySellEntry(today, nearestExp, isHoliday, expiries) {
+    if (!today || !nearestExp) return null;
+    const add = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 864e5).toISOString().slice(0, 10);
+    const trading = d => { const w = new Date(d + 'T00:00:00Z').getUTCDay(); return w !== 0 && w !== 6 && !(isHoliday && isHoliday(d)); };
+    const nextTrading = d => { let x = add(d, 1); for (let g = 0; g < 10 && !trading(x); g++) x = add(x, 1); return x; };
+    const dow = d => new Date(d + 'T00:00:00Z').getUTCDay(), cnt = {};
+    (Array.isArray(expiries) && expiries.length ? expiries : [nearestExp]).forEach(e => { cnt[dow(e)] = (cnt[dow(e)] || 0) + 1; });
+    const W = +Object.keys(cnt).sort((a, b) => cnt[b] - cnt[a])[0];
+    let prev = add(nearestExp, -10); while (dow(prev) !== W) prev = add(prev, 1);   /* the regular expiry day 4-10 days before */
+    for (let g = 0; g < 10 && !trading(prev); g++) prev = add(prev, -1);
+    const thisEntry = nextTrading(prev), nextEntry = nextTrading(nearestExp);
+    return { isEntryDay: today === thisEntry, entryDay: today <= thisEntry ? thisEntry : nextEntry, thisEntry, nextEntry, expiry: today <= thisEntry ? nearestExp : null };
   }
   /* Monthly = the last expiry of its calendar month in NSE's own list. */
   function isMonthlyExpiry(exp, list) { return !!exp && Array.isArray(list) && list.length > 1 && !list.some(e => e > exp && String(e).slice(0, 7) === String(exp).slice(0, 7)); }
@@ -545,6 +598,48 @@
     return null;
   }
 
+  /* Swing READY gate (from 20 Nov 2026). 10-year backtest of 17 well-known swing entries on 235 large caps, all with
+     the same rules: signal on the close, buy the next open, stop under the setup low (minus 0.25 ATR, kept 0.75-3 ATR
+     from the entry), sell all at 2R or at the close of day 15, Nifty above its EMA50 with EMA20 above EMA50, at most 5
+     open, 0.25% costs. The two that held up in every robustness test (other pick order, 3 / 8 open, 2017-21 vs 2022-26):
+       A. EMA20 crosses above EMA50, close above EMA200, stock beats Nifty over 3 months: 54% wins, +0.21R, 9-10 of 10 years;
+       B. gap-up 2%+ on 2x the 20-day volume that closes above its open, close > EMA50 > EMA200, within 10% of the
+          52-week high: 48% wins, +0.20R, 8 of 10 years.
+     Together in one 5-slot book: 49% wins, +0.18R a trade (avg win +8.1%, avg loss -5.3%), 8 of 10 years, worst fall
+     -13%, about 52 trades a year. The old READY (EMA pullbacks / breakout with volume): 44%, +0.08R, 6 of 10 years.
+     i = signal bar (default the last); entry = the price you buy at (default that bar's close). The caller checks the
+     Nifty trend, results and corporate events. Returns { ok, setup, entry, stop, target, ... } or { ok:false, near }. */
+  function swingGate({ O, H, L, C, V, i, rs3m, vToday, entry }) {
+    const n = (C || []).length; i = Number.isInteger(i) ? i : n - 1;
+    if (i < 260 || i >= n || !O || !V) return null;
+    const ema = p => { const k = 2 / (p + 1), out = [+C[0]]; for (let j = 1; j <= i; j++) out.push(+C[j] * k + out[j - 1] * (1 - k)); return out; };
+    const e20 = ema(20), e50 = ema(50), e200 = ema(200);
+    let atr = 0; for (let j = 0; j <= i; j++) { const tr = j ? Math.max(H[j] - L[j], Math.abs(H[j] - C[j - 1]), Math.abs(L[j] - C[j - 1])) : H[j] - L[j]; atr = j < 14 ? (atr * j + tr) / (j + 1) : (atr * 13 + tr) / 14; }
+    let v20 = 0; for (let j = i - 20; j < i; j++) v20 += +V[j] || 0; v20 /= 20;
+    const vt = Number.isFinite(+vToday) && +vToday > 0 ? +vToday : +V[i] || 0;
+    let hi52 = 0; for (let j = Math.max(0, i - 251); j <= i; j++) hi52 = Math.max(hi52, +H[j] || 0);
+    const close = +C[i], off52 = hi52 > 0 ? (hi52 - close) / hi52 * 100 : null, gap = +C[i - 1] > 0 ? +O[i] / +C[i - 1] - 1 : 0;
+    const rsOk = Number.isFinite(+rs3m) && +rs3m > 0;
+    const info = { e20: R2(e20[i]), e50: R2(e50[i]), e200: R2(e200[i]), gapPct: R2(gap * 100), volX: v20 > 0 ? R2(vt / v20) : null, off52: R2(off52), rs3m: Number.isFinite(+rs3m) ? R2(+rs3m) : null, atr: R2(atr) };
+    const px = valid(entry) ? +entry : close;
+    const plan = (setup, low, why) => {
+      let stop = low - 0.25 * atr; if (px - stop > 3 * atr) stop = px - 3 * atr; if (px - stop < 0.75 * atr) stop = px - 0.75 * atr;
+      return { ok: true, setup, entry: R2(px), stop: R2(stop), target: R2(px + 2 * (px - stop)), riskPct: R2((px - stop) / px * 100), maxDays: 15, why, info };
+    };
+    const cross = e20[i] > e50[i] && e20[i - 1] <= e50[i - 1];
+    if (cross && close > e200[i] && rsOk)
+      return plan('EMA20/50 cross', Math.min(...L.slice(i - 10, i + 1).map(Number)), `EMA20 ${info.e20} crossed above EMA50 ${info.e50}, close above EMA200 ${info.e200}, beating Nifty by ${info.rs3m}% over 3 months`);
+    if (close > e50[i] && e50[i] > e200[i] && gap >= 0.02 && v20 > 0 && vt >= 2 * v20 && close > +O[i] && off52 != null && off52 <= 10)
+      return plan('Gap-up near 52-week high', +L[i], `Gap-up ${info.gapPct}% on ${info.volX}x volume, closed above its open, ${info.off52}% below the 52-week high`);
+    /* Not a signal: what is missing, and whether a cross is close (EMA20 under EMA50 by 1% or less and closing in). */
+    let near = null;
+    const sp = (e50[i] - e20[i]) / e50[i], sp3 = (e50[i - 3] - e20[i - 3]) / e50[i - 3];
+    /* Only stocks that can still become READY: a lagging stock (not beating Nifty) cannot. */
+    if (e20[i] <= e50[i] && sp <= 0.01 && sp < sp3 && close > e200[i] && rsOk) near = `EMA20 ${info.e20} is ${(sp * 100).toFixed(2)}% under EMA50 ${info.e50} and closing in - a cross may come in the next few days`;
+    else if (gap >= 0.02 && close > +O[i] && !(vt >= 2 * v20)) near = `Gap-up ${info.gapPct}%, but volume ${info.volX}x is under 2x the 20-day average`;
+    return { ok: false, near, info };
+  }
+
   return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
-    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta };
+    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry };
 });

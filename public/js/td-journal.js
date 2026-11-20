@@ -1,5 +1,5 @@
 /* ══════════════════════════════════════════════════════════════════════
-   My trades - the user's own trades, total open risk, Telegram link.
+   My trades - the user's own trades, total open risk, phone alerts.
    Trades live in localStorage 'td_journal' (synced to the server like alerts), so the server's open-trade
    watcher can send stop / target / time-exit / results alerts. Loaded after app.js and uses its helpers
    (apiFetch, fmt, escHtml, jsArg, readPosSetting, POS_CAPITAL_KEY, POS_RISK_KEY, screenerModeSwitch).
@@ -12,7 +12,8 @@ function jLimitPct(){ const v = readPosSetting(J_LIMIT_KEY, J_DEFAULT_LIMIT); re
 const jUnits = t => (+t.qty || 0) * (t.kind === 'stock' ? 1 : (+t.lotQty || 1));
 /* Rupees lost if the stop is hit. A credit spread's stop is a loss of 2x the credit (capped at the width). */
 function jRiskRs(t){
-  if(t.kind === 'option') return Math.min(2 * (+t.credit || 0), Math.max(0, (+t.wing || 0) - (+t.credit || 0))) * jUnits(t);
+  /* Naked sell (no buy strike): the stop at 2x the premium loses about 1x the credit. */
+  if(t.kind === 'option') return (+t.wing > 0 ? Math.min(2 * (+t.credit || 0), Math.max(0, (+t.wing || 0) - (+t.credit || 0))) : (+t.credit || 0)) * jUnits(t);
   const r = Math.abs((+t.entry || 0) - (+t.stop || 0)) * jUnits(t);
   return Number.isFinite(r) ? r : 0;
 }
@@ -51,7 +52,7 @@ function openTradeForm(p = {}){
   const f = (id, label, val, attrs = '') => `<label class="j-field"><span>${label}</span><input id="${id}" value="${val == null || val === '' || !Number.isFinite(+val) && typeof val === 'number' ? '' : escHtml(String(val))}" ${attrs}></label>`;
   const r2 = v => Number.isFinite(+v) && v !== null && v !== '' ? +(+v).toFixed(2) : '';
   const body = kind === 'option'
-    ? `${f('j-short', `Sell strike (${p.optType === 'C' ? 'CE' : 'PE'})`, p.shortStrike, 'type="number" step="50"')}${f('j-long', 'Buy strike', p.longStrike, 'type="number" step="50"')}
+    ? `${f('j-short', `Sell strike (${p.optType === 'C' ? 'CE' : 'PE'})`, p.shortStrike, 'type="number" step="50"')}${f('j-long', 'Buy strike (empty = naked)', p.longStrike, 'type="number" step="50"')}
        ${f('j-credit', 'Credit received (points)', r2(p.credit), 'type="number" step="0.05"')}${f('j-qty', `Lots (lot ${p.lotQty || 65})`, qty, 'type="number" min="1" step="1"')}
        ${f('j-exp', 'Expiry', p.expiry || '', 'type="date"')}`
     : `${f('j-entry', 'Entry price', r2(p.entry), 'type="number" step="0.05"')}${f('j-stop', 'Stop-loss', r2(p.stop), 'type="number" step="0.05"')}
@@ -63,7 +64,7 @@ function openTradeForm(p = {}){
     ${f('j-note', 'Note (optional)', '')}
     <div class="j-risk" id="j-risk"></div>
     <div class="j-actions"><button class="idea-btn" onclick="jSaveTrade()">Save trade</button><button class="idea-btn ghost" onclick="jCloseModal()">Cancel</button></div>
-    <div class="idea-foot">The server watches open trades: stop and target alerts${kind === 'stock' ? ', the day-10 exit, results and ex-dates' : kind === 'option' ? ', Nifty through your short strike, expiry day' : ', contract expiry'} - by notification and Telegram.</div>`);
+    <div class="idea-foot">The server watches open trades: stop and target alerts${kind === 'stock' ? ', the day-10 exit, results and ex-dates' : kind === 'option' ? ', Nifty through your short strike, expiry day' : ', contract expiry'} - by phone / browser notification.</div>`);
   const upd = () => { const t = jFromForm(p); const el = document.getElementById('j-risk'); if(!el || !t) return; const cap2 = readPosSetting(POS_CAPITAL_KEY, 10000), lim = jLimitPct(), cur = openRiskNow(), tot = cur + jRiskRs(t), pct = cap2 > 0 ? tot / cap2 * 100 : 0;
     el.innerHTML = `Risk on this trade <b>${jInr(jRiskRs(t))}</b> · all open trades with it <b>${jInr(tot)}</b> = <b style="color:${pct > lim ? 'var(--bear)' : 'var(--bull)'}">${pct.toFixed(1)}%</b> of ${jInr(cap2)} (limit ${lim}%)${pct > lim ? ' - over your limit' : ''}`; };
   document.querySelectorAll('#j-modal input').forEach(i => i.addEventListener('input', upd)); upd();
@@ -146,8 +147,9 @@ async function jSaveEdit(id){
   const n = { ...t, qty: jNum('j-qty') };
   if(t.kind === 'option'){
     Object.assign(n, { shortStrike: jNum('j-short'), longStrike: jNum('j-long'), credit: jNum('j-credit'), expiry: document.getElementById('j-exp')?.value || t.expiry });
-    n.wing = Math.abs(n.shortStrike - n.longStrike); n.label = `${t.setup || 'Credit spread'} ${n.shortStrike}/${n.longStrike}`;
-    if(!(n.credit > 0) || !(n.wing > 0)) return msg('Strikes and credit are needed');
+    n.wing = n.longStrike > 0 ? Math.abs(n.shortStrike - n.longStrike) : 0;
+    n.label = n.longStrike > 0 ? `${t.setup || 'Credit spread'} ${n.shortStrike}/${n.longStrike}` : `${t.setup || 'Naked sell'} ${n.shortStrike}${t.callStrike ? ' PE + ' + t.callStrike + ' CE' : ''} (naked)`;
+    if(!(n.credit > 0) || !(n.shortStrike > 0)) return msg('Sell strike and credit are needed');
   } else {
     Object.assign(n, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1') });
     if(!Number.isFinite(n.t1) || n.t1 <= 0) n.t1 = null;
@@ -170,7 +172,8 @@ function jFromForm(p){
     openedAt: document.getElementById('j-date')?.value || jTodayKey(), status: 'open', note: document.getElementById('j-note')?.value || '' };
   if(t.sym && !/^(NSE|MCX):/.test(t.sym)) t.sym = 'NSE:' + t.sym;
   if(kind === 'option') Object.assign(t, { optType: p.optType || 'P', shortStrike: jNum('j-short'), longStrike: jNum('j-long'), credit: jNum('j-credit'), expiry: document.getElementById('j-exp')?.value || p.expiry || '',
-    wing: Math.abs(jNum('j-short') - jNum('j-long')), label: `${p.setup || 'Credit spread'} ${jNum('j-short')}/${jNum('j-long')}` });
+    wing: jNum('j-long') > 0 ? Math.abs(jNum('j-short') - jNum('j-long')) : 0, callStrike: +p.callStrike || null,
+    label: jNum('j-long') > 0 ? `${p.setup || 'Credit spread'} ${jNum('j-short')}/${jNum('j-long')}` : `${p.setup || 'Naked sell'} ${jNum('j-short')}${p.callStrike ? ' PE + ' + p.callStrike + ' CE' : ''} (naked)` });
   else Object.assign(t, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1'), t2: +p.t2 || null, calK: +p.calK || 1, exitDays: +p.exitDays || null });
   return t;
 }
@@ -178,7 +181,7 @@ async function jSaveTrade(){
   const p = J_PENDING || {}, t = jFromForm(p);
   if(!p.sym && t.sym && !(await jSymCheck())){ const el = document.getElementById('j-risk'); if(el) el.innerHTML = `<b style="color:var(--bear)">No price for this stock - pick it from the list so the app can follow it</b>`; return; }
   const bad = !t.sym ? 'Symbol is missing' : !(t.qty > 0) ? 'Quantity / lots must be above 0'
-    : t.kind === 'option' ? (!(t.credit > 0) || !(t.wing > 0) ? 'Strikes and credit are needed' : '')
+    : t.kind === 'option' ? (!(t.credit > 0) || !(t.shortStrike > 0) ? 'Sell strike and credit are needed' : '')
     : !(t.entry > 0) || !(t.stop > 0) ? 'Entry and stop-loss are needed' : t.side !== 'SELL' && t.stop >= t.entry ? 'For a buy, the stop must be below the entry' : '';
   if(bad){ const el = document.getElementById('j-risk'); if(el) el.innerHTML = `<b style="color:var(--bear)">${escHtml(bad)}</b>`; return; }
   t.riskRs = +jRiskRs(t).toFixed(2);
@@ -216,28 +219,14 @@ function jDelete(id){
 }
 function jSetLimit(v){ const n = Number(v); if(n > 0 && n <= 100) savePosSetting(J_LIMIT_KEY, n); tabJournal(); }
 
-/* ── Telegram link (server keeps the chat id; the bot token is a Render environment variable) ── */
-async function jTelegram(action){
-  const box = document.getElementById('j-tg-msg');
-  try{
-    const r = await fetch(API + '/api/telegram/' + action, { method:'POST', credentials:'same-origin' });
-    const j = await r.json().catch(() => ({}));
-    if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
-    if(box) box.innerHTML = `<span style="color:var(--bull)">${action === 'link' ? `Linked to ${escHtml(j.name || 'your chat')} ✓ - a confirmation message was sent.` : action === 'test' ? 'Test message sent ✓' : 'Unlinked.'}</span>`;
-    if(action !== 'test') setTimeout(tabJournal, 1200);
-  }catch(e){ if(box) box.innerHTML = `<span style="color:var(--bear)">${escHtml(e.message)}</span>`; }
-}
-function jTelegramHtml(st){
+/* ── Phone / browser alerts (Web Push): how many devices the server sends alerts to ── */
+function jPushHtml(st){
   if(!st) return '';
-  const steps = `<ol class="j-steps"><li>In Telegram, open <b>@BotFather</b> → send <code>/newbot</code> → pick a name → copy the token it gives you.</li><li>Render → your service → <b>Environment</b> → add <code>TELEGRAM_BOT_TOKEN</code> = that token → save (it redeploys).</li><li>Open your new bot in Telegram, send <code>/start</code>, then press <b>Link</b> here.</li></ol>`;
-  return `<div class="idea-card j-tg">
-    <div class="idea-head"><div><div class="idea-kicker">Telegram alerts</div><div class="idea-title">${st.linked ? `Linked to ${escHtml(st.name || 'your chat')}` : st.configured ? 'Bot ready - link your chat' : 'Not set up'}</div></div><div class="idea-view ${st.linked ? 'bull' : 'neutral'}">${st.linked ? 'ON' : 'OFF'}</div></div>
-    <div class="idea-foot">Every alert also goes to Telegram: stop / target on your trades, new READY stocks, the 09:30 brief, MCX (Gold Petal, Crude Oil, Natural Gas) 09:45 / 17:00 and Nifty options 10:00 when there is a trade, stock scans 11:00 / 15:00. Free.</div>
-    ${st.configured ? '' : steps}
-    ${st.linked && !st.envSet && st.chatId ? `<div class="idea-hedge" style="margin-top:6px"><b>Keep Telegram working after every deploy:</b> Render wipes the server's disk on each deploy, and this link lives there. Add <code>TELEGRAM_CHAT_ID</code> = <code>${escHtml(String(st.chatId))}</code> in Render → Environment once; then alerts keep coming after a deploy without linking again.</div>` : st.fromEnv ? '<div class="idea-foot">Linked through TELEGRAM_CHAT_ID - survives deploys ✓</div>' : ''}
-    ${Number.isFinite(+st.devices) ? `<div class="idea-foot">Phone / browser alerts: the server has ${+st.devices} device${+st.devices === 1 ? '' : 's'}. After a deploy this is 0 until you open TradeDesk once on each device.</div>` : ''}
-    <div class="j-actions">${st.configured && !st.linked ? `<button class="idea-btn" onclick="jTelegram('link')">Link</button>` : ''}${st.linked ? `<button class="idea-btn" onclick="jTelegram('test')">Send test</button><button class="idea-btn ghost" onclick="jTelegram('unlink')">Unlink</button>` : ''}${st.configured && !st.linked ? '<span class="idea-foot">Send /start to your bot first.</span>' : ''}</div>
-    <div id="j-tg-msg" class="idea-foot"></div>
+  const n = +st.devices || 0;
+  return `<div class="idea-card j-push">
+    <div class="idea-head"><div><div class="idea-kicker">Phone / browser alerts</div><div class="idea-title">${!st.enabled ? 'Not available on this server' : n ? `On for ${n} device${n === 1 ? '' : 's'}` : 'No device gets alerts yet'}</div></div></div>
+    <div class="idea-foot">Stop / target on your trades, new READY stocks, the 09:30 brief, MCX 09:45 / 17:00 and Nifty options 10:00 come as notifications. A deploy clears the device list - open TradeDesk once on each device afterwards and it signs up again.</div>
+    <div class="j-actions"><button class="idea-btn" onclick="enablePushNow().then(() => setTimeout(tabJournal, 800))">Turn on for this device</button>${n ? '<button class="idea-btn ghost" onclick="testPushNow()">Send test</button>' : ''}</div>
   </div>`;
 }
 
@@ -316,11 +305,11 @@ async function tabJournal(){
   tc.innerHTML = `${screenerModeSwitch('trades')}${bar}
     <div class="idea-card"><div class="idea-head"><div><div class="idea-kicker">Open trades</div><div class="idea-title">${open.length ? `${open.length} open` : 'No open trade'}</div>${open.length ? '<div class="j-total" data-jtotal>Profit / loss now: loading…</div>' : ''}</div><button class="idea-btn" onclick="openTradeForm({})">+ Add manually</button></div>
       ${open.length ? open.map(row).join('') : '<div class="idea-foot">Tap 📒 on a stock\'s trade plan, the Gold Petal idea or the Nifty rule card when you take a trade - or add one here.</div>'}</div>
-    ${statsHtml}${closedHtml}<div data-j-kite></div><div data-j-tg><div class="idea-card"><div class="idea-kicker">Telegram alerts</div><div class="idea-foot">Loading…</div></div></div>`;
+    ${statsHtml}${closedHtml}<div data-j-kite></div><div data-j-push></div>`;
   apiFetch('/api/kite/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-kite]'); if(el) el.innerHTML = jKiteHtml(st); } }).catch(() => {});
   if (open.some(t => t.kind === 'stock')) (J_SECTORS ? Promise.resolve(J_SECTORS) : apiFetch('/api/universe', 20000).then(u => (J_SECTORS = Object.fromEntries((u.rows || []).filter(r => r.sym && r.sector).map(r => [r.sym, r.sector])))))
     .then(sec => { if (!live()) return; const el = tc.querySelector('[data-j-port]'); if (el) el.innerHTML = jPortfolioWarn(open, sec, pct, lim); }).catch(() => {});
-  apiFetch('/api/telegram/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-tg]'); if(el) el.innerHTML = jTelegramHtml(st); } }).catch(() => { const el = tc.querySelector('[data-j-tg]'); if(el && live()) el.innerHTML = ''; });
+  apiFetch('/api/push/key', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-push]'); if(el) el.innerHTML = jPushHtml(st); } }).catch(() => {});
   /* Live P&L (same cached quick price as the sidebar), 3 at a time, then the total of the open trades. */
   let pnlSum = 0, priced = 0, missing = 0;
   const one = async t => {

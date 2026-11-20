@@ -491,6 +491,14 @@ function pickYahooLivePrev({ daily, intra, meta, intraMeta = null }) {
     const tzF = meta?.exchangeTimezoneName || 'America/New_York';
     const lastIsLive = sameMarketDate(daily.T?.[dn - 1], meta?.regularMarketTime, tzF) || Math.abs(daily.C[dn - 1] - liveRaw) <= liveRaw * 1e-4;
     const p = lastIsLive ? daily.C[dn - 2] : daily.C[dn - 1];
+    /* Contract roll: Yahoo's continuous future switches to the next month on one day, and its daily bars before that
+       day are the OLD contract. On 20 Nov 2026 NG=F went from December (19 Nov close 3.268) to January (3.681), so
+       natural gas showed +11.6% on a -0.2% day; CL=F the same (-2.0% instead of -0.4%). The intraday chart's previous
+       close is the new contract's, so when the two disagree the one nearer the live price is the same contract.
+       (9 Nov 2026 was the opposite case - a wrong previousClose - and the bar is nearer there.) */
+    const ip = firstValidNumber(intraMeta?.chartPreviousClose, intraMeta?.previousClose, intraMeta?.regularMarketPreviousClose);
+    if (p > 0 && ip > 0 && Math.abs(ip / p - 1) > 0.005 && Math.abs(liveRaw - ip) < Math.abs(liveRaw - p))
+      return { liveRaw, prevRaw: ip, roll: { ratio: ip / p, oldPrev: p, newPrev: ip, liveBarT: lastIsLive ? +daily.T[dn - 1] : null } };
     if (p > 0) return { liveRaw, prevRaw: p };
   }
   /* NSE / BSE: take the previous close from the bars - the last session dated BEFORE the live price's session.
@@ -631,10 +639,116 @@ async function getPriceAndChange(ticker, symForBasis=null) {
     || 0;
 
   const marketTime = Number(dailyMeta.regularMarketTime) || null;
-  /* Last few daily closes for the list's mini chart (already fetched: no extra call). */
-  const spark = daily.C.slice(-6).map(Number).filter(v => v > 0);
+  const roll = picked.roll ? noteFutRoll(ticker, picked.roll, marketTime) : null;
+  /* Last few daily closes for the list's mini chart (already fetched: no extra call); old-contract bars scaled. */
+  const spark = futRollAdjust(ticker, daily).C.slice(-6).map(Number).filter(v => v > 0);
   if (spark.length && liveRaw > 0) { if (sameMarketDate(daily.T?.[dn - 1], marketTime, dailyMeta.exchangeTimezoneName || 'Asia/Kolkata')) spark[spark.length - 1] = liveRaw; else spark.push(liveRaw); }
-  return { liveRaw, prevRaw, rawChg, rawPct, todayOpen, todayHigh, todayLow, todayVol, changeBasis, basisTime, marketTime, spark: spark.slice(-6) };
+  /* Roll day: Yahoo's day open (and sometimes high / low) can still be the old contract's - 299.66 against a 339 price. */
+  const fx = v => futRollLevel(v, roll);
+  return { liveRaw, prevRaw, rawChg, rawPct, todayOpen: fx(todayOpen), todayHigh: fx(todayHigh), todayLow: fx(todayLow), todayVol, changeBasis, basisTime, marketTime, spark: spark.slice(-6), roll };
+}
+
+/* Futures contract rolls seen by this server: ticker -> [{ at: unix s of the first new-contract daily bar, ratio }].
+   Bars before 'at' are scaled by ratio (new / old contract) so EMAs, levels and today's candle are one contract -
+   without it the roll day looked like a +12% natural gas breakout. Kept 40 days in data/fut-rolls.json (a deploy
+   wipes it; the roll day itself is always detected again from Yahoo's previous close). */
+const FUT_ROLL_FILE = require('path').join(__dirname, 'data', 'fut-rolls.json');
+let FUT_ROLLS = {};
+try { FUT_ROLLS = JSON.parse(require('fs').readFileSync(FUT_ROLL_FILE, 'utf8')) || {}; } catch {}
+function noteFutRoll(ticker, roll, marketTime) {
+  if (!roll || !(roll.ratio > 0)) return null;
+  const at = roll.liveBarT || (Number(marketTime) > 0 ? Number(marketTime) - 6 * 3600 : Math.floor(Date.now() / 1000));
+  const list = (FUT_ROLLS[ticker] || []).filter(r => Date.now() / 1000 - r.at < 40 * 86400);
+  const same = list.find(r => Math.abs(r.at - at) < 2 * 86400);
+  if (same) {
+    if (Math.abs(same.ratio / roll.ratio - 1) < 0.002 && same.oldPrev) return same;
+    Object.assign(same, { ratio: roll.ratio, at: Math.max(same.at, at), oldPrev: roll.oldPrev || same.oldPrev || null, newPrev: roll.newPrev || same.newPrev || null });
+  }
+  else list.push({ at, ratio: roll.ratio, oldPrev: roll.oldPrev || null, newPrev: roll.newPrev || null, seen: Date.now() });
+  FUT_ROLLS[ticker] = list;
+  try { const fs = require('fs'); fs.mkdirSync(require('path').dirname(FUT_ROLL_FILE), { recursive: true }); fs.writeFileSync(FUT_ROLL_FILE, JSON.stringify(FUT_ROLLS)); } catch {}
+  return same || list[list.length - 1];
+}
+/* A price from the roll day: old contract if it sits nearer the old contract's previous close than the new one's. */
+function futRollLevel(v, r) {
+  if (!r || !(v > 0) || !(r.oldPrev > 0) || !(r.newPrev > 0)) return v;
+  return Math.abs(Math.log(v / r.oldPrev)) < Math.abs(Math.log(v / r.newPrev)) ? v * r.ratio : v;
+}
+function futRollsFor(ticker) { return (FUT_ROLLS[ticker] || []).filter(r => Date.now() / 1000 - r.at < 40 * 86400).sort((a, b) => a.at - b.at); }
+/* Scales the bars before each roll. kind 'intraday': the switch inside the session is found as the bar-to-bar jump
+   that matches the ratio (Yahoo switched NG=F's hourly series at 08:00 UTC, not at the daily bar). kind 'week' /
+   'month': bars of earlier periods are scaled; the period holding the roll keeps its close (the live, new contract)
+   and its open / high / low are rebuilt from the adjusted daily bars (Yahoo stamps the current bar with the live time,
+   so periods are matched by calendar, not by bar times). */
+function futPeriodKey(t, kind) {
+  const d = new Date(t * 1000);
+  if (kind === 'month') return d.getUTCFullYear() * 12 + d.getUTCMonth();
+  return Math.floor((Math.floor(t / 86400) + 3) / 7);   /* Monday-based week number */
+}
+function mergeLivePeriodBar(b, kind, gmtOff = 0) {
+  const n = b?.T?.length || 0;
+  if (n < 2 || !(b.T[n - 1] > 0) || !(b.T[n - 2] > 0)) return b;
+  if (futPeriodKey(b.T[n - 1] + gmtOff, kind) !== futPeriodKey(b.T[n - 2] + gmtOff, kind)) return b;
+  const cut = a => a.slice(0, n - 1), i = n - 2, j = n - 1;
+  const out = { ...b, T: cut(b.T), O: cut(b.O), H: cut(b.H), L: cut(b.L), C: cut(b.C), V: cut(b.V || []), n: n - 1 };
+  out.H[i] = Math.max(+b.H[i], +b.H[j]); out.L[i] = Math.min(+b.L[i], +b.L[j]); out.C[i] = b.C[j];
+  if (b.V) out.V[i] = (+b.V[i] || 0) + (+b.V[j] || 0);
+  return out;
+}
+function rebuildLastPeriodBar(b, daily, kind, gmtOff = 0) {
+  const n = b?.T?.length || 0;
+  if (!n || !daily?.T?.length) return b;
+  const pk = futPeriodKey(b.T[n - 1] + gmtOff, kind), idx = [];
+  daily.T.forEach((t, i) => { if (t > 0 && futPeriodKey(t + gmtOff, kind) === pk && daily.C[i] > 0) idx.push(i); });
+  if (!idx.length) return b;
+  const out = { ...b, O: [...b.O], H: [...b.H], L: [...b.L], C: [...b.C] }, i = n - 1;
+  out.O[i] = daily.O[idx[0]];
+  out.H[i] = Math.max(...idx.map(j => daily.H[j]), +out.C[i] || 0);
+  out.L[i] = Math.min(...idx.map(j => daily.L[j]), +out.C[i] || Infinity);
+  return out;
+}
+function futRollAdjust(ticker, bars, kind = 'daily', dailyAdj = null) {
+  const rolls = futRollsFor(ticker);
+  if (!bars || !rolls.length || !Array.isArray(bars.T) || !bars.T.length) return bars;
+  const out = { ...bars, O: [...bars.O], H: [...bars.H], L: [...bars.L], C: [...bars.C] };
+  const n = out.T.length, period = kind === 'week' || kind === 'month';
+  const scale = i => { for (const k of ['O', 'H', 'L', 'C']) if (Number.isFinite(+out[k][i]) && out[k][i] != null) out[k][i] = +out[k][i] * r0.ratio; };
+  let r0;
+  for (const r of rolls) {
+    r0 = r;
+    if (period) {
+      const ck = futPeriodKey(r.at, kind);
+      /* Yahoo can return two bars for the current period (yesterday's snapshot + one stamped with the live time):
+         only the last one is the new contract. */
+      let lastCk = -1; for (let i = 0; i < n; i++) if (futPeriodKey(out.T[i], kind) === ck) lastCk = i;
+      for (let i = 0; i < n; i++) {
+        const pk = futPeriodKey(out.T[i], kind);
+        if (pk < ck || (pk === ck && i !== lastCk)) scale(i);
+        else if (pk === ck && dailyAdj?.T?.length) {
+          const idx = []; dailyAdj.T.forEach((t, j) => { if (futPeriodKey(t, kind) === ck && dailyAdj.C[j] > 0) idx.push(j); });
+          if (idx.length) { out.O[i] = dailyAdj.O[idx[0]]; out.H[i] = Math.max(...idx.map(j => dailyAdj.H[j]), +out.C[i] || 0); out.L[i] = Math.min(...idx.map(j => dailyAdj.L[j]), +out.C[i] || Infinity); }
+        }
+      }
+      continue;
+    }
+    let cut = r.at;
+    if (kind === 'intraday') {
+      let best = -1, bestErr = Infinity;
+      for (let i = 1; i < n; i++) {
+        if (out.T[i] < r.at - 36 * 3600 || out.T[i] > r.at + 36 * 3600 || !(out.C[i] > 0) || !(out.C[i - 1] > 0)) continue;
+        const e = Math.abs(Math.log(out.C[i] / out.C[i - 1]) - Math.log(r.ratio));
+        if (e < bestErr) { bestErr = e; best = i; }
+      }
+      if (best > 0 && bestErr < Math.abs(Math.log(r.ratio)) * 0.4) cut = out.T[best];
+    }
+    for (let i = 0; i < n; i++) if (out.T[i] < cut) scale(i);
+    /* The roll day's own daily bar: open / high / low may still be old-contract prices. */
+    if (kind === 'daily') for (let i = 0; i < n; i++) if (out.T[i] >= cut && out.T[i] < cut + 86400) {
+      for (const k of ['O', 'H', 'L']) out[k][i] = futRollLevel(+out[k][i], r);
+      out.H[i] = Math.max(out.H[i], out.O[i], out.C[i]); out.L[i] = Math.min(out.L[i], out.O[i], out.C[i]);
+    }
+  }
+  return out;
 }
 
 
@@ -4535,125 +4649,54 @@ async function runMyTradeScreenerScan() {
         const dg = { sym: ticker.replace(/\.(NS|BO)$/,''), price: +m.price.toFixed(2), bias: m.bias, picked: m.picked || null,
           decisionScore: m.decisionScore, rr: m.rrBull, longTrend: m.price > m.e200 && m.e50 > m.e200 };
         scanDiag.push(dg);
-        if (m.bias !== 'Bullish') { dg.out = 'not bullish structure'; return null; }
-        biasEligibleCount++;
+        const bullish = m.bias === 'Bullish';
+        if (bullish) biasEligibleCount++;
         /* Tags (backtested, shown and recorded - they do not change READY) and the Pattern breakouts list. */
         /* Delivery % / option PCR tags were removed (19 Nov 2026): NSE's archive answers Render with 403. */
         const sym0 = ticker.replace(/\.(NS|BO)$/, ''), stTags = SwingPlan.stockTags({ H, L, C }) || {};
         const pcrV = kitePcrFor(sym0);   /* option put/call ratio from Zerodha (once a day) - null for non-F&O stocks / not loaded */
         const tags = { hhhl: !!stTags.hhhl, off52: stTags.off52 ?? null, near52: !!stTags.near52, dbAbove: !!stTags.dbAbove, dbNeck: stTags.doubleBottom?.neck ?? null,
           pcr: pcrV, pcrOk: pcrV == null ? null : pcrV >= 0.5, pcrDate: KITE_PCR.date };
-        { const pb = SwingPlan.patternBreakout({ H, L, C, V, atr: m.atr }); if (pb) patternCands.push({ sym: sym0, ticker, ...pb, tags }); }
+        if (bullish) { const pb = SwingPlan.patternBreakout({ H, L, C, V, atr: m.atr }); if (pb) patternCands.push({ sym: sym0, ticker, ...pb, tags }); }
 
-        /* The setup the price is actually in (shared engine, same as the Overview); fall back to the
-           best-scoring setup only to explain Watchlist candidates. */
-        const chk = readyChecksS(m, daily.T, C);
-        const { selected, wk, weeklyOk, volOk, baseTrendOk, readyCore } = chk;
+        /* Swing READY gate (tested 20 Nov 2026, SwingPlan.swingGate): EMA20/50 cross with relative strength, or a gap-up
+           near the 52-week high. The signal is a CLOSE: during the session yesterday's completed bar is the signal (buy
+           now); today's forming bar counts from 15:00 (near the close) - before that it waits on the Watchlist. The old
+           pullback / breakout READY (44% wins, 6 of 10 years) is no longer a READY rule. */
         const rs = SwingPlan.relStrength(C, niftyCloses);
-        const rsOk = Number.isFinite(rs.rs3m) && rs.rs3m > 0;
-        const emaGap = m.e20 ? ((m.price - m.e20) / m.e20) * 100 : 999;
-        const resistanceRoom = m.rrTarget && m.rrTarget > m.price ? ((m.rrTarget - m.price) / m.price) * 100 : null;
-        const slRisk = m.rrStop && m.rrStop < m.price ? ((m.price - m.rrStop) / m.price) * 100 : null;
-
-        const adxVal = Number(m.adx?.adx || m.adx || 0);
-        const macdOk = !!(m.macd && m.macd.hist >= 0);
-        const adxOk = !adxVal || adxVal >= 18;
-        const rsi3Ago = rsiS(C.slice(0, Math.max(0, C.length - 3)));
-        const rsiRising = Number.isFinite(m.rsi) && Number.isFinite(rsi3Ago) ? m.rsi > rsi3Ago : false;
-
-        /* Results within 5 trading days or a weak Nifty turn an otherwise READY stock into Watchlist. */
-        Object.assign(dg, { selName: selected?.name || null, selScore: selected?.score ?? null, gatePassed: !!selected?.gatePassed,
-          gateReasons: selected?.gateReasons || [], limit: m.limit || null, dsLimit: m.decisionScoreAtLimit, rs3m: rs.rs3m, volOk, highSell: !!m.highSellingVolume, baseTrendOk, weeklyOk, readyCore });
-        const resultsInfo = resultsCheckFor(ticker.replace(/\.(NS|BO)$/,''), resultsCal, todayKey);
-        const resultsBlock = !!resultsInfo?.block;
-        /* Bonus / split / rights / demerger ex-date within 10 trading days, or an ASM / GSM listing (same check as the Overview). */
+        const nB = C.length, liveBar = completedLenS(daily.T) < nB, nearClose = istNowParts().m >= 15 * 60;
+        const vToday = liveBar ? (+V[nB - 1] || 0) / Math.max(0.25, nseSessionShare()) : null;
+        const D = { O: daily.O, H, L, C, V, rs3m: rs.rs3m, entry: m.price };
+        const gPrev = liveBar ? SwingPlan.swingGate({ ...D, i: nB - 2 }) : null;
+        const gNow = SwingPlan.swingGate({ ...D, vToday });
+        const g = gPrev?.ok ? gPrev : gNow;
+        if (!g) return null;
+        const signalDay = gPrev?.ok ? 'yesterday' : 'today', forming = g.ok && signalDay === 'today' && liveBar && !nearClose;
+        const nearTxt = !g.ok ? (gNow?.near || gPrev?.near || null) : null;
+        if (!g.ok && !nearTxt) return null;
+        const resultsInfo = resultsCheckFor(sym0, resultsCal, todayKey), resultsBlock = !!resultsInfo?.block;
         const evChk = stockEventCheckS(ticker, todayKey), eventBlock = evChk.block;
-        const regimeBlock = false; /* decided after the scan, once breadth is known */
-        const readyOk = readyCore && !resultsBlock && !eventBlock;
-        if (readyCore && resultsBlock) resultsBlockedCount++;
-        if (readyCore && eventBlock && !resultsBlock) eventBlockedCount++;
-        const extra = {
-          resultsDate: resultsInfo?.date || null,
-          resultsTradingDays: resultsInfo ? resultsInfo.tradingDays : null,
-          resultsBlock, resultsRecent: !!resultsInfo?.recent,
-          eventBlock, eventReasons: evChk.reasons, eventNotes: evChk.notes, surveillance: evChk.surveillance,
-          regimeBlock, readyCore,
-          pickedSetup: m.picked || null,
-          plan: m.plan, rs3m: rs.rs3m, rs6m: rs.rs6m, stock3m: rs.stock3m, nifty3m: rs.nifty3m,
-          bounceVolume: m.pv?.todayRatio ?? null, pullbackDryUp: m.pv?.dryRatio ?? null,
-          weekly: wk ? { up: wk.up, close: wk.close, ema20: wk.ema20 } : null,
-          rsOk, tags,
-          /* The tested exit (10-year backtest): sell all at 2R or at the close of day 15 (+0.037R a trade vs +0.011R
-             at T1 in 10 days). T1 stays the R:R check and the first resistance. */
-          /* Measured from the entry: today's price for pullbacks / bounces (bought now), the trigger for breakouts. */
-          exit2R: (() => { const e = /breakout/i.test(m.picked || '') ? Math.max(m.price, +m.plan?.entry || 0) : m.price, st = +m.plan?.stop;
-            return st > 0 && e > st ? +(e + 2 * (e - st)).toFixed(2) : null; })(),
-          trigger: triggerTextS({ m, rs, rsOk: true, volOk, weeklyOk, wk, readyCore, selected })
-        };
+        const readyOk = g.ok && !forming && !resultsBlock && !eventBlock;
+        if (g.ok && !forming && resultsBlock) resultsBlockedCount++;
+        if (g.ok && !forming && eventBlock && !resultsBlock) eventBlockedCount++;
+        Object.assign(dg, { gate: g.ok ? g.setup : null, signalDay, forming, near: nearTxt, rs3m: rs.rs3m });
         const blockReasons = [];
         if (resultsBlock) blockReasons.push(resultsInfo.date === todayKey ? `Results today (${resultsInfo.date})` : `Results in ${resultsInfo.tradingDays} trading day${resultsInfo.tradingDays===1?'':'s'} (${resultsInfo.date}) - avoid fresh swing entry`);
         blockReasons.push(...evChk.reasons);
-
-        const rankScore = (
-          (selected?.score || m.finalQualification || 0) * 1.0 +
-          Math.min(m.rrBull, 2.5) * 7 +
-          Math.min(m.volRatio, 2.0) * 5 +
-          (macdOk ? 3 : 0) + (adxOk ? 2 : 0) +
-          Math.max(0, 8 - Math.abs(emaGap - 3)) * 1.5 +
-          (Number.isFinite(resistanceRoom) ? Math.min(Math.max(resistanceRoom, 0), 8) * 1.2 : 0) -
-          (Number.isFinite(slRisk) ? Math.max(0, slRisk - 8) * 3 : 0) +
-          (Number.isFinite(rs.rs3m) ? Math.max(-10, Math.min(20, rs.rs3m)) * 0.5 : 0)   /* relative strength leaders rank higher */
-        );
-
-        if (readyOk) {
-          return {...screenerCardPayloadS({ticker, m, selected, status:'READY', rankScore, emaGap, resistanceRoom, slRisk}), ...extra};
-        }
-        /* Ready on limit: a pullback that passes every check except price - it has run above the zone, so R:R
-           from here is under 1.25 (and / or it is late from EMA20). Buying at the limit fixes exactly that; every
-           other rule (trend, bounce candle, volume, weekly, results, and the strength gate after the scan)
-           must pass as for READY. */
-        const limitOk = chk.limitCore && !resultsBlock && !eventBlock;
-        if (limitOk) {
-          const why = `Ready on limit: buy at ₹${m.limit.price} (R:R ${m.limit.rr.toFixed(2)}) - price is above the pullback zone`;
-          return {...screenerCardPayloadS({ticker, m, selected, status:'WATCH', reason: why, rankScore: rankScore + 500, emaGap, resistanceRoom, slRisk}),
-            ...extra, limitReady: true, limitEntry: { ...m.limit, exit2R: +m.limit.stop > 0 && m.limit.price > m.limit.stop ? +(m.limit.price + 2 * (m.limit.price - m.limit.stop)).toFixed(2) : null },
-            trigger: `Place a buy limit at ₹${m.limit.price}; it fills only if price comes back to the zone (${m.picked} ${m.limit.zone})` };
-        }
-        if (readyCore) {
-          /* Passed every stock-level check; blocked only by results/regime. Keep it visible with that reason. */
-          return {...screenerCardPayloadS({ticker, m, selected, status:'WATCH', reason: blockReasons.join(' · '), rankScore, emaGap, resistanceRoom, slRisk}), ...extra};
-        }
-
-        /* Watchlist = near-ready names from the same scan.
-           It must NOT require Ready Gate failed only. If a stock is green in
-           Overview but misses Ready screen because RR/EMA gap/volume is not
-           enough, it should still appear here with the reason.
-           This avoids the earlier problem where both Ready and Watchlist were empty. */
-        const setupScore = Math.max(+(selected?.score || 0), +(m.finalQualification || 0));
-        const watchGateClose = !!(selected && (selected.gatePassed || selected.score >= 55 || m.finalQualification >= 55));
-        const ema50Gap = m.e50 ? ((m.price - m.e50) / m.e50) * 100 : 999;
-        const nearUsefulZone = (emaGap >= -3 && emaGap <= 12) || (ema50Gap >= -3 && ema50Gap <= 7) || (Number.isFinite(slRisk) && slRisk <= 10);
-        const watchOk = !!(
-          selected && !readyOk && watchGateClose &&
-          baseTrendOk &&
-          m.rsi >= 45 && m.rsi <= 68 &&
-          m.volRatio >= 0.8 &&
-          setupScore >= 55 &&
-          nearUsefulZone
-        );
-        if (!watchOk) return null;
-        let reason = watchReasonS({m, selected, emaGap, resistanceRoom, slRisk});
-        if (!weeklyOk) reason = `${wk.close <= wk.ema20 ? `Weekly close ${wk.close} below 20-week EMA ${wk.ema20}` : `Weekly trend not turned up: 10-week EMA ${wk.ema10} below 20-week EMA ${wk.ema20}`} · ${reason}`;
-        if (m.picked && !volOk) { const vr = SwingPlan.setupVolumeReason(m.picked, m.volRatio, m.pv); if (vr) reason = `${vr} · ${reason}`; }
-        if (selected.gatePassed && !reason.includes('RR') && !reason.includes('Entry') && !reason.includes('volume')) {
-          const blockers = [];
-          if (m.rrBull < 1.25) blockers.push('RR not enough');
-          if (emaGap > 8) blockers.push('Entry late from EMA20');
-          if (m.volRatio < 0.8) blockers.push('Needs volume');
-          if (blockers.length) reason = blockers.slice(0,3).join(' · ');
-        }
-        if (resultsBlock || eventBlock) reason = `${blockReasons[0]} · ${reason}`;
-        return {...screenerCardPayloadS({ticker, m, selected, status:'WATCH', reason, rankScore: rankScore - 25, emaGap, resistanceRoom, slRisk}), ...extra};
+        const sel = { name: g.ok ? g.setup : 'Swing READY gate', score: 100, action: 'READY', gatePassed: true, gateReasons: [] };
+        const extra = {
+          resultsDate: resultsInfo?.date || null, resultsTradingDays: resultsInfo ? resultsInfo.tradingDays : null, resultsBlock, resultsRecent: !!resultsInfo?.recent,
+          eventBlock, eventReasons: evChk.reasons, eventNotes: evChk.notes, surveillance: evChk.surveillance, regimeBlock: false,
+          gateV2: true, signalDay, forming, gateInfo: g.info || null,
+          pickedSetup: g.ok ? g.setup : null, selectedStrategy: g.ok ? g.setup : 'Watch',
+          plan: g.ok ? { entry: g.entry, stop: g.stop, target: g.target } : null, exit2R: g.ok ? g.target : null, rr: g.ok ? 2 : null, riskPct: g.ok ? g.riskPct : null,
+          rs3m: rs.rs3m, rs6m: rs.rs6m, stock3m: rs.stock3m, nifty3m: rs.nifty3m, rsOk: Number.isFinite(rs.rs3m) && rs.rs3m > 0, tags,
+          trigger: g.ok ? `${g.why}. Signal at ${signalDay === 'yesterday' ? "yesterday's" : "today's"} close - buy ${signalDay === 'yesterday' ? 'now' : 'near the close or at the next open'}; stop ${g.stop}, sell all at 2R ${g.target} or the close of day 15` : nearTxt
+        };
+        if (readyOk) return { ...screenerCardPayloadS({ ticker, m, selected: sel, status: 'READY', rankScore: 100 - (+g.riskPct || 0), emaGap: 0, resistanceRoom: null, slRisk: g.riskPct }), ...extra };
+        const reason = forming ? `Forming today: ${g.why} - READY if it holds at the close (from 15:00)`
+          : g.ok ? blockReasons.join(' · ') : nearTxt;
+        return { ...screenerCardPayloadS({ ticker, m, selected: sel, status: 'WATCH', reason, rankScore: g.ok ? 60 - (+g.riskPct || 0) : 20 + (Number.isFinite(rs.rs3m) ? Math.min(20, rs.rs3m) : 0), emaGap: 0, resistanceRoom: null, slRisk: g.riskPct ?? null }), ...extra };
       } catch(e) { failedTickers.push(`${ticker} (${String(e && e.message || e).slice(0, 60)})`); return null; }
     }));
 
@@ -4694,6 +4737,7 @@ async function runMyTradeScreenerScan() {
       watch.push({ ...x, tradeStatus:'WATCH', isStrictQualified:false, regimeBlock:true, watchReason: NIFTY_TREND_WHY, confirmationNeeded: NIFTY_TREND_WHY, trigger:'Needs Nifty back above its EMA50 with EMA20 above EMA50' });
       continue;
     }
+    if (x.gateV2) { ready.push(x); continue; }   /* the tested gate already has its own strength rule (RS for the cross) */
     const why = strengthWhy(x);
     if (!why) {
       if (!marketTrend.allowReady) x.marketNote = `Market ${String(marketTrend.status).toLowerCase()}: passed on sector / relative strength - use smaller size`;
@@ -4705,7 +4749,7 @@ async function runMyTradeScreenerScan() {
   for (const x of watch) {
     /* Ready-on-limit passes the same strength gate as READY. */
     if (x.limitReady) { const why = marketTrend.trendUp === false ? NIFTY_TREND_WHY : strengthWhy(x); if (why) { x.limitReady = false; x.rankScore -= 500; x.watchReason = `${why} · ${x.watchReason}`; x.confirmationNeeded = x.watchReason; } continue; }
-    if (x.regimeBlock || x.rsOk !== false) continue;
+    if (x.gateV2 || x.regimeBlock || x.rsOk !== false) continue;
     const why = strengthWhy(x);
     if (why) { x.watchReason = `${why} · ${x.watchReason || ''}`.replace(/ · $/, ''); x.confirmationNeeded = x.watchReason; }
   }
@@ -4792,19 +4836,16 @@ async function runMyTradeScreenerScan() {
         ? 'Price/bias counts are partial because the data provider timed out before the full universe completed.'
         : 'Price/bias counts are live and change with current market price; whitelist is not used as a bypass.'
     },
-    universeLabel: 'Eligible NSE large-cap scan: market cap > ₹35,000Cr, price > ₹10, bullish bias only',
+    universeLabel: 'Eligible NSE large-cap scan: market cap > ₹35,000Cr, price > ₹10',
     screenerFlow: [
-      {step:'Market', rule:'READY only while Nifty is above its EMA50 with EMA20 above EMA50; plus sector up (1M) or beating Nifty (3M)'},
-      {step:'Quick Bounce', rule:'Watch only: RSI-2 under 10, close above the 50/200-day averages, Nifty above its 200-day average (high win rate, but it lost money with 5 positions open in the 10-year test)'},
-      {step:'Exit', rule:'Tested exit: sell all at 2R (2x the risk) or at the close of day 15; T1 is the first resistance and the R:R check'},
-      {step:'Pattern breakouts', rule:'Double bottom (close above the neckline) or flat base (25-day range within 12%, close above it on 1.3x volume), stock and Nifty in an uptrend; stop under the pattern, target 2R'},
-      {step:'Relative strength', rule:'READY needs the stock to outperform Nifty over ~3 months; leaders rank higher'},
-      {step:'Volume', rule:'Pullbacks: quiet pullback, green bounce day on >=1.0x volume · Breakout: >=1.1x'},
-      {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days`},
-      {step:'Bias', rule:'Bullish only: Price>EMA50 and EMA50>EMA200'},
-      {step:'Setup', rule:'EMA20 Pullback / EMA50 Deep Pullback / Support Bounce / Pre-Breakout / Breakout / Momentum'},
-      {step:'Entry / Action', rule:'RR≥1.25 + Volume≥0.8x + score gates decide Ready vs Watchlist'},
-      {step:'Ready Gate', rule:'Selected setup hard gate must PASS (EMA20 pullback, EMA50 deep pullback, support bounce or breakout). Pre-Breakout and Momentum are watch-only'}
+      {step:'READY gate', rule:'Tested 20 Nov 2026 (17 swing entries, 10 years): A. EMA20 crosses above EMA50, close above EMA200, stock beats Nifty over 3 months; or B. a 2%+ gap-up on 2x the 20-day volume that closes above its open, close > EMA50 > EMA200, within 10% of the 52-week high'},
+      {step:'Signal', rule:"On a close: during the session yesterday's completed candle is the signal (buy now); today's forming candle counts from 15:00 (before that it waits on the Watchlist)"},
+      {step:'Market', rule:'READY only while Nifty is above its EMA50 with EMA20 above EMA50 (as tested)'},
+      {step:'Stop / exit', rule:'Stop 0.25 ATR under the setup low (10-day low for A, the gap day low for B), kept 0.75-3 ATR from the price; sell all at 2R or at the close of day 15; at most 5 open'},
+      {step:'Backtest', rule:'A and B in one 5-slot book: 49% wins, +0.18R a trade, profit in 8 of 10 years (9-10 with 3 or 8 open), worst fall -13%. The old pullback / breakout READY: 44%, 6 of 10 years'},
+      {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days, or a corporate event close`},
+      {step:'Pattern breakouts', rule:'Separate list (unchanged): double bottom or flat base breakouts, own stop and 2R exit'},
+      {step:'Quick Bounce', rule:'Watch only: RSI-2 under 10, close above the 50/200-day averages, Nifty above its 200-day average'}
     ],
     filters: {
       criteria: 'Screener Match: Nifty above EMA50 + no results within 5 trading days + Bias Bullish + selected setup + RR≥1.25 + Volume≥0.8x + no high selling volume + Strategy score≥70 + Fresh Entry Score≥70 + setup gate PASS · Watchlist: Bias Bullish + setup forming + score≥55 + near entry zone + one or more confirmation gaps · No duplicate symbols: every Screener Match symbol is excluded from Watchlist · RSI, MACD and ADX remain quality inputs, and selected-strategy gate failures move the stock to Watchlist instead of Ready.'
@@ -5447,6 +5488,24 @@ async function buildQuotePayload(sym) {
       let intra =intraR.status ==='fulfilled'?parseBars(intraR.value):null;
       let monthly=monthlyR.status==='fulfilled'?parseBars(monthlyR.value):null;
       if(!daily)throw new Error('No historical data for '+ticker);
+      /* Yahoo appends the current session as an extra bar on weekly / monthly charts (TITAN, 20 Nov 2026: a Mon-Thu
+         week bar plus a one-day "week" stamped with the live time), so the weekly and monthly trend counted today as
+         its own week / month. That bar is merged into its period's bar (exchange-local calendar). */
+      const gmtOff = Number(weeklyR.value?.meta?.gmtoffset ?? dailyR.value?.meta?.gmtoffset) || 0;
+      weekly = mergeLivePeriodBar(weekly, 'week', gmtOff);
+      monthly = mergeLivePeriodBar(monthly, 'month', gmtOff);
+      /* Futures contract roll: old-contract bars scaled to the new contract (see futRollAdjust). */
+      const rollsHere = /=F$/.test(ticker) ? futRollsFor(ticker) : [];
+      if (rollsHere.length) {
+        daily = futRollAdjust(ticker, daily);
+        intra = futRollAdjust(ticker, intra, 'intraday');
+        weekly = futRollAdjust(ticker, weekly, 'week', daily);
+        monthly = futRollAdjust(ticker, monthly, 'month', daily);
+      }
+      const lastRoll = rollsHere.length ? rollsHere[rollsHere.length - 1] : null;
+      /* The current week / month bar from the daily bars (Yahoo's can be today only - Gold's November bar on 20 Nov). */
+      weekly = rebuildLastPeriodBar(weekly, daily, 'week', gmtOff);
+      monthly = rebuildLastPeriodBar(monthly, daily, 'month', gmtOff);
       /* Price from NSE but history from Yahoo's ETF proxy: scale the ETF bars by (index / ETF price) so the
          candles, EMAs and levels sit at the index level (the shape is the ETF's, which tracks the index). */
       let proxyScale = null;
@@ -5507,6 +5566,8 @@ async function buildQuotePayload(sym) {
         /* Exchange time of the last trade (unix s). Lets the client tell whether the last daily bar
            is today's session or the previous one by date instead of by price. */
         marketTime: dailyR.status === 'fulfilled' ? (Number(dailyR.value?.meta?.regularMarketTime) || null) : null,
+        /* Last futures contract roll (ms) and its size: an MCX calibration saved before it no longer fits. */
+        rolledAt: lastRoll ? lastRoll.at * 1000 : null, rollPct: lastRoll ? +((lastRoll.ratio - 1) * 100).toFixed(2) : null,
         updatedAt:new Date().toISOString(),
       };
   }
@@ -5562,7 +5623,9 @@ async function quickProducer(sym){
   const pc   =conv(sym,prevRaw,mcx?prevRate:rate);
   const chg  =+(price-pc).toFixed(2);
   const pct  =+(pc && pc>0 ? (chg/pc)*100 : rawPct).toFixed(2);
+  const lastRoll = mcx ? futRollsFor(ticker).slice(-1)[0] : null;
   return {sym,price,pc,chg,pct,isUp:pct>=0,usdInr:mcx?rate:null,prevUsdInr:mcx?prevRate:null,changeBasis:mcx?changeBasis:'previousClose',basisTime:mcx?basisTime:null,
+    rolledAt: lastRoll ? lastRoll.at * 1000 : null,
     spark: Array.isArray(spark) ? spark.map(v => conv(sym, v, rate)) : null, updatedAt:new Date().toISOString()};
 }
 
@@ -6125,8 +6188,8 @@ const nodeCrypto = require('crypto');
 const STORE_FILE = path.join(__dirname, 'data', 'user-store.json');
 const STORE_KEY_RE = /^(td_alerts|tradedesk_forward_test_v2|td_pos_capital|td_pos_risk_pct|td_mom_capital|td_recent_stocks|td_journal|td_max_open_risk|td_trace|td_mcx_cal2_[A-Z0-9:_-]{1,40})$/;
 const STORE_MAX_BYTES = 1500000;
-let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {}, flags: {}, telegram: null };
-try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {}, flags: j.flags || {}, telegram: j.telegram || null }; } catch {}
+let USER_STORE = { keys: {}, subs: [], scans: {}, revoked: {}, flags: {} };
+try { const j = JSON.parse(fs.readFileSync(STORE_FILE, 'utf8')); USER_STORE = { keys: j.keys || {}, subs: j.subs || [], scans: j.scans || {}, revoked: j.revoked || {}, flags: j.flags || {} }; delete USER_STORE.keys.td_tg_link; } catch {}
 let STORE_SAVE_TIMER = null;
 function saveStore() {
   clearTimeout(STORE_SAVE_TIMER);
@@ -6205,8 +6268,7 @@ function webPush(sub, payload) {
   });
 }
 async function pushAll(payload) {
-  const tg = await sendTelegram(payload);   /* Telegram too, when a bot is linked */
-  if (!VAPID || !USER_STORE.subs.length) return { sent: tg, devices: 0, telegram: tg };
+  if (!VAPID || !USER_STORE.subs.length) return { sent: 0, devices: 0 };
   let sent = 0;
   const keep = [];
   for (const sub of USER_STORE.subs) {
@@ -6215,7 +6277,7 @@ async function pushAll(payload) {
     if (st !== 404 && st !== 410) keep.push(sub); else console.warn('Push subscription expired - removed');
   }
   if (keep.length !== USER_STORE.subs.length) { USER_STORE.subs = keep; saveStore(); }
-  return { sent: sent + tg, devices: USER_STORE.subs.length, telegram: tg };
+  return { sent, devices: USER_STORE.subs.length };
 }
 async function apiPush(req, res, pn) {
   if (pn === '/api/push/key') return send(res, { enabled: !!VAPID, publicKey: VAPID ? VAPID.pub : null, devices: USER_STORE.subs.length });
@@ -6295,7 +6357,7 @@ function scanSignals(data, slot) {
   for (const x of data.picks || []) {
     const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
     const t2 = +x.exit2R > 0 ? +x.exit2R : +pl.stop > 0 && fill > pl.stop ? fill + 2 * (fill - pl.stop) : null;   /* the screener's own 2R, so list, alert and record agree */
-    out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · exit 2R ${t2 ? inr(t2) : '--'} or day 15 (T1 ${inr(pl.target)})${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+    out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · exit 2R ${t2 ? inr(t2) : '--'} or day 15${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
   }
   for (const x of (data.watchlist || []).filter(x => x.limitReady && x.limitEntry)) out.push({ id: `limit|${x.sym}`, text: `Ready on limit ${x.sym}: buy limit ${inr(x.limitEntry.price)} · stop ${inr(x.limitEntry.stop)} · exit 2R ${x.limitEntry.exit2R ? inr(x.limitEntry.exit2R) : '--'} or day 15${sizingLine(x.limitEntry.price, x.limitEntry.stop)}` });
   /* Quick Bounce is watch-only (2 in 3 win, but no profit with 5 positions open over 10 years): no alert. Pattern
@@ -6342,73 +6404,18 @@ async function scheduledScanTick() {
 }
 
 /* ══════════════════════════════════════════════════════════════════
-   TRADE ASSISTANT - every alert also goes to Telegram when a bot is linked (free, no limits):
+   TRADE ASSISTANT - alerts go to the phones / browsers that turned on background alerts (Web Push).
+   (Telegram removed 20 Nov 2026 - not used.)
    - 09:30 morning brief (NSE trading days): new entries allowed / small size / not today, global bias, India
      regime, holidays, high-impact events, open trades, market-moving headlines.
-   - 09:45 and 17:00 Gold Petal: an alert only on a BUY (2 of 3 drivers) or SELL plan, plus an instant alert when
+   - 09:45 and 17:00 Gold Petal, Crude Oil, Natural Gas: an alert only on a BUY plan (buy-only since 20 Nov 2026), plus an instant alert when
      price reaches the planned buy level. 10:00 Nifty options: an alert only when the credit-spread rule passes.
    - Scans at 11:00 and 15:00: READY / ready-on-limit / quick bounce stocks; at 15:00 one quiet line (with the Gold
      and Nifty status) when nothing was ready.
    - Open-trade watcher (trades the user marked "I took this trade"): stop hit, target 1 hit, day-10 exit,
      results / ex-date within 2 trading days, Gold Petal expiry, Nifty through the short strike.
 ══════════════════════════════════════════════════════════════════ */
-const TG_TOKEN = String(process.env.TELEGRAM_BOT_TOKEN || '').trim();
-const TG_API = String(process.env.TELEGRAM_API_BASE || 'https://api.telegram.org').replace(/\/$/, '');
 const APP_URL = String(process.env.APP_URL || process.env.RENDER_EXTERNAL_URL || '').replace(/\/$/, '');
-function tgCall(method, body) {
-  return new Promise(resolve => {
-    try {
-      const u = new URL(`${TG_API}/bot${TG_TOKEN}/${method}`), data = Buffer.from(JSON.stringify(body || {})), mod = u.protocol === 'http:' ? http : https;
-      const r = mod.request({ hostname: u.hostname, port: u.port || (u.protocol === 'http:' ? 80 : 443), path: u.pathname + u.search, method: 'POST', timeout: 12000,
-        headers: { 'Content-Type': 'application/json', 'Content-Length': data.length } }, x => {
-        const c = []; x.on('data', d => c.push(d));
-        x.on('end', () => { countOutbound(u.hostname, x.statusCode); try { resolve(JSON.parse(Buffer.concat(c).toString('utf8'))); } catch { resolve({ ok: false, description: 'bad reply' }); } });
-      });
-      r.on('timeout', () => { r.destroy(); resolve({ ok: false, description: 'timeout' }); });
-      r.on('error', e => resolve({ ok: false, description: e.message }));
-      r.end(data);
-    } catch (e) { resolve({ ok: false, description: e.message }); }
-  });
-}
-const tgEsc = t => String(t == null ? '' : t).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-/* Render's free disk is wiped on every deploy, and the Telegram link (chat id) used to live only there - after a
-   deploy no alert reached Telegram until it was linked again. TELEGRAM_CHAT_ID in the environment survives it. */
-const TG_CHAT_ENV = String(process.env.TELEGRAM_CHAT_ID || '').trim();
-const tgChatId = () => USER_STORE.telegram?.off ? null : USER_STORE.telegram?.chatId || (/^-?\d{3,}$/.test(TG_CHAT_ENV) ? TG_CHAT_ENV : null);
-async function sendTelegram(payload) {
-  const chatId = tgChatId();
-  if (!TG_TOKEN || !chatId) return 0;
-  /* Cut the plain text first, then escape: cutting after escaping could split an &amp; and Telegram rejects the message. */
-  const body = { chat_id: chatId, text: `<b>${tgEsc(String(payload.title || '').slice(0, 200))}</b>${payload.body ? '\n' + tgEsc(String(payload.body).slice(0, 3500)) : ''}`, parse_mode: 'HTML', disable_web_page_preview: true };
-  /* Telegram buttons need an https address: on Render the app's own; locally none. */
-  if (/^https:\/\//.test(APP_URL)) body.reply_markup = { inline_keyboard: [[{ text: 'Open TradeDesk', url: APP_URL + (payload.url && payload.url.startsWith('/') ? payload.url : '/') }]] };
-  const r = await tgCall('sendMessage', body);
-  if (!r.ok) console.warn('Telegram send failed:', r.description);
-  return r.ok ? 1 : 0;
-}
-async function apiTelegram(req, res, pn) {
-  const tg = USER_STORE.telegram || {};
-  if (pn === '/api/telegram/status') return send(res, { configured: !!TG_TOKEN, linked: !!tgChatId(), linkedAt: tg.linkedAt || null, name: tg.name || (TG_CHAT_ENV && !tg.chatId ? 'TELEGRAM_CHAT_ID' : null),
-    chatId: tgChatId(), fromEnv: !tg.chatId && !!tgChatId(), envSet: !!TG_CHAT_ENV, devices: USER_STORE.subs.length });
-  if (req.method !== 'POST') return err(res, 'Use POST', 405);
-  if (!TG_TOKEN) return err(res, 'Telegram is not set up: add TELEGRAM_BOT_TOKEN in Render → Environment, then redeploy', 400);
-  if (pn === '/api/telegram/link') {
-    const r = await tgCall('getUpdates', { timeout: 0, allowed_updates: ['message'] });
-    if (!r.ok) return err(res, 'Telegram: ' + (r.description || 'no answer'), 502);
-    const msg = (r.result || []).map(u => u.message).filter(m => m && m.chat && m.chat.type === 'private').pop();
-    if (!msg) return err(res, 'No message found: open your bot in Telegram, send /start, then press Link again', 400);
-    USER_STORE.telegram = { chatId: msg.chat.id, name: [msg.chat.first_name, msg.chat.last_name].filter(Boolean).join(' ') || msg.chat.username || 'you', linkedAt: new Date().toISOString() };
-    saveStore();
-    const last = (r.result || []).slice(-1)[0];
-    if (last) tgCall('getUpdates', { offset: last.update_id + 1, timeout: 0 });   /* clear the queue */
-    await sendTelegram({ title: 'TradeDesk linked ✓', body: 'Alerts, the morning brief, Gold Petal and Nifty option signals will arrive here.' });
-    return send(res, { ok: true, linked: true, name: USER_STORE.telegram.name, chatId: msg.chat.id });
-  }
-  /* With TELEGRAM_CHAT_ID set, Unlink must still stop the alerts (until Link again, or the next deploy). */
-  if (pn === '/api/telegram/unlink') { USER_STORE.telegram = TG_CHAT_ENV ? { off: true } : null; if (!TG_CHAT_ENV) delete USER_STORE.telegram; saveStore(); return send(res, { ok: true, linked: false }); }
-  if (pn === '/api/telegram/test') { const n = await sendTelegram({ title: 'TradeDesk test', body: 'Telegram alerts work.' }); return n ? send(res, { ok: true }) : err(res, 'Not sent - link Telegram first', 400); }
-  err(res, 'Not found', 404);
-}
 
 /* One-time markers (event key -> time), kept 4 days, so each alert fires once. */
 function flagOnce(k) {
@@ -6432,7 +6439,7 @@ const MCX_EMOJI = { 'MCX:GOLDPETAL': '🟡', 'MCX:CRUDEOIL': '🛢', 'MCX:NATURA
 async function goldPlanS(sym = 'MCX:GOLDPETAL') {
   const q = (await cacheWrap(`quote:${sym}`, TTL.mcx, () => buildQuotePayload(sym))).value;
   let k = 1;
-  try { const c = JSON.parse(USER_STORE.keys['td_mcx_cal2_' + sym]?.v || 'null'); if (c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3 * 86400e3) { const kk = c.mcx / c.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } } catch {}
+  try { const c = JSON.parse(USER_STORE.keys['td_mcx_cal2_' + sym]?.v || 'null'); if (c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3 * 86400e3 && !(q.rolledAt && c.ts < q.rolledAt)) { const kk = c.mcx / c.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } } catch {}
   const d = q.daily, n = d.C.length;
   if (n < 60 || !(q.price > 0)) throw new Error(`${MCX_NAME[sym] || sym} history too short`);
   const C = d.C.map(v => v * k), H = d.H.map(v => v * k), L = d.L.map(v => v * k), price = q.price * k;
@@ -6492,7 +6499,7 @@ async function openTradeWatchTick() {
         if (!symMarketOpenS('NSE:NIFTY')) continue;
         let q; try { q = await quickPriceFor('NSE:NIFTY'); } catch { continue; }
         const p = +q?.price, k = +t.shortStrike;
-        if (p > 0 && k > 0 && (t.optType === 'P' ? p < k : p > k) && flagOnce(`j|${t.id}|tested|${today}`))
+        if (p > 0 && k > 0 && ((t.optType === 'P' ? p < k : p > k) || (+t.callStrike > 0 && p > +t.callStrike)) && flagOnce(`j|${t.id}|tested|${today}`))
           await pushAll({ title: `⚠ Nifty through your short ${k} ${t.optType === 'P' ? 'PE' : 'CE'}`, body: `Nifty ${p.toFixed(0)}. ${t.label || 'Credit spread'}: check the spread value - exit at 2× the credit loss.`, tag: `j-${t.id}`, url: '/?view=trades' });
         if (t.expiry === today && flagOnce(`j|${t.id}|expiry`)) await pushAll({ title: `Expiry today: ${t.label || 'credit spread'}`, body: 'Close it before 15:15 or let it expire if both strikes are safely out of the money.', tag: `j-${t.id}`, url: '/?view=trades' });
         continue;
@@ -6648,6 +6655,7 @@ async function assistantTick() {
     const mcxCatch = mcxMissed && ((m >= 10 * 60 + 5 && m < 17 * 60) || (m >= 17 * 60 + 20 && m < 23 * 60)) && flagOnce(`job|mcx-catchup|${key}|${m < 17 * 60 ? 'am' : 'pm'}`);
     for (const [min, id] of [[9 * 60 + 45, 'gold-am'], [17 * 60, 'gold-pm'], [-1, 'catch-up']]) {
       if (min < 0 ? mcxCatch : at(min, id)) {
+        let readyNow = 0;
         if (min < 12 * 60) await traceGoldDaily(key).catch(e => console.warn('MCX trace:', e.message));   /* yesterday's candle first */
         for (const sym of MCX_ALERT_SYMS) {
           if (min < 0 && MCX_STATUS[sym]?.day === key) continue;
@@ -6660,11 +6668,15 @@ async function assistantTick() {
             MCX_STATUS[sym] = { day: key, text: waiting ? `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - alert when price reaches ${inr(g.entry)} (now ${inr(g.price)})` : goldPlanText(g).split('\n')[0] };
             if (trade) {
               const when = min < 0 ? `check at ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : min < 12 * 60 ? '09:45' : '17:00';
-              traceGoldRecord(g, `ready ${when}`, key);
+              traceGoldRecord(g, `ready ${when}`, key); readyNow++;
               await pushAll({ title: `${MCX_EMOJI[sym]} ${MCX_NAME[sym]} · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 0 ? when : min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: `td-mcx-${sym}`, url: `/?sym=${sym}` });
             }
           } catch (e) { MCX_STATUS[sym] = { day: key, text: `plan not available (${e.message})` }; console.warn(`${sym} plan:`, e.message); }
         }
+        /* Evening: one quiet line when no MCX trade is ready, so a silent evening is not mistaken for a broken alert
+           (the morning check has the 15:00 summary for that). */
+        if (min === 17 * 60 && !readyNow)
+          await pushAll({ title: 'MCX evening check · nothing ready', body: MCX_ALERT_SYMS.map(s => `${MCX_EMOJI[s]} ${MCX_NAME[s]}: ${MCX_STATUS[s]?.day === key ? MCX_STATUS[s].text : 'plan not checked'}`).join('\n'), tag: 'td-mcx-evening', url: '/' });
       }
     }
     /* Nifty options at 10:00 (opening premiums settle in the first 30 min): an alert only when your rule passes. */
@@ -6687,7 +6699,20 @@ async function assistantTick() {
     /* 15:05: the day's second (last) NSE premiums - the rule's expiry for the pages, then the Track record check
        (80% / stop every day; on the week's last trading day the end-of-week close). Settle expiries at 15:40. */
     if (nseDay && at(15 * 60 + 5, 'nse-evening')) {
-      try { await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
+      let chain15 = null;
+      try { chain15 = await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
+      /* Weekly option selling (trend sell / short strangle): entered at the close of the first trading day after an
+         expiry - so the alert comes at 15:05 on that day only. */
+      try {
+        const nearest = (chain15?.expiries || []).find(e => e >= key), en = SwingPlan.weeklySellEntry(key, nearest, isNseHoliday, chain15?.expiries);
+        if (chain15?.strikes?.length && en?.isEntryDay && flagOnce(`job|weekly-sell|${key}`)) {
+          const reg = await getNiftyRegime(), spot = +chain15.spot || +reg.nifty;
+          const days = Math.max(1, Math.round((Date.parse(chain15.expiry + 'T15:30:00+05:30') - Date.now()) / 86400e3));
+          const w = SwingPlan.niftyWeeklySells(chain15, { spot, trendUp: reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown: reg.nifty < reg.ema20 && reg.ema20 < reg.ema50, daysToExpiry: days, step: 50 });
+          if (w) await pushAll({ title: `📊 Nifty weekly sells · entry today at the close (expiry ${chain15.expiry})`, tag: 'td-nifty-weekly', url: '/?sym=NSE:NIFTY',
+            body: `1. Trend sell: ${w.trend.ok ? `SELL ${w.trend.strike} ${w.trend.ty === 'P' ? 'PE' : 'CE'} ~${w.trend.premium} (${inr(w.trend.premium * 65, 0)}/lot) · exit if it closes at ${w.trend.exitAt}+` : w.trend.why}\n2. Strangle: ${w.strangle.ok ? `SELL ${w.strangle.put} PE ${w.strangle.putPx} + ${w.strangle.call} CE ${w.strangle.callPx} = ${w.strangle.credit} pts · exit if the pair closes at ${w.strangle.exitAt}+` : w.strangle.why}\nNaked: margin ~₹1.5L a lot; the 2x exit is the only protection. Check premiums before ordering.` });
+        }
+      } catch (e) { console.warn('Weekly sells:', e.message); }
       await traceNiftyCheck(key, m, key === lastTradingDayOfWeek(key) ? 'week' : 'morning').catch(e => console.warn('Nifty trace:', e.message));
     }
     if (at(15 * 60 + 40, 'trace-nifty-settle')) await traceNiftyCheck(key, m, 'settle').catch(e => console.warn('Nifty trace:', e.message));
@@ -6780,7 +6805,7 @@ function traceStockRecord(picks, key) {
 
 /* Gold Petal ----------------------------------------------------- */
 /* MCX records (kind 'mcx'; older Gold Petal rows are kind 'gold' and keep their old exit). New rows follow the tested
-   exit: the whole position at exitTarget (gold buys 3R, others T1) or at the stop, else the close of day exitDays. */
+   exit: the whole position at exitTarget (T1 for all since 20 Nov 2026; older gold rows 3R) or at the stop, else the close of day exitDays. */
 const isMcxRow = r => r.kind === 'mcx' || r.kind === 'gold';
 function traceGoldRecord(g, via, key, filledNow = false) {
   const t = traceLoad(), sym = g.sym || 'MCX:GOLDPETAL';
@@ -7069,7 +7094,6 @@ async function handleRequest(req,res){
   /* ── PROTECTED ROUTES ── */
   if(pn==='/api/quote')            return apiQuote(req,res,ps);
   if(pn==='/api/quickprice')       return apiQuick(req,res,ps);
-  if(pn.startsWith('/api/telegram/')) return apiTelegram(req,res,pn);
   if(pn==='/api/market-calendar') {
     const today = istDateKey();
     return send(res, { holidays: NSE_CAL.holidays, upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
