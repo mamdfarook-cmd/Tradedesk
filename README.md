@@ -82,9 +82,8 @@ browser alerts). Schedule (IST, NSE trading days unless noted):
 - 09:45 and 17:00 (weekdays) MCX - Gold Petal, Crude Oil Mini, Natural Gas Mini: only when a BUY is ready (gold:
   all three buy-only, sold at T1 or day 10 - gold since 20 Nov 2026 without the driver filter), entry
   within 1 ATR of the price; a plan waiting for a bigger dip alerts when price reaches its buy level.
-- 10:00 Nifty options: when your bull-put rule passes on the live Zerodha chain. When Zerodha is not connected that
-  day (its login ends at 06:00) an alert says so instead of staying silent.
-- 15:05 on the first trading day after a weekly expiry: Nifty weekly sells (trend sell of one side, short strangle,
+- Nifty options, only on the first trading day after a weekly expiry (as tested): 10:00 a reminder if Zerodha is not
+  connected; 15:05 one alert with the bull-put rule (held to expiry) and the weekly sells (trend sell of one side, short strangle,
   both 2%+ away, exit on a close at 2x the premium / credit) with today's strikes and premiums from Zerodha.
 - 11:00 and 15:00 stock scans: READY stocks of the tested gate (from 20 Nov 2026: EMA20 crosses above EMA50 while the
   stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high; signal on a close; exit 2R or
@@ -99,8 +98,8 @@ Track record (Screener → Track record) has three sub-tabs, all checked once a 
 - MCX (Gold Petal, Crude Oil, Natural Gas): entry at the plan's defined price; checked each morning on the
   completed daily candles; the whole position at the target (T1; gold rows before 20 Nov 2026 3R) or the stop, else the close of day
   20 (gold) / 10. A win rate per commodity.
-- Nifty options: entry at the 10:00 NSE premiums; closed once 80% of the premium is earned, at the stop (loss 2x
-  the credit), or at 15:05 on Friday (the week's last trading day).
+- Nifty options: entry at the 15:05 premiums on the first trading day after an expiry, held to expiry and settled from
+  Nifty's close (rows before 21 Nov 2026: 80% of the premium, a 2x-credit stop or Friday's close).
 They sync like My trades, so a Render restart does not lose them.
 
 /api/health (open it while logged in) shows nseOptionChain: the time of the last good NSE option-chain answer and
@@ -112,7 +111,7 @@ FII / DII was removed on 18 Nov 2026: NSE refuses Render's address and Zerodha K
 
 Data sources (18 Nov 2026). NSE refuses Render's address, so NSE market-data requests were removed:
 - Option premiums: Zerodha Kite only (live, any expiry). Not connected: the last saved Kite chain on the pages,
-  Black-Scholes estimates otherwise; the 10:00 rule and the Track record checks need Kite.
+  Black-Scholes estimates otherwise; the entry-day rule check and the Track record need Kite.
 - Index values and previous closes: Zerodha Kite when connected, else Yahoo. Fin Services Ex-Bank = FINIETF ETF x the
   ratio learned from Kite, else the built-in ratio 978.8 (FINEXBANK_RATIO overrides it).
 - Trading holidays: NSE's 2026 list is built in (NSE_HOLIDAYS=YYYY-MM-DD,... adds days; add 2027 in December).
@@ -135,7 +134,7 @@ Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
   Render with 403. New list: Pattern breakouts (double bottom / flat base), also
   shown as a card on the stock's Overview. The Overview's trend (bias) uses the screener's rule, so the two agree.
 - Missed checks catch up: an MCX check missed at 09:45 / 17:00 (deploy or restart) runs at the next minute between
-  10:05 and 23:00; the Nifty 10:00 check runs as soon as Zerodha is connected, until 15:00. The Track record's MCX /
+  10:05 and 23:00; the Nifty entry-day check retries until 15:25 when the premiums were missing. The Track record's MCX /
   Nifty tabs show today's server check, i.e. why a signal was or was not recorded.
 - Quick Bounce is watch-only; candle patterns no longer vote in the Overview bias.
 - Nifty options: bull puts only (bear calls lost money); minimum credit by days to expiry (6+ up to 10 days, 20+

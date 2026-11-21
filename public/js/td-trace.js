@@ -47,6 +47,8 @@ function importStockTrace(){
       sl: ftR(r.sl), t1: ftR(r.t1), t2: null, trailSl: null, atr: null, rr1: null, rr2: null, score10: r.score10 || null, final: r.final || null, setup: r.setup || null,
       exitMode: r.exitMode || null, t2r: r.t2r ? ftR(r.t2r) : null, tags: r.tags || null, sector: r.sector || null,
       ...(r.pattern ? { pattern: true, planLocked: true, side: 'Long', source: 'pattern breakout' } : {}),
+      /* the tested READY gate's own stop and 2R (rows recorded before 21 Nov 2026 have no flag - known by their setup) */
+      ...(r.planLocked || ['EMA20/50 cross', 'Gap-up near 52-week high'].includes(String(r.setup || '')) ? { planLocked: true } : {}),
       status: 'Open', phase: 'entry', resultR: null, retNow: 0, d5: null, d10: null, d20: null, closed: false, createdAt: new Date(+r.createdAt || Date.now()).toISOString() });
     have.add(`${r.date}_${r.sym}`); n++;
   }
@@ -117,7 +119,7 @@ async function tabTrace(kind){
   const perSymHtml = gold ? `<div class="j-table-wrap" style="margin-bottom:10px"><table class="ft-table"><thead><tr><th>Commodity</th><th>Records</th><th>Closed</th><th>Win rate</th><th>Avg R</th></tr></thead><tbody>${perSym}</tbody></table></div>` : '';
   const how = gold
     ? '<b>How it is followed:</b> records from 19 Nov 2026 use the tested exit - the whole position at the target (T1; Gold Petal rows before 20 Nov 2026 used 3R) or at the stop, else the close of day 20 (gold) / day 10 (others). Older Gold Petal rows: half at T1, the rest at T2 / entry / a close through the EMA. Entry is the plan\'s price - at once when price is already there, else when price reaches it that day ("Not filled" otherwise, left out of the win rate). Then checked once a day, each morning, on the completed daily candles at your MCX calibration: stop-loss = -1R; at T1 half is booked and the stop moves to entry; the rest exits at T2, at entry, or on a daily close through the plan\'s EMA. Still open after 10 trading days: closed at the close of day 10. Result = half T1 + half the rest. The alert day\'s candle is not judged (its high / low may have come before the alert); a day that touched both the stop and a target is marked Ambiguous.'
-    : '<b>How it is followed:</b> entry at the 10:00 NSE premiums. Checked each morning at 10:00: closed once 80% of the premium is earned (spread value 20% of the credit or less), or at the stop (loss 2× the credit). Otherwise closed at 15:05 on the last trading day of the week (Friday), or settled at expiry from Nifty\'s close if that comes first. Spread value = short leg minus long leg (NSE bid/ask middle or last trade). 1R = 2× the credit. Brokerage and taxes are not included.';
+    : '<b>How it is followed:</b> from 21 Nov 2026 as tested - entered at the 15:05 premiums on the first trading day after an expiry and held to expiry, then settled from Nifty\'s close (1R = the most the spread can lose: width minus credit). The value is marked each day at 15:05. Rows recorded before 21 Nov 2026 kept their old exit (80% of the premium, a 2x-credit stop or the end of the week; 1R = 2x the credit). Brokerage and taxes are not included.';
   let today = '';
   try {
     const st = await apiFetch('/api/assistant-status', 10000);

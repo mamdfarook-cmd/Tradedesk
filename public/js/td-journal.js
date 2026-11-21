@@ -10,10 +10,11 @@ function jSave(a){ try{ localStorage.setItem(J_KEY, JSON.stringify(a)); }catch{}
 function jLimitPct(){ const v = readPosSetting(J_LIMIT_KEY, J_DEFAULT_LIMIT); return v > 0 && v <= 100 ? v : J_DEFAULT_LIMIT; }
 /* Units per quantity: shares 1, MCX lots x lot size, option lots x lot size. */
 const jUnits = t => (+t.qty || 0) * (t.kind === 'stock' ? 1 : (+t.lotQty || 1));
-/* Rupees lost if the stop is hit. A credit spread's stop is a loss of 2x the credit (capped at the width). */
+/* Rupees at risk on the tested exit. */
 function jRiskRs(t){
-  /* Naked sell (no buy strike): the stop at 2x the premium loses about 1x the credit. */
-  if(t.kind === 'option') return (+t.wing > 0 ? Math.min(2 * (+t.credit || 0), Math.max(0, (+t.wing || 0) - (+t.credit || 0))) : (+t.credit || 0)) * jUnits(t);
+  /* Credit spread: held to expiry as tested, so the risk is the most it can lose (width - credit). Naked sell (no buy
+     strike): the exit on a close at 2x the premium loses about 1x the credit. */
+  if(t.kind === 'option') return (+t.wing > 0 ? Math.max(0, (+t.wing || 0) - (+t.credit || 0)) : (+t.credit || 0)) * jUnits(t);
   const r = Math.abs((+t.entry || 0) - (+t.stop || 0)) * jUnits(t);
   return Number.isFinite(r) ? r : 0;
 }

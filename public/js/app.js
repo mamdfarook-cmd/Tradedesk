@@ -1,5 +1,4 @@
 const SWING_MIN_RR = 1.25;
-const SWING_STRONG_RR = 1.50;
 
 const TD_ICON_DATA_URI = '/icon-192.png';   /* was a 40 KB base64 copy of this file */
 
@@ -360,15 +359,6 @@ function clearDailyLocalCache(name=null) {
   } catch {}
 }
 
-async function apiFetchDailyCached(cacheName, path, timeoutMs=20000, opts={}) {
-  if (!opts.force) {
-    const local = readDailyLocalCache(cacheName);
-    if (local) return { ...local, _localDailyCache:true };
-  }
-  const data = await apiFetch(path, timeoutMs);
-  saveDailyLocalCache(cacheName, data);
-  return { ...data, _localDailyCache:false };
-}
 
 /* ── LIVE QUOTE ── */
 async function fetchLiveQuote(sym) {
@@ -438,19 +428,7 @@ async function preloadMarketContext(force=false) {
   return MARKET_CONTEXT_PROMISE;
 }
 
-function gFmt(v, d=2) { return v==null ? '--' : (+v).toLocaleString('en-IN',{minimumFractionDigits:d,maximumFractionDigits:d}); }
 
-function setGi(idPrice, idChg, item, decimals=2) {
-  if (!item || item.error) return;
-  const pe = document.getElementById(idPrice);
-  const ce = document.getElementById(idChg);
-  if (pe) pe.textContent = gFmt(item.price, decimals);
-  if (ce) {
-    const sign = item.isUp ? '▲' : '▼';
-    ce.textContent = `${sign}${Math.abs(item.pct).toFixed(2)}%`;
-    ce.className = 'gi-chg ' + (item.isUp ? 'gi-up' : 'gi-dn');
-  }
-}
 
 function globalPct(item) {
   if (!item || item.error) return null;
@@ -516,7 +494,6 @@ async function loadGlobalBar() {
       loadGlobalBar._retry = null; loadGlobalBar._tries = (loadGlobalBar._tries || 0) + 1;
       loadGlobalBar().then(() => {
         if (document.querySelector('#tc .td-market-compact') && window.renderCompactMarketDashboardV19) window.renderCompactMarketDashboardV19();
-        else if (+GLOBAL_DATA?.vix?.price > 0 && document.querySelector('#tc [data-idx-idea-wait]')) renderTab(activeTabName());
       }).catch(() => {});
     }, 35000);
 
@@ -572,7 +549,6 @@ function calcBB(C,p=20){if(C.length<p)return null;const s=C.slice(-p),b=s.reduce
 function calcStoch(C,H,L,k=14,d=3){if(C.length<k)return null;const ks=[];for(let i=k-1;i<C.length;i++){const hh=Math.max(...H.slice(i-k+1,i+1)),ll=Math.min(...L.slice(i-k+1,i+1));ks.push(hh===ll?50:(C[i]-ll)/(hh-ll)*100);}return{k:ks[ks.length-1],d:ks.slice(-d).reduce((a,b)=>a+b,0)/Math.min(d,ks.length)};}
 function calcCCI(C,H,L,p=20){if(C.length<p)return null;const tp=C.map((c,i)=>(H[i]+L[i]+c)/3),sl=tp.slice(-p);const sm=sl.reduce((a,b)=>a+b,0)/p,md=sl.reduce((a,b)=>a+Math.abs(b-sm),0)/p;return md===0?0:(tp[tp.length-1]-sm)/(0.015*md);}
 function calcADX(C,H,L,p=14){if(C.length<p*2+2)return null;const trs=[],pdm=[],ndm=[];for(let i=1;i<C.length;i++){trs.push(Math.max(H[i]-L[i],Math.abs(H[i]-C[i-1]),Math.abs(L[i]-C[i-1])));const u=H[i]-H[i-1],dn=L[i-1]-L[i];pdm.push(u>dn&&u>0?u:0);ndm.push(dn>u&&dn>0?dn:0);}/* Wilder smoothing: init with average (not sum), each step adds a[i]/p not a[i] */function ws(a,p){let s=a.slice(0,p).reduce((x,y)=>x+y,0)/p;const r=[s];for(let i=p;i<a.length;i++){s=s-s/p+a[i]/p;r.push(s);}return r;}const atr=ws(trs,p),sp=ws(pdm,p),sn=ws(ndm,p);const pdi=sp.map((v,i)=>atr[i]?v/atr[i]*100:0),ndi=sn.map((v,i)=>atr[i]?v/atr[i]*100:0);const dx=pdi.map((v,i)=>{const s=v+ndi[i];return s?Math.abs(v-ndi[i])/s*100:0;});const adxA=ws(dx,p);const last=adxA.length-1,off=pdi.length-adxA.length;return last<0?null:{adx:adxA[last],pdi:pdi[last+off]||pdi[pdi.length-1],ndi:ndi[last+off]||ndi[ndi.length-1]};}
-const calcMom=(C,p=10)=>C.length<p+1?null:C[C.length-1]-C[C.length-1-p];
 const calcAO=(H,L)=>{if(H.length<34)return null;const mid=H.map((h,i)=>(h+L[i])/2);return mid.slice(-5).reduce((a,b)=>a+b,0)/5-mid.slice(-34).reduce((a,b)=>a+b,0)/34;};
 function dateKeyFromUnixSec(ts, tz='Asia/Kolkata'){
   if(!ts)return'';
@@ -697,7 +673,6 @@ function detectPatterns({C,O,H,L}, endIndex=null){
 
 /* ── SIGNALS ── */
 function sigRec(v){if(v==null)return{l:'N/A',c:'na'};if(v>=.5)return{l:'Strong Buy',c:'strong-bull'};if(v>=.1)return{l:'Buy',c:'bull'};if(v>-.1)return{l:'Neutral',c:'neutral'};if(v>-.5)return{l:'Sell',c:'bear'};return{l:'Strong Sell',c:'strong-bear'};}
-function sigScore(c){return{['strong-bull']:2,bull:1,neutral:0,bear:-1,['strong-bear']:-2,na:0}[c]??0;}
 function sigRSI(v){if(v==null)return{l:'N/A',c:'na',note:''};if(v>=80)return{l:'Extremely Overbought',c:'strong-bear',note:fmt(v,1)};if(v>=70)return{l:'Overbought',c:'bear',note:fmt(v,1)};if(v<=20)return{l:'Extremely Oversold',c:'strong-bull',note:fmt(v,1)};if(v<=30)return{l:'Oversold',c:'bull',note:fmt(v,1)};return v>50?{l:'Neutral+',c:'bull',note:fmt(v,1)}:{l:'Neutral−',c:'bear',note:fmt(v,1)};}
 function sigMACD(m,s){if(m==null||s==null)return{l:'N/A',c:'na',note:''};const d=m-s;return d>0?{l:m>0?'Bullish':'Weak Bullish',c:m>0?'bull':'neutral',note:`Hist: ${d>0?'+':''}${fmt(d)}`}:{l:m<0?'Bearish':'Weak Bearish',c:m<0?'bear':'neutral',note:`Hist: ${fmt(d)}`};}
 function sigBB(price,upper,lower,basis){
@@ -845,190 +820,8 @@ function renderIndexOptionsDecision(sym){
 }
 
 /* ── TRADE VALIDITY + GOLD PETAL HELPERS ── */
-function getTradeValiditySnapshot(sym){
-  const d = CUR_DATA?.daily || {}, C=d.C||[], H=d.H||[], L=d.L||[], V=d.V||[], O=d.O||[];
-  const n=C.length, price=getCurrentLivePrice(), prev=firstFiniteNumber(CUR_DATA.pc,C[n-2],C[n-1],price);
-  if(!n || !Number.isFinite(price)) return {score:0,label:'No Data',cls:'bear',checks:[],avoid:[]};
-  const rsi=calcRSI(C), macdD=calcMACD(C), adxR=calcADX(C,H,L);
-  const e20=emaLast(C,20), e50=emaLast(C,50), e200=emaLast(C,200);
-  const st=calcSuperTrend(C,H,L);
-  const sr=getSRTradeLevels();
-  const volEnd = Math.max(0, Math.min(V.length, n) - 1);
-  const volBase = V.slice(Math.max(0, volEnd - 20), volEnd);
-  const avgVol=volBase.reduce((a,b)=>a+(Number(b)||0),0)/Math.max(1,volBase.length);
-  const volToday=Number(V[n-1])||0;
-  const volRatio=avgVol?volToday/avgVol:1;
-  const ema20Ok=Number.isFinite(+e20) && +e20>0;
-  const ema50Ok=Number.isFinite(+e50) && +e50>0;
-  const ema200Ok=Number.isFinite(+e200) && +e200>0;
-  const trendBull = Number.isFinite(+price) && ema50Ok && ema200Ok && price>e50 && e50>e200;
-  const trendBear = Number.isFinite(+price) && ema50Ok && ema200Ok && price<e50 && e50<e200;
-  const nearestResVal = Number(sr.nearestResistance?.v ?? sr.r1);
-  const nearestSupVal = Number(sr.nearestSupport?.v ?? sr.s1);
-  const r1Ok=Number.isFinite(+nearestResVal) && +nearestResVal>0;
-  const s1Ok=Number.isFinite(+nearestSupVal) && +nearestSupVal>0;
-  const nearRes = r1Ok && Math.abs(price-nearestResVal)/price*100 < 0.75;
-  const nearSup = s1Ok && Math.abs(price-nearestSupVal)/price*100 < 0.75;
-  const rrBull = r1Ok && s1Ok && price>nearestSupVal ? (nearestResVal-price)/(price-nearestSupVal) : 0;
-  const rrBear = r1Ok && s1Ok && nearestResVal>price && nearestSupVal<price ? (price-nearestSupVal)/(nearestResVal-price) : 0;
-  const checks=[];
-  const add=(name,pass,pts,max,note)=>checks.push({name,pass,pts:pass?pts:Math.round(pts*.35),max,note});
-  add('Trend alignment', trendBull||trendBear, 18, 18, trendBull?'Bull trend: price > EMA50 > EMA200':trendBear?'Bear trend: price < EMA50 < EMA200':'Trend is mixed');
-  add('Momentum health', (rsi>=45&&rsi<=68&&macdD?.hist>0)||(rsi<=55&&rsi>=32&&macdD?.hist<0), 16, 16, `RSI ${fmt(rsi,1)} · MACD hist ${macdD?fmt(macdD.hist):'--'}`);
-  add('Volume confirmation', volRatio>=1.0, 14, 14, `${volRatio?volRatio.toFixed(2):'--'}x 20D average`);
-  /* Use the RR in the direction of the trend. max(rrBull, rrBear) was always ≥1 because one is the
-     inverse of the other, so this check almost always passed. */
-  const nearbySrRR = trendBull ? rrBull : trendBear ? rrBear : 0;
-  add('Nearby S/R room', nearbySrRR>=1.3, 18, 18, `Nearby S/R room approx ${nearbySrRR.toFixed(2)}:1${trendBull||trendBear?'':' (no clear trend)'} · active Strategy RR is shown separately from Strategy-tab levels`);
-  add('Not late entry', !(rsi>72 || (ema20Ok && Math.abs(price-e20)/e20*100>8)), 14, 14, `Distance from EMA20 ${ema20Ok?((price-e20)/e20*100).toFixed(1)+'%':'--'}`);
-  add('S/R location', !(nearRes&&trendBull) && !(nearSup&&trendBear), 12, 12, nearRes?'Close to resistance':nearSup?'Close to support':'Not trapped near key S/R');
-  /* SuperTrend only counts when it points the same way as the EMA trend (it used to pass just by existing). */
-  const stAgrees = !!st && ((trendBull && st.dir===1) || (trendBear && st.dir===-1));
-  add('Trend strength', adxR?.adx>=16 || stAgrees, 8, 8, `ADX ${adxR?.adx?fmt(adxR.adx,1):'--'} · ${st?.label||'No ST'}${st&&!stAgrees?' (against trend)':''}`);
-  const score=checks.reduce((a,c)=>a+c.pts,0);
-  const avoid=[];
-  if(rsi>72) avoid.push({t:'Overbought chase risk',d:`RSI ${fmt(rsi,1)}. Avoid fresh long unless pullback/consolidation comes.`,c:'bear'});
-  if(rsi<28) avoid.push({t:'Oversold breakdown risk',d:`RSI ${fmt(rsi,1)}. Avoid fresh short after extended fall.`,c:'bear'});
-  if(ema20Ok && Math.abs(price-e20)/e20*100>8) avoid.push({t:'Far from EMA20',d:`Price is ${(Math.abs(price-e20)/e20*100).toFixed(1)}% away from EMA20. Entry may be late.`,c:'neutral'});
-  if(volRatio<0.7) avoid.push({t:'Weak participation',d:`Volume is only ${(volRatio*100).toFixed(0)}% of 20D average.`,c:'neutral'});
-  if(nearRes) avoid.push({t:'Near resistance',d:`Price is close to ${sr.nearestResistance?.n || 'nearest resistance'} ${fmt(nearestResVal)}. Fresh long has poor room.`,c:'bear'});
-  if(nearSup) avoid.push({t:'Near support',d:`Price is close to ${sr.nearestSupport?.n || 'nearest support'} ${fmt(nearestSupVal)}. Fresh short has poor room.`,c:'bear'});
-  const cls=score>=75?'bull':score>=50?'neutral':'bear';
-  const label=score>=75?'Valid Setup Zone':score>=50?'Conditional Setup':'Avoid / Wait Zone';
-  return {score,label,cls,checks,avoid,price,volRatio,rsi,rr:nearbySrRR};
-}
 
-function getDataConfidenceSnapshot(sym){
-  const d = CUR_DATA || {};
-  const dailyN = d.daily?.C?.length || 0;
-  const weeklyN = d.weekly?.C?.length || 0;
-  const volN = Array.isArray(d.daily?.V) ? d.daily.V.filter(v=>Number.isFinite(+v) && +v>=0).length : 0;
-  const price = getCurrentLivePrice();
-  const ds = d.dataSource || {};
-  const ageMin = d.updatedAt ? Math.floor((Date.now() - new Date(d.updatedAt).getTime()) / 60000) : null;
-  const mode = ds.mode || 'direct';
-  const sourceWarn = ds.warning || '';
-  const isProxy = /proxy|fallback|estimated|basket/i.test(mode + ' ' + sourceWarn);
-  const isCached = !!d.cached || !!d._localDailyCache;
-  const checks=[];
-  const add=(name,pass,pts,max,note)=>checks.push({name,pass,pts:pass?pts:Math.round(pts*.35),max,note});
-  add('Price feed available', Number.isFinite(+price) && +price>0, 20, 20, Number.isFinite(+price)?`Current price ${fmt(price)}`:'Current price missing');
-  add('Daily candles sufficient', dailyN>=50, 20, 20, `Daily candles loaded: ${dailyN}. Minimum required: 50.`);
-  add('Weekly candles available', weeklyN>=20, 15, 15, weeklyN?`Weekly candles loaded: ${weeklyN}`:'Weekly candles missing / weak confirmation');
-  add('Volume series available', volN>=20 || isIndexSymbol(sym) || isMCXSymbol(sym), 10, 10, volN?`Volume candles loaded: ${volN}`:'Volume data missing or limited');
-  add('Fresh server response', ageMin==null ? false : ageMin<=30, 15, 15, ageMin==null?'No updatedAt timestamp':`Updated ${ageMin<1?'just now':ageMin+'m ago'}${isCached?' · server/browser cached':''}`);
-  add('Source is not proxy/estimated', !isProxy, 20, 20, isProxy ? (sourceWarn || `Source mode: ${mode}`) : `Source: ${ds.provider || 'Backend'} · ${ds.ticker || sym}`);
-  const score = checks.reduce((a,c)=>a+c.pts,0);
-  const cls = score>=85?'bull':score>=65?'neutral':'bear';
-  const label = score>=85?'High Data Confidence':score>=65?'Medium Data Confidence':'Low Data Confidence';
-  return {score,cls,label,checks,isProxy,isCached,mode,sourceWarn,dailyN,weeklyN,ageMin};
-}
 
-async function tabValidity(sym, opts={}){
-  const v=getTradeValiditySnapshot(sym);
-  const dq=getDataConfidenceSnapshot(sym);
-  const col=v.cls==='bull'?'var(--bull)':v.cls==='bear'?'var(--bear)':'var(--neu)';
-  const dqCol=dq.cls==='bull'?'var(--bull)':dq.cls==='bear'?'var(--bear)':'var(--neu)';
-  let decisionSnap = AI_CACHE[`decision_snap_${sym}`]?.snap || null;
-  if(!decisionSnap){
-    try{ decisionSnap = await buildUnifiedSwingDecisionSnapshot(sym); }catch(e){ decisionSnap=null; }
-  }
-  const holdSnap = decisionSnap?.holdSnap || null;
-  const row = (name, ok, note, score='') => `<div class="tp-qrow"><div><strong>${ok?'✅':'⚠️'} ${escHtml(name)}</strong><span>${escHtml(note)}</span></div>${score?`<b>${escHtml(score)}</b>`:''}</div>`;
-  const hasRows = Array.isArray(decisionSnap?.rows) && decisionSnap.rows.length >= 5;
-  const marketRow = decisionSnap?.rows?.find(r=>/Sector \+ market/i.test(r.name));
-  const rrRow = decisionSnap?.rows?.find(r=>/Risk\/reward/i.test(r.name));
-  const trendRow = decisionSnap?.rows?.find(r=>/Trend structure/i.test(r.name));
-  const setupRow = decisionSnap?.rows?.find(r=>/Setup shape/i.test(r.name));
-  const volumeRow = decisionSnap?.rows?.find(r=>/Volume/i.test(r.name));
-  const strategyPlan = await getStrategyTradePlan(sym, document.getElementById('ihn')?.textContent || sym, decisionSnap?.bias || 'Sideways').catch(()=>null);
-  /* The Overview's final decision (after the Ready Gate) when it has been worked out in the last 5 min; the
-     setup label alone said "WATCH" while the Overview showed "WAIT". */
-  const ovV = OVERVIEW_VERDICT[sym] && Date.now() - OVERVIEW_VERDICT[sym].ts < 5*60*1000 ? OVERVIEW_VERDICT[sym] : null;
-  const finalActionText = ovV ? `${ovV.action} · Ready Gate ${ovV.gate}${ovV.reason ? ' · ' + ovV.reason : ''}` : String(decisionSnap?.setupLabel || '');
-  const finalActionReady = /^READY\b/i.test(finalActionText);
-  const numericStrategyLevelsOk = !!(strategyPlan?.isActive && Number.isFinite(+strategyPlan?.stopLoss) && Number.isFinite(+strategyPlan?.target1));
-  const strategyOk = finalActionReady && numericStrategyLevelsOk;
-  const strategyNote = strategyOk
-    ? `Entry: ${fmt(firstFiniteNumber(strategyPlan.entryPrice, extractTradePriceFromText(strategyPlan.entry, getCurrentLivePrice())))} · SL: ${fmt(strategyPlan.stopLoss)} · Target: ${fmt(strategyPlan.target1)}`
-    : !finalActionReady
-      ? `Overview final action is ${finalActionText || 'missing'}; Strategy levels are conditional, not active.`
-      : 'Strategy setup levels not complete';
-  /* Fill = current price (breakouts: the trigger when it is above) - the same price the Overview R:R uses. */
-  const activeEntryNum = (/breakout/i.test(strategyPlan?.setupName || '') && Number.isFinite(+strategyPlan?.entryPrice))
-    ? Math.max(getCurrentLivePrice(), +strategyPlan.entryPrice) : getCurrentLivePrice();
-  const activeSLNum = Number(strategyPlan?.stopLoss);
-  const activeTargetNum = Number(strategyPlan?.target1);
-  const candidateStrategyRR = (strategyPlan?.isActive && Number.isFinite(activeEntryNum) && Number.isFinite(activeSLNum) && Number.isFinite(activeTargetNum) && Math.abs(activeEntryNum-activeSLNum)>0)
-    ? Math.abs(activeTargetNum-activeEntryNum)/Math.abs(activeEntryNum-activeSLNum)
-    : null;
-  const strategyRR = (finalActionReady && candidateStrategyRR != null) ? candidateStrategyRR : null;
-  const currentPlanRR = (strategyPlan?.isActive && Number.isFinite(activeSLNum) && Number.isFinite(activeTargetNum))
-    ? calcTradePlanRiskReward({bias:strategyPlan.bias, price:getCurrentLivePrice(), stopLoss:activeSLNum, target1:activeTargetNum, atr:null})
-    : null;
-  const rrHtml = strategyRR != null
-    ? `<div class="tp-score-head ${strategyRR>=1.5?'bull':strategyRR>=1.0?'neutral':'bear'}"><div><span class="tp-score-num">${strategyRR.toFixed(2)}</span><span class="tp-score-total">:1</span></div><div class="tp-grade">Active Strategy RR</div></div>
-       <div class="aib">Uses the same active Strategy tab levels: Entry ${fmt(activeEntryNum)} · SL ${fmt(activeSLNum)} · Target ${fmt(activeTargetNum)}. No separate S/R approximation is shown here.</div>`
-    : `<div class="aib"><strong>No active strategy RR.</strong> ${escHtml(strategyNote)}${candidateStrategyRR!=null?` Plan R:R at ${fmt(activeEntryNum)} is ${candidateStrategyRR.toFixed(2)}:1 - not an active trade until the decision is READY.`:''} Validation will not invent a separate RR from nearest support/resistance.</div>`;
-  const missing = [];
-  const neutralCheck = (label, r) => {
-    const n = String(r?.note || '');
-    const isNeutral = /not loaded|neutral credit|UNKNOWN|NO DATA|not safe|not fully loaded|not available/i.test(n);
-    if(isNeutral) missing.push(`${label}: ${n}`);
-    return !isNeutral;
-  };
-  const coreOk = hasRows && Number.isFinite(+decisionSnap?.score100);
-  const dataRows = dq.checks.map(c => row(c.name, c.pass, c.note, `${c.pts}/${c.max}`));
-  const scoreText = (r) => r ? `${r.pts}/${r.max}` : '';
-  const decisionRow = (label, checkLabel, r, extraOk=true) => {
-    const ok = !!r && !!extraOk && neutralCheck(checkLabel, r);
-    return {ok, html:row(label, ok, r?.note || `${label} row missing`, scoreText(r))};
-  };
-  const rrOk = !!rrRow && (decisionSnap?.rrNum||0)>0;
-  const setupRowData = [
-    decisionRow('EMA trend structure checked', 'EMA trend', trendRow),
-    decisionRow('Setup shape checked', 'Setup', setupRow),
-    decisionRow('Entry status / S&R / RR checked', 'RR', rrRow, rrOk),
-    decisionRow('Volume participation checked', 'Volume', volumeRow),
-    decisionRow('Market / sector / relative strength checked', 'Market/sector/RS', marketRow),
-    {ok:coreOk && hasRows, html:row('Fresh Entry score breakdown checked', coreOk && hasRows, decisionSnap ? `${decisionSnap.score100}/100 · ${decisionSnap.lbl} · ${decisionSnap.grade}` : 'Fresh entry snapshot missing')},
-    {ok:!!holdSnap?.rows?.length, html:row('Hold Score breakdown checked', !!holdSnap?.rows?.length, holdSnap ? `${holdSnap.score100}/100 · ${holdSnap.grade}` : 'Hold score not available until directional setup exists')},
-    {ok:strategyOk, html:row('Strategy tab active trade setup checked', strategyOk, strategyNote)},
-    {ok:!!(ovV || (decisionSnap?.setupLabel && decisionSnap?.setupDetail)), html:row('Final action checked in Overview', !!(ovV || (decisionSnap?.setupLabel && decisionSnap?.setupDetail)), ovV ? finalActionText : `${decisionSnap?.setupLabel || 'Final action missing'} · ${decisionSnap?.setupDetail || ''}`)}
-  ];
-  /* Under Decision, the five score rows and the two breakdown rows repeat the Fresh Entry / Hold tables above. */
-  const setupRows = (opts.merged ? setupRowData.slice(7) : setupRowData).map(x=>x.html);
-  const allDataOk = dq.checks.every(c=>c.pass);
-  const allSetupOk = missing.length===0 && setupRowData.every(x=>x.ok);
-  const confirmed = allDataOk && allSetupOk;
-  const combinedLabel = confirmed ? '✅ Checklist Passed' : (allSetupOk && !allDataOk ? '⚠️ Setup valid, data confidence weak' : '⚠️ Not Fully Confirmed');
-  const combinedText = confirmed
-    ? 'Setup validation and data-confidence checks passed. Still verify fresh news, earnings, broker price and liquidity before order placement.'
-    : 'Do not treat the score as final. Fix the warning items below or reduce confidence/position size.';
-  const warnList = [];
-  dq.checks.filter(c=>!c.pass).forEach(c=>warnList.push(`Data confidence: ${c.name} — ${c.note}`));
-  missing.forEach(m=>warnList.push(`Setup validation: ${m}`));
-  const statusHtml = `<div class="tp-section" style="border-color:${confirmed?'var(--bull)':'var(--neu)'}"><div class="tp-section-title">${combinedLabel}</div><div class="aib"><strong style="color:${confirmed?'var(--bull)':'var(--neu)'}">${combinedText}</strong></div>${warnList.length?`<div class="tp-warning-list" style="margin-top:10px">${warnList.map(m=>`<div class="tp-warning neutral"><strong>Checklist warning</strong><span>${escHtml(m)}</span></div>`).join('')}</div>`:''}</div>`;
-  const oldRows=v.checks.map(c=>`<div class="tp-qrow"><div><strong>${c.pass?'✅':'⚠️'} ${escHtml(c.name)}</strong><span>${escHtml(c.note)}</span></div><b>${c.pts}/${c.max}</b></div>`).join('');
-  const avoid=v.avoid.length?v.avoid.map(a=>`<div class="tp-warning ${a.c}"><strong>${escHtml(a.t)}</strong><span>${escHtml(a.d)}</span></div>`).join(''):`<div class="aib">No major avoid-zone warning from loaded technical data. Still verify fresh news, calendar events and earnings manually.</div>`;
-  return `${statusHtml}
-  <div class="tp-section"><div class="tp-section-title">Combined Checklist — Validation + Data Confidence</div>
-    <div class="tp-mini-grid" style="margin-bottom:10px">
-      ${opts.merged ? '' : `<div class="tp-mini"><h4>Fresh Entry Score</h4><p><strong style="color:${decisionSnap?.col || col}">${decisionSnap?.score100 ?? '--'}/100 · ${escHtml(decisionSnap?.grade || 'No snapshot')}</strong></p></div>`}
-      <div class="tp-mini"><h4>Data Confidence</h4><p><strong style="color:${dqCol}">${dq.score}/100 · ${escHtml(dq.label)}</strong></p></div>
-      <div class="tp-mini"><h4>Rule</h4><p>Green score is not enough. Setup and data must both pass.</p></div>
-    </div>
-    <div class="tp-section-title" style="font-size:.78rem;margin-top:12px">Data Confidence Checks</div>
-    <div class="tp-quality-list">${dataRows.join('')}</div>
-    <div class="tp-section-title" style="font-size:.78rem;margin-top:14px">Setup Validation Checks</div>
-    <div class="tp-quality-list">${setupRows.join('')}</div>
-    <div class="aib" style="margin-top:10px">This checklist combines two different things: whether the trade setup is valid, and whether the input data is trustworthy. Proxy/estimated/stale data does not automatically reject a trade, but it reduces confidence and must be manually verified.</div>
-  </div>
-  <div class="tp-section"><div class="tp-section-title">Active Strategy Risk/Reward — Same Levels as Strategy Tab</div>
-    ${rrHtml}
-  </div>
-  <div class="tp-section"><div class="tp-section-title">Avoid Zone</div><div class="tp-warning-list">${avoid}</div></div>`;
-}
 
 function goldPetalDashboard(sym){
   if(sym!=='MCX:GOLDPETAL') return '';
@@ -1240,8 +1033,14 @@ function tabSR(){
   }
   const below = levels.filter(l => l.v < price).sort((a, b) => b.v - a.v)[0], above = levels.filter(l => l.v > price).sort((a, b) => a.v - b.v)[0];
   TECH_SUM.sr = { sup: below?.v ?? null, res: above?.v ?? null, price, fib: pricePos };
-  const fibHtml = secT('5 · Fibonacci (52-week low → high)')+
-    `<div style="background:var(--bgc);border:1px solid var(--brd);border-radius:var(--r);padding:12px 14px;margin-bottom:14px">
+  const fibBelow = fibLevels.filter(f => f.price < price && !f.isNear).sort((a, b) => b.price - a.price)[0], fibAbove = fibLevels.filter(f => f.price > price && !f.isNear).sort((a, b) => a.price - b.price)[0];
+  const fibCompact = fibLevels.length ? `<div class="fbx">
+      <div class="fbx-bar" title="Where the price sits in the 52-week range"><span>${fmt(yw_low)}</span><div><i style="left:${Math.max(0, Math.min(100, +pricePos || 0))}%"></i></div><span>${fmt(yw_high)}</span></div>
+      <div class="fbx-chips">${fibLevels.slice().reverse().map(f => `<span class="${f.isNear ? 'near' : f.price < price ? 'sup' : 'res'}"><b>${f.label}</b>${fmt(f.price)}</span>`).join('')}</div>
+      <div class="fbx-note">Price at <b>${pricePos}%</b> of the 52-week range${fibBelow ? ` · support ${fibBelow.label} ${fmt(fibBelow.price)} (${fibBelow.dist}%)` : ''}${fibAbove ? ` · resistance ${fibAbove.label} ${fmt(fibAbove.price)} (+${fibAbove.dist}%)` : ''}</div>
+    </div>` : '';
+  const fibHtml = secT('5 · Fibonacci (52-week low → high)') + fibCompact +
+    `<details class="tp-more"><summary>All Fibonacci levels with notes</summary><div style="background:var(--bgc);border:1px solid var(--brd);border-radius:var(--r);padding:12px 14px;margin-bottom:14px">
       <div style="font-size:.72rem;color:var(--tx3);margin-bottom:10px">
         Range: <strong style="color:var(--bull)">${fmt(yw_low)}</strong> ↔ <strong style="color:var(--bear)">${fmt(yw_high)}</strong>
         · Width: <strong>${fmt(fibRange, fibRange < 100 ? 2 : 0)}</strong>
@@ -1258,10 +1057,15 @@ function tabSR(){
           <span style="font-size:.75rem;color:var(--tx3);min-width:90px;text-align:right">${f.dist>=0?'+':''}${f.dist}% · ${f.note}</span>
         </div>`;
       }).join('') : `<div style="font-size:.8rem;color:var(--tx3);padding:10px">Not enough 52-week range data for Fibonacci levels.</div>`}
-    </div>`;
+    </div></details>`;
 
-  return`<div class="cur-price-bar"><div><div class="cpb-label">Live Price</div><div class="cpb-val">${fmt(price)}</div></div><div><div class="cpb-label">Prev Close</div><div style="font-size:.9rem;font-weight:700;font-variant-numeric:tabular-nums">${fmt(pc)}</div></div><div><div class="cpb-label">Prev H / L</div><div style="font-size:.82rem;font-weight:600"><span style="color:var(--bear)">${fmt(ph)}</span> / <span style="color:var(--bull)">${fmt(pl)}</span></div></div><div style="margin-left:auto;font-size:.72rem;color:var(--tx3)">◀ = Nearest level</div></div>`+
-  `<div class="lvl-card"><div class="lvl-header"><span>Key support &amp; resistance</span><span style="font-weight:400;color:var(--tx3)">Dist from ${fmt(price,0)}</span></div>${mergedLevels.map(lv=>{const d=((lv.v-price)/price*100);return`<div class="lvl-row${near(lv.v)?' near':''}"><div><div class="lvl-name" style="color:${colClass[lv.k]}">${lv.n}${near(lv.v)?' ◀':''}</div><div class="lvl-type">${lv.type}</div></div><div style="text-align:right"><div class="lvl-price" style="color:${colClass[lv.k]}">${fmt(lv.v)}</div><div class="lvl-dist">${(+d>0?'+':'')+d.toFixed(2)}%</div></div></div>`;}).join('')}</div>`+
+  const pctTxt = v => { const d = (v - price) / price * 100; return `${d >= 0 ? '+' : ''}${d.toFixed(Math.abs(d) < 1 ? 2 : 1)}%`; };
+  const srxRow = (lv, col) => `<div class="srx-row${near(lv.v) ? ' near' : ''}"><b style="color:${col}">${fmt(lv.v)}</b><span>${pctTxt(lv.v)}</span><em>${escHtml(lv.n)}</em></div>`;
+  const res3 = mergedLevels.filter(l => l.v > price).sort((a, b) => a.v - b.v).slice(0, 3), sup3 = mergedLevels.filter(l => l.v < price).sort((a, b) => b.v - a.v).slice(0, 3);
+  const srCompact = `<div class="srx"><div class="srx-col"><div class="srx-h">Resistance above</div>${res3.length ? res3.map(l => srxRow(l, 'var(--bear)')).join('') : '<div class="srx-none">None - at the 52-week high</div>'}</div>
+    <div class="srx-col"><div class="srx-h">Support below</div>${sup3.length ? sup3.map(l => srxRow(l, 'var(--bull)')).join('') : '<div class="srx-none">None below</div>'}</div></div>`;
+  return srCompact + `<details class="tp-more"><summary>All ${mergedLevels.length} levels, previous high / low / close</summary><div class="cur-price-bar"><div><div class="cpb-label">Live Price</div><div class="cpb-val">${fmt(price)}</div></div><div><div class="cpb-label">Prev Close</div><div style="font-size:.9rem;font-weight:700;font-variant-numeric:tabular-nums">${fmt(pc)}</div></div><div><div class="cpb-label">Prev H / L</div><div style="font-size:.82rem;font-weight:600"><span style="color:var(--bear)">${fmt(ph)}</span> / <span style="color:var(--bull)">${fmt(pl)}</span></div></div><div style="margin-left:auto;font-size:.72rem;color:var(--tx3)">◀ = Nearest level</div></div>`+
+  `<div class="lvl-card"><div class="lvl-header"><span>Key support &amp; resistance</span><span style="font-weight:400;color:var(--tx3)">Dist from ${fmt(price,0)}</span></div>${mergedLevels.map(lv=>{const d=((lv.v-price)/price*100);return`<div class="lvl-row${near(lv.v)?' near':''}"><div><div class="lvl-name" style="color:${colClass[lv.k]}">${lv.n}${near(lv.v)?' ◀':''}</div><div class="lvl-type">${lv.type}</div></div><div style="text-align:right"><div class="lvl-price" style="color:${colClass[lv.k]}">${fmt(lv.v)}</div><div class="lvl-dist">${(+d>0?'+':'')+d.toFixed(2)}%</div></div></div>`;}).join('')}</div></details>`+
   secT('4 · Candles')+tabPatterns()+
   fibHtml;
 }
@@ -1994,16 +1798,6 @@ async function tabStrategy(sym){
     suggestedStrat='iron_condor';
   }
 
-  /* Index: use the options idea's verdict (computed above with the same VIX / IV percentile / trend / breadth),
-     so the panel cannot say "RANGE TRADE -> Iron Condor" under an idea card that says "Bullish -> Bull Put". */
-  const ideaX = (typeof LAST_IDX_IDEA !== 'undefined' && LAST_IDX_IDEA && LAST_IDX_IDEA.sym === sym && LAST_IDX_IDEA.s) ? LAST_IDX_IDEA : null;
-  if (ideaX) {
-    const v = ideaX.view, s = ideaX.s;
-    optVerdict = v === 'Bullish' ? '🐂 BULLISH' : v === 'Bearish' ? '🐻 BEARISH' : '🦅 RANGE TRADE';
-    optVerdictCol = v === 'Bullish' ? 'var(--bull)' : v === 'Bearish' ? 'var(--bear)' : 'var(--neu)';
-    optVerdictDesc = `Same verdict as Today's options idea: ${v}, options ${ideaX.vol} → ${s.name}.`;
-    suggestedStrat = s.id === 'calendar' ? 'iron_condor' : s.id;
-  }
   const expiryDays = Math.max(1, Math.min(90, +OPT_STATE.expiry || 30));
   const optQ = makeOptionQuality(suggestedStrat, bCount, bearCount, rangeCount, ivRank, vix, expiryDays);
   AI_CACHE[`optq_${sym}`] = {score100:optQ.score100, grade:optQ.grade, rows:optQ.rows, ts:Date.now()};
@@ -2183,8 +1977,6 @@ function ideaBs(S, K, T, sig, type){
   const d1 = (Math.log(S/K) + (r + sig*sig/2)*T) / (sig*Math.sqrt(T)), d2 = d1 - sig*Math.sqrt(T);
   return type==='C' ? S*ideaNcdf(d1) - K*Math.exp(-r*T)*ideaNcdf(d2) : K*Math.exp(-r*T)*ideaNcdf(-d2) - S*ideaNcdf(-d1);
 }
-/* P(price at expiry above x), lognormal with the same volatility. */
-function ideaProbAbove(S, x, T, sig){ if(!(T>0 && sig>0 && x>0)) return S > x ? 1 : 0; return ideaNcdf((Math.log(S/x) - sig*sig/2*T) / (sig*Math.sqrt(T))); }
 /* One /api/calendar fetch (30 min) serves expiries, the options event check and the MCX events card. */
 let IDEA_CAL_CACHE = null;
 async function ideaCalendar(){
@@ -2192,119 +1984,37 @@ async function ideaCalendar(){
   try{ const c = await apiFetch('/api/calendar', 10000); IDEA_CAL_CACHE = { v:c?.upcoming || [], ts:Date.now() }; return IDEA_CAL_CACHE.v; }
   catch{ return IDEA_CAL_CACHE?.v || []; }
 }
-async function ideaExpiries(){
-  const today = istDateKey();
-  return (await ideaCalendar()).filter(e => /expiry/i.test(e.event || '') && e.date >= today).map(e => ({date:e.date, monthly:/monthly/i.test(e.event)}))
-    .sort((a,b) => a.date < b.date ? -1 : 1);
-}
 function ideaDaysTo(dateKey){ return Math.max(1, Math.round((Date.parse(dateKey + 'T15:30:00+05:30') - Date.now()) / 86400000)); }
-/* When the NSE premiums were fetched (the server asks NSE only at 10:00 and 15:05). */
-function ideaOcTime(x){ try{ const t = x?.oc?.at ? new Date(x.oc.at) : null; return t && !isNaN(t) ? t.toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'Asia/Kolkata'}) : 'today'; }catch{ return 'today'; } }
-/* Where the premiums came from: Zerodha Kite, or an older saved NSE chain. */
-function ideaOcSrc(x){ return x?.oc?.source === 'Zerodha Kite' ? 'Zerodha live' : 'NSE'; }
 function ideaDate(dateKey){ try{ return new Date(dateKey + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'}); }catch{ return dateKey; } }
 /* Annualised historical volatility of daily closes (fallback volatility for MCX, where no implied vol is loaded). */
 function ideaHistVol(C, days){ const c = (C||[]).slice(-(days+1)).map(Number).filter(v => v > 0); if(c.length < 10) return null; const r = c.slice(1).map((v,i) => Math.log(v/c[i])); const m = r.reduce((a,b)=>a+b,0)/r.length; return Math.sqrt(r.reduce((a,b)=>a+(b-m)**2,0)/(r.length-1)) * Math.sqrt(252); }
 
+/* Nifty option cards on Market Pulse: the bull-put credit-spread rule and the weekly sells (trend sell, short
+   strangle), both on the live chain of the first expiry at least 3 days away (the backtests entered ~6 days out).
+   The old "Today's options idea" (iron condors, calendars...) lost money in the 2019-2026 backtest and was removed. */
+/* The last Nifty rule result - the chart (rule strike lines) and the index list chip read it (td-ui.js). */
+let LAST_IDX_IDEA = null;
 async function buildIndexOptionsIdea(sym){
   const cfg = IDX_OPT[sym];
-  if(!cfg || !CUR_DATA?.daily?.C?.length) return null;
+  if(!cfg || sym !== 'NSE:NIFTY' || !CUR_DATA?.daily?.C?.length) return null;
   const C = CUR_DATA.daily.C, spot = getCurrentLivePrice();
   const e20 = emaLast(C,20), e50 = emaLast(C,50);
-  let vix = +GLOBAL_DATA?.vix?.price;
-  /* Market data missed India VIX: ask the light VIX endpoint directly. */
-  if(!(vix > 0)) vix = +(await fetchVIX()) || NaN;
-  const ivp = Number.isFinite(+GLOBAL_DATA?.ivRank?.ivPercentile) ? +GLOBAL_DATA.ivRank.ivPercentile : null;
-  /* Breadth is Nifty 50's advance/decline - it votes only on the Nifty idea. */
-  const ad = sym === 'NSE:NIFTY' && Number.isFinite(+GLOBAL_DATA?.breadth?.adRatio) ? +GLOBAL_DATA.breadth.adRatio : null;
-  if(!(vix > 0) || !(spot > 0)) return { error:'India VIX / spot not loaded yet - this card refreshes by itself when it arrives.' };
-  const sr = getSRTradeLevels();
-  /* Direction: trend (-3..+3) plus breadth (-1..+1). */
-  const trend = (spot > e20 ? 1 : -1) + (e20 > e50 ? 1 : -1) + (spot > e50 ? 1 : -1);
-  const breadth = ad == null ? 0 : ad >= 1.5 ? 1 : ad <= 0.67 ? -1 : 0;
-  const score = trend + breadth;
-  const view = score >= 2 ? 'Bullish' : score <= -2 ? 'Bearish' : 'Range-bound';
-  /* Volatility: IV percentile when loaded, else the VIX level. */
-  const vol = ivp != null ? (ivp < 30 ? 'cheap' : ivp > 60 ? 'rich' : 'fair') : (vix < 14 ? 'cheap' : vix > 18 ? 'rich' : 'fair');
-  const ex = await ideaExpiries();
-  const pick = (minDays, monthlyOnly) => ex.find(e => (!monthlyOnly || e.monthly) && ideaDaysTo(e.date) >= minDays);
-  const main = pick(5, !cfg.weekly);
-  const T = main ? ideaDaysTo(main.date) : 30, Ty = T/365, iv = vix/100;
-  const sd = spot * iv * Math.sqrt(Ty);
-  const rnd = (x, dir) => dir < 0 ? Math.floor(x/cfg.step)*cfg.step : dir > 0 ? Math.ceil(x/cfg.step)*cfg.step : Math.round(x/cfg.step)*cfg.step;
-  const atm = rnd(spot, 0);
-  const supBelow = [sr.s1, sr.s2].map(Number).filter(v => v > 0 && v < spot).sort((a,b) => b-a)[0];
-  const resAbove = [sr.r1, sr.r2].map(Number).filter(v => v > spot).sort((a,b) => a-b)[0];
-  const P = (K, t, T2=Ty) => ideaBs(spot, K, T2, iv, t);
-  let s;
-  if(view === 'Bullish' && vol === 'cheap'){
-    const k2 = rnd(spot + 0.75*sd, 1);
-    s = { id:'bull_call_spread', name:'Bull Call Spread', kind:'debit', legs:[{a:'BUY',t:'C',k:atm},{a:'SELL',t:'C',k:k2}],
-      why:'Bullish view and options are cheap: buy the call spread (pay a small debit, limited risk).' };
-  } else if(view === 'Bullish'){
-    /* At or below support, but never more than 1 expected move away: a far support (22,350 with Nifty at
-       23,441) put the short strike ~2 sigma out for a Rs 3 premium and an R:R of 0.01. */
-    const k1 = rnd(Math.max(spot - 1.0*sd, Math.min(spot - 0.6*sd, supBelow || Infinity)), -1);
-    s = { id:'bull_put_spread', name:'Bull Put Spread', kind:'credit', legs:[{a:'SELL',t:'P',k:k1},{a:'BUY',t:'P',k:k1 - cfg.wing}],
-      why:`Bullish view and options are ${vol}: sell a put below support and collect premium.` };
-  } else if(view === 'Bearish' && vol === 'cheap'){
-    const k2 = rnd(spot - 0.75*sd, -1);
-    s = { id:'bear_put_spread', name:'Bear Put Spread', kind:'debit', legs:[{a:'BUY',t:'P',k:atm},{a:'SELL',t:'P',k:k2}],
-      why:'Bearish view and options are cheap: buy the put spread (limited risk).' };
-  } else if(view === 'Bearish'){
-    const k1 = rnd(Math.min(spot + 1.0*sd, Math.max(spot + 0.6*sd, resAbove || 0)), 1);   /* capped like the bull put */
-    s = { id:'bear_call_spread', name:'Bear Call Spread', kind:'credit', legs:[{a:'SELL',t:'C',k:k1},{a:'BUY',t:'C',k:k1 + cfg.wing}],
-      why:`Bearish view and options are ${vol}: sell a call above resistance and collect premium.` };
-  } else if(vol === 'cheap'){
-    const near = pick(2, false), far = ex.find(e => e.monthly && near && ideaDaysTo(e.date) >= ideaDaysTo(near.date) + 14);
-    if(near && far){
-      const Tn = ideaDaysTo(near.date)/365, Tf = ideaDaysTo(far.date)/365;
-      s = { id:'calendar', name:'Calendar Spread (call)', kind:'calendar', near, far, Tn, Tf,
-        legs:[{a:'SELL',t:'C',k:atm,T:Tn,exp:near.date},{a:'BUY',t:'C',k:atm,T:Tf,exp:far.date}],
-        why:'No clear direction and options are cheap: sell the near-expiry option, hold the longer one - gains from time decay and from a rise in volatility.' };
-    }
-  }
-  if(!s){
-    const kc = rnd(Math.min(spot + 1.3*sd, Math.max(spot + sd, resAbove || 0)), 1), kp = rnd(Math.max(spot - 1.3*sd, Math.min(spot - sd, supBelow || Infinity)), -1);
-    s = { id:'iron_condor', name:'Iron Condor', kind:'credit', legs:[{a:'SELL',t:'C',k:kc},{a:'BUY',t:'C',k:kc + cfg.wing},{a:'SELL',t:'P',k:kp},{a:'BUY',t:'P',k:kp - cfg.wing}],
-      why:`No clear direction and options are ${vol}: sell both sides about one expected move away.` };
-  }
-  s.legs.forEach(l => { l.prem = P(l.k, l.t, l.T ?? Ty); });
-  /* Live NSE premiums (option chain) replace the estimates; premiums typed in from the broker win over both
-     (kept while the same legs are shown). A calendar's far leg is looked up in its own expiry. */
-  const chain = await ideaChain(sym, main?.date);
-  /* The user's own credit-spread rule on the same live chain (Nifty only - that is what was backtested). */
-  /* The rule trades the first expiry at least 3 days away (the backtest entered the day after an expiry, ~6 days
-     out; a 1-day contract has almost no premium and the most gamma). The server's 10:00 alert uses the same. */
+  const chain = await ideaChain(sym, '');
   let ruleChain = null;
-  if(sym === 'NSE:NIFTY' && chain?.expiries?.length){
+  if(chain?.expiries?.length){
     const nextExp = chain.expiries.find(e => ideaDaysTo(e) >= 3) || chain.expiries.find(e => e > istDateKey());
     ruleChain = nextExp && nextExp !== chain.expiry ? await ideaChain(sym, nextExp) : chain;
   }
-  const rule = ruleChain?.strikes?.length ? SwingPlan.creditSpreadRule(ruleChain, { spot: +ruleChain.spot || spot,
-    trendUp: spot > e20 && e20 > e50, trendDown: spot < e20 && e20 < e50, daysToExpiry: ideaDaysTo(ruleChain.expiry), step: cfg.step, wing: 200,
-    monthly: SwingPlan.isMonthlyExpiry(ruleChain.expiry, ruleChain.expiries) }) : null;
-  /* Weekly option selling (trend sell / short strangle, tested 20 Nov 2026) on the same chain as the rule. */
+  const trendUp = spot > e20 && e20 > e50, trendDown = spot < e20 && e20 < e50;
+  const rule = ruleChain?.strikes?.length ? SwingPlan.creditSpreadRule(ruleChain, { spot: +ruleChain.spot || spot, trendUp, trendDown,
+    daysToExpiry: ideaDaysTo(ruleChain.expiry), step: cfg.step, wing: 200, monthly: SwingPlan.isMonthlyExpiry(ruleChain.expiry, ruleChain.expiries) }) : null;
   let weekly = null;
-  if(sym === 'NSE:NIFTY' && ruleChain?.strikes?.length){
+  if(ruleChain?.strikes?.length){
     const nearest = (chain?.expiries || []).find(e => e >= istDateKey());
-    weekly = SwingPlan.niftyWeeklySells(ruleChain, { spot: +ruleChain.spot || spot, trendUp: spot > e20 && e20 > e50, trendDown: spot < e20 && e20 < e50, daysToExpiry: ideaDaysTo(ruleChain.expiry), step: cfg.step });
+    weekly = SwingPlan.niftyWeeklySells(ruleChain, { spot: +ruleChain.spot || spot, trendUp, trendDown, daysToExpiry: ideaDaysTo(ruleChain.expiry), step: cfg.step });
     if(weekly) weekly.entry = SwingPlan.weeklySellEntry(istDateKey(), nearest, d => NSE_HOL_CLIENT.has(d), chain?.expiries);
   }
-  const farChain = s.far?.date && s.far.date !== main?.date ? await ideaChain(sym, s.far.date) : null;
-  s.legs.forEach(l => { const ch = l.exp && farChain && l.exp === s.far?.date ? farChain : chain; l.nse = ch ? SwingPlan.ocPremium(ch, l.k, l.t) : null; });
-  const liveKey = `${sym}|${s.id}|${s.legs.map(l => l.t + l.k + (l.exp || '')).join(',')}|${main?.date || ''}`;
-  const saved = IDEA_LIVE_PREM[liveKey] || {};
-  s.legs.forEach((l, i) => { l.typed = saved[i] > 0; l.live = saved[i] > 0 ? saved[i] : (l.nse > 0 ? l.nse : null); });
-  /* Scheduled events between today and the (near) expiry. */
-  const today = istDateKey(), until = s.near?.date || main?.date || today;
-  const events = (await ideaCalendar()).filter(e => IDX_EVENT_CATS.includes(e.category) && e.date >= today && e.date <= until);
-  const nearT = s.near ? ideaDaysTo(s.near.date) : T;
-  const x = { sym, cfg, spot, e20, e50, vix, ivp, ad, trend, breadth, score, view, vol, T, sd, expiry: main?.date || null, s, iv, Ty, liveKey, events, nearT, rule, weekly, ruleExpiry: ruleChain?.expiry || null,
-    oc: chain ? { pcr: chain.pcr, maxPain: chain.maxPain, callWalls: chain.callWalls, putWalls: chain.putWalls, expiry: chain.expiry, stale: !!chain.stale, at: chain.fetchedAt, source: chain.source || null } : null };
-  Object.assign(x, ideaOptMetrics(x));
-  LAST_IDX_IDEA = x;
-  return x;
+  return (LAST_IDX_IDEA = { sym, cfg, spot, e20, e50, rule, weekly, ruleExpiry: ruleChain?.expiry || null });
 }
 /* NSE option chain via the server (cached there 3 min); client keeps it 3 min too. Null when NSE is unreachable. */
 const IDEA_CHAIN_CACHE = {};
@@ -2315,35 +2025,8 @@ async function ideaChain(sym, expiry){
   try { const v = await apiFetch(`/api/option-chain?sym=${encodeURIComponent(sym)}&expiry=${encodeURIComponent(expiry || '')}`, 20000); IDEA_CHAIN_CACHE[k] = {v, ts:Date.now()}; return v; }
   catch { return hit?.v || null; }
 }
-/* Net premium, max profit / loss, breakevens and model chance of profit - from the live premiums where the
-   user typed them, else the Black-Scholes estimates. */
-function ideaOptMetrics(x){
-  const {s, cfg, spot, iv, Ty, e20} = x;
-  const pr = l => l.live > 0 ? l.live : l.prem;
-  const net = s.legs.reduce((a,l) => a + (l.a === 'SELL' ? pr(l) : -pr(l)), 0);   /* + credit, - debit */
-  const k = s.legs.map(l => l.k);
-  let maxProfit, maxLoss, be = [], pop;
-  if(s.id === 'bull_put_spread'){ maxProfit = net; maxLoss = cfg.wing - net; be = [k[0] - net]; pop = ideaProbAbove(spot, be[0], Ty, iv); }
-  else if(s.id === 'bear_call_spread'){ maxProfit = net; maxLoss = cfg.wing - net; be = [k[0] + net]; pop = 1 - ideaProbAbove(spot, be[0], Ty, iv); }
-  else if(s.id === 'bull_call_spread'){ maxLoss = -net; maxProfit = (k[1]-k[0]) + net; be = [k[0] - net]; pop = ideaProbAbove(spot, be[0], Ty, iv); }
-  else if(s.id === 'bear_put_spread'){ maxLoss = -net; maxProfit = (k[0]-k[1]) + net; be = [k[0] + net]; pop = 1 - ideaProbAbove(spot, be[0], Ty, iv); }
-  else if(s.id === 'iron_condor'){ maxProfit = net; maxLoss = cfg.wing - net; be = [k[2] - net, k[0] + net]; pop = ideaProbAbove(spot, be[0], Ty, iv) - ideaProbAbove(spot, be[1], Ty, iv); }
-  else { /* calendar: value of the long option at near expiry if the index sits at the strike */
-    maxLoss = -net; maxProfit = ideaBs(k[0], k[0], s.Tf - s.Tn, iv, 'C') - (-net);
-    const band = spot * iv * Math.sqrt(s.Tn) * 0.75; be = [k[0] - band, k[0] + band];
-    pop = ideaProbAbove(spot, be[0], s.Tn, iv) - ideaProbAbove(spot, be[1], s.Tn, iv);
-  }
-  const exit = s.kind === 'credit'
-    ? `Book at 50-60% of the credit. Exit if ${cfg.name} closes beyond a short strike or the loss reaches 2x the credit.`
-    : s.kind === 'debit'
-    ? `Book at 70-80% of the maximum profit. Exit if the spread loses half its cost or ${cfg.name} closes back ${s.id === 'bull_call_spread' ? 'below' : 'above'} EMA20 (${fmt(e20)}).`
-    : `Exit before the near expiry, or earlier if ${cfg.name} moves more than ${fmt(be[1]-k[0],0)} points from ${k[0]}.`;
-  return { net, maxProfit, maxLoss, be, pop, exit, usingLive: s.legs.some(l => l.live > 0) };
-}
 
 /* Shared by the options and MCX cards: lots from the capital and risk % saved by the position calculator. */
-let LAST_IDX_IDEA = null;
-const IDEA_LIVE_PREM = {};
 const IDX_EVENT_CATS = ['RBI', 'FOMC', 'CPI', 'NFP', 'GDP', 'BUDGET'];
 function ideaLots(lossPerLot){
   const cap = readPosSetting(POS_CAPITAL_KEY, 10000), rp = readPosSetting(POS_RISK_KEY, 1), budget = cap * rp / 100;
@@ -2362,18 +2045,7 @@ function ideaSizeHtml(lossPerLot, what){
 }
 function ideaSizeChanged(el, which){
   savePosSetting(which === 'cap' ? POS_CAPITAL_KEY : POS_RISK_KEY, Number(el.value));
-  if(document.querySelector('[data-idx-idea]') && LAST_IDX_IDEA) ideaRerender();
-  else if(isMCXSymbol(CUR_SYM)) renderTab('overview');
-}
-function ideaRerender(){ const el = document.querySelector('[data-idx-idea]'); if(el && LAST_IDX_IDEA) el.outerHTML = indexIdeaHtml(LAST_IDX_IDEA); }
-function ideaApplyLive(reset){
-  const x = LAST_IDX_IDEA; if(!x) return;
-  const saved = {};
-  if(!reset) document.querySelectorAll('[data-idx-idea] [data-leg]').forEach(inp => { const v = Number(inp.value); if(v > 0) saved[+inp.dataset.leg] = v; });
-  IDEA_LIVE_PREM[x.liveKey] = saved;
-  x.s.legs.forEach((l, i) => { l.typed = saved[i] > 0; l.live = saved[i] > 0 ? saved[i] : (!reset && l.nse > 0 ? l.nse : null); });
-  Object.assign(x, ideaOptMetrics(x));
-  ideaRerender();
+  if(isMCXSymbol(CUR_SYM)) renderTab('overview');
 }
 function evDay(key){
   const dd = Math.round((Date.parse(key + 'T00:00:00Z') - Date.parse(istDateKey() + 'T00:00:00Z')) / 86400000);
@@ -2389,14 +2061,15 @@ function creditRuleHtml(x){
   const sideHtml = q => q.none ? `<div class="rule-side"><b>${q.type}</b><div class="idea-foot">No strike 2%+ away with delta under 0.20 and a quoted premium.</div></div>`
     : `<div class="rule-side${r.pick === q ? ' picked' : ''}${q.ty === 'C' ? ' info' : ''}"><b>${q.type}${r.pick === q ? ' · today' : q.ty === 'C' ? ' · not traded' : ''}</b>
       <div class="rule-legs">Sell ${q.sell} ${q.ty === 'P' ? 'PE' : 'CE'} ₹${fmt(q.sellPx)} · Buy ${q.buy} ${q.ty === 'P' ? 'PE' : 'CE'} ₹${fmt(q.buyPx)}</div>
-      <div class="rule-legs">Credit <b>${fmt(q.credit)} pts</b> (₹${fmt(q.credit * x.cfg.lot, 0)} per lot) · max loss ₹${fmt(q.maxLoss * x.cfg.lot, 0)} · stop at 2× credit</div>
+      <div class="rule-legs">Credit <b>${fmt(q.credit)} pts</b> (₹${fmt(q.credit * x.cfg.lot, 0)} per lot) · hold to expiry · max loss ₹${fmt(q.maxLoss * x.cfg.lot, 0)}</div>
       <ul class="rule-checks">${q.checks.map(c => `<li class="${c.pass ? 'ok' : c.need ? 'bad' : 'info'}">${c.pass ? '✓' : c.need ? '✗' : 'ℹ'} ${escHtml(c.name)}${c.need ? '' : ' (info only)'}</li>`).join('')}</ul></div>`;
   return `<div class="idea-card" data-idx-rule style="border-color:${r.ok ? 'var(--bull)' : 'var(--brd)'}">
     <div class="idea-head"><div><div class="idea-kicker">Your credit-spread rule · Nifty · expiry ${escHtml(ideaDate(x.ruleExpiry || ''))} (${r.daysToExpiry} days)</div><div class="idea-title">${escHtml(r.verdict)}</div></div>
-      <div class="idea-view ${r.ok ? 'bull' : 'neutral'}">${r.ok ? 'PASS' : 'NO TRADE'}</div></div>
+      <div class="idea-view ${r.ok && x.weekly?.entry?.isEntryDay ? 'bull' : 'neutral'}">${!r.ok ? 'NO TRADE' : x.weekly?.entry?.isEntryDay ? 'ENTRY TODAY' : 'PASS · WAIT'}</div></div>
+    ${x.weekly?.entry ? `<div class="idea-foot" style="margin:4px 0 6px">${x.weekly.entry.isEntryDay ? '<b style="color:var(--bull)">Entry day today</b> - sell the spread near the close (after 15:00).' : `Entered only at the close of the first trading day after an expiry - next: <b>${escHtml(ideaDate(x.weekly.entry.entryDay))}</b>. Levels below are today's, for reference.`}</div>` : ''}
     <div class="rule-grid">${sideHtml(r.put)}${sideHtml(r.call)}</div>
     ${r.ok ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'option', sym:'NSE:NIFTY', name:'Nifty', setup: r.pick.type, optType: r.pick.ty, shortStrike: r.pick.sell, longStrike: r.pick.buy, credit: r.pick.credit, wing: Math.abs(r.pick.sell - r.pick.buy), lotQty: x.cfg.lot, expiry: x.ruleExpiry})})">📒 I took this trade</button>` : ''}
-    <div class="idea-foot">Backtest on NSE prices 2019-2026 (re-run 19 Nov 2026): bull put spreads sold only in a Nifty uptrend (price above EMA20, EMA20 above EMA50) won 93% of the time, about +₹145 a lot a week. Bear calls won 87% but lost about ₹345 a lot on average, so they are shown for information only; iron condors, calendars and diagonals lost too. Minimum credit by time left: 6+ points up to 10 days to expiry, 20+ beyond (smaller credits lost to charges). "Highest OI in front" made results worse, so it is information only. Prices: bid/ask middle or last trade.</div>
+    <div class="idea-foot">Tested as the app runs it (NSE prices Feb 2019 - Nov 2026, this exact rule): sold at the close of the first trading day after a weekly expiry, only in a Nifty uptrend (price above EMA20, EMA20 above EMA50), and held to expiry - 127 trades, 95% wins, about +₹363 a lot a trade, profit in 8 of 8 years. Entering on any day with a 2x-credit stop made only +₹27 a lot (4 of 8 years), so the app alerts on the entry day and the plan has no stop: the most a spread can lose is its width minus the credit. Bear calls are shown for information only (they lost money).</div>
   </div>`;
 }
 /* Card: the two weekly sells (trend sell, short strangle) with today's strikes and the tested entry day. */
@@ -2421,58 +2094,6 @@ function weeklySellHtml(x){
       ${side('2 · Short strangle', g.ok, gBody + (g.ok ? btn('Short strangle', {optType: 'P', shortStrike: g.put, callStrike: g.call, longStrike: null, credit: g.credit, naked: true}) : ''), 'Backtest 2019-2026: 78% wins, 7 of 8 years, about ₹40,000 a lot a year; worst run -₹66,000 a lot.')}
     </div>
     <div class="idea-foot">Both are naked sells: no bought wing, margin about ₹1.5 lakh a lot, and the exit on a 2x close is the only protection - a gap can cost more. Size so the worst run fits your capital (1 lot of the trend sell per ₹2.5 lakh, 1 strangle per ₹3 lakh kept the worst fall near a quarter). Not personal advice.</div>
-  </div>`;
-}
-function indexIdeaHtml(x){
-  if(!x) return '';
-  if(x.error) return `<div class="idea-card" data-idx-idea-wait><div class="idea-kicker">Today's options idea</div><div class="aib">${escHtml(x.error)}</div></div>`;
-  const {cfg, s} = x, lot = cfg.lot;
-  const ce = l => l.t === 'C' ? 'CE' : 'PE';
-  const legTxt = s.legs.map(l => `<span class="idea-leg ${l.a === 'SELL' ? 'sell' : 'buy'}">${l.a === 'SELL' ? 'Sell' : 'Buy'} ${l.k} ${ce(l)}${l.exp ? ` (${ideaDate(l.exp)})` : ''} ${l.live > 0 ? `₹${fmt(l.live)} ${l.typed ? 'yours' : 'NSE'}` : `≈ ₹${fmt(l.prem)}`}</span>`).join('');
-  const netTxt = x.net >= 0 ? `Net credit ${x.usingLive ? '' : '≈ '}₹${fmt(x.net)} (₹${fmt(x.net*lot,0)} per lot)` : `Net debit ${x.usingLive ? '' : '≈ '}₹${fmt(-x.net)} (₹${fmt(-x.net*lot,0)} per lot)`;
-  const comment = `${cfg.name} ${fmt(x.spot,0)} · VIX ${fmt(x.vix,1)}${x.ivp != null ? ` (IV percentile ${Math.round(x.ivp)}%)` : ' (IV percentile not loaded yet - judged from the VIX level)'}${x.ad != null ? ` · A/D ${x.ad}:1` : ''} → ${x.view}, options ${x.vol} → <b>${s.name}</b>: ${s.legs.map(l => `${l.a === 'SELL' ? 'sell' : 'buy'} ${l.k} ${ce(l)}`).join(' / ')}`;
-  const trendTxt = `${x.spot > x.e20 ? 'above' : 'below'} EMA20 ${fmt(x.e20,0)}, ${x.spot > x.e50 ? 'above' : 'below'} EMA50 ${fmt(x.e50,0)}, EMA20 ${x.e20 > x.e50 ? 'above' : 'below'} EMA50`;
-  const ordered = { iron_condor:[0,1,2,3], bull_call_spread:[0,1], bear_put_spread:[0,1], bull_put_spread:[0,1], bear_call_spread:[0,1] }[s.id];
-  const apply = ordered ? `<button class="idea-btn" onclick="OPT_STATE.strategy='${s.id}';OPT_STATE.strikes=[${ordered.map(i => s.legs[i].k).join(',')}];OPT_STATE.expiry=${x.T};OPT_STATE.lot='';switchAnalysis('strategy')">Open in Option Builder</button>` : '';
-  const rr = x.maxLoss > 0 ? x.maxProfit / x.maxLoss : null;
-  /* Events before expiry and expiry-week gamma. */
-  const evs = x.events || [], shortOpt = s.kind === 'credit' || s.kind === 'calendar';
-  const warn = [];
-  if(evs.length) warn.push(`${evs.map(e => `${escHtml(e.event)} (${escHtml(evDay(e.date))})`).join(', ')} before ${s.near ? 'the near expiry' : 'expiry'}. ${shortOpt ? 'Sold options lose most on event days - trade fewer lots, keep the short strikes wider, or enter after the event.' : 'A big move helps a debit spread only in the right direction - size for losing the full debit.'}`);
-  if(x.nearT <= 2) warn.push(`Expiry in ${x.nearT} day${x.nearT > 1 ? 's' : ''}: premiums change very fast now (gamma). For a 3-10 day hold use the next expiry.`);
-  /* A credit far smaller than the risk is not worth selling, whatever the model chance says. */
-  const thin = s.kind === 'credit' && x.maxLoss > 0 && x.maxProfit / x.maxLoss < 0.10
-    ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ Credit too small for the risk:</b> ₹${fmt(x.maxProfit)} to make vs ₹${fmt(x.maxLoss)} to lose per unit (R:R ${(x.maxProfit / x.maxLoss).toFixed(2)}). Skip, or check live premiums - a short strike closer to spot pays more.</div>` : '';
-  const evHtml = thin + (warn.length ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ Event risk:</b> ${warn.join(' ')}</div>` : `<div class="idea-hedge"><b>Events:</b> no RBI / Fed / CPI / jobs / GDP date in the app calendar before ${s.near ? 'the near expiry' : 'expiry'}.</div>`);
-  const typed = s.legs.some(l => l.typed), nse = s.legs.some(l => !l.typed && l.nse > 0);
-  const liveHtml = `<details class="idea-live"${typed ? ' open' : ''}><summary>${typed ? 'Using your premiums - edit' : nse ? `Using ${ideaOcSrc(x)} premiums of ${ideaOcTime(x)} - type your own to override` : 'Enter live premiums from your broker'}</summary>
-    <div class="idea-live-row">${s.legs.map((l, i) => `<label>${l.a === 'SELL' ? 'Sell' : 'Buy'} ${l.k} ${ce(l)}<input data-leg="${i}" type="number" min="0" step="0.05" value="${l.typed ? l.live : ''}" placeholder="${fmt(l.nse > 0 ? l.nse : l.prem)}"></label>`).join('')}
-      <button class="idea-btn" onclick="ideaApplyLive()">Recalculate</button>${x.usingLive ? '<button class="idea-btn ghost" onclick="ideaApplyLive(true)">Use estimates</button>' : ''}</div>
-    <div class="idea-foot" style="margin-top:6px">Type the last traded price (or the mid of bid/ask) for each leg; empty legs keep the NSE price, or the estimate when NSE has none.</div></details>`;
-  return `<div class="idea-card" data-idx-idea>
-    <div class="idea-head"><div><div class="idea-kicker">Today's options idea · ${escHtml(cfg.name)}</div><div class="idea-title">${escHtml(s.name)}</div></div>
-      <div class="idea-view ${x.view === 'Bullish' ? 'bull' : x.view === 'Bearish' ? 'bear' : 'neutral'}">${x.view}</div></div>
-    <div class="idea-comment">${comment}</div>
-    <div class="idea-legs">${legTxt}</div>
-    <div class="idea-grid">
-      <div><span>${x.net >= 0 ? 'Credit' : 'Debit'}${x.usingLive ? ' (live)' : ''}</span><b>${netTxt}</b></div>
-      <div><span>Max profit / loss per lot</span><b>₹${fmt(x.maxProfit*lot,0)} / ₹${fmt(x.maxLoss*lot,0)}${rr != null ? ` · R:R ${rr.toFixed(2)}` : ''}</b></div>
-      <div><span>Breakeven${x.be.length > 1 ? 's' : ''}</span><b>${x.be.map(v => fmt(v,0)).join(' - ')}</b></div>
-      <div><span>Chance of profit (model)</span><b>${Math.round(Math.max(0, Math.min(1, x.pop))*100)}%</b></div>
-      <div><span>Expiry</span><b>${x.expiry ? `${ideaDate(x.expiry)} · ${x.T} days` : `~${x.T} days`}</b></div>
-      <div><span>Expected move (1σ)</span><b>±${fmt(x.sd,0)} pts</b></div>
-    </div>
-    ${ideaSizeHtml(x.maxLoss * lot, 'max loss')}
-    ${x.oc ? `<div class="idea-hedge"><b>${ideaOcSrc(x) === 'NSE' ? 'NSE' : 'Zerodha'} open interest${x.oc.expiry ? ` (${ideaDate(x.oc.expiry)} expiry)` : ''}:</b> PCR ${x.oc.pcr ?? '--'}${x.oc.pcr != null ? (x.oc.pcr > 1.3 ? ' (heavy put writing - support below)' : x.oc.pcr < 0.7 ? ' (heavy call writing - cap above)' : ' (balanced)') : ''} · max pain ${fmt(x.oc.maxPain,0)} · biggest call OI (resistance) ${(x.oc.callWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · biggest put OI (support) ${(x.oc.putWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · fetched ${ideaOcTime(x)}${x.oc.expiry && x.expiry && x.oc.expiry !== x.expiry ? ` · NSE expiry ${ideaDate(x.oc.expiry)} used (app calendar said ${ideaDate(x.expiry)})` : ''}</div>` : ''}
-    ${evHtml}
-    ${liveHtml}
-    <ul class="idea-why">
-      <li><b>Why:</b> ${escHtml(s.why)}</li>
-      <li><b>Trend:</b> ${trendTxt}${x.breadth ? ` · breadth ${x.breadth > 0 ? 'strong' : 'weak'}` : ''} (score ${x.score > 0 ? '+' : ''}${x.score}; ±2 or more = directional)</li>
-      <li><b>Volatility:</b> VIX ${fmt(x.vix,1)}${x.ivp != null ? (x.ivp < 50 ? `, lower than on ${100 - Math.round(x.ivp)}% of days in the past year` : `, higher than on ${Math.round(x.ivp)}% of days in the past year`) : ''} - ${x.vol === 'cheap' ? 'favour buying (debit spreads / calendars)' : x.vol === 'rich' ? 'favour selling (credit spreads / iron condors)' : 'credit spreads with defined risk'}</li>
-      <li><b>Exit:</b> ${escHtml(x.exit)}</li>
-    </ul>
-    <div class="idea-foot">${x.usingLive ? `Credit / debit, max profit / loss and breakevens use ${typed ? 'your premiums' : `${ideaOcSrc(x)} premiums of ${ideaOcTime(x)} (${ideaOcSrc(x) === 'NSE' ? 'fetched at 10:00 and 15:05 to keep NSE calls low' : x.oc.stale ? 'last Zerodha quote saved - connect Zerodha for live' : 'Zerodha Kite quote, refreshed every minute'}; bid/ask middle, or the last trade when the spread is wide; legs with no good quote keep the estimate)`}; the chance of profit still uses India VIX as the volatility. Check the spread before placing.` : 'Premiums are Black-Scholes estimates from India VIX - live premiums come from Zerodha (Screener -> My trades -> Connect Zerodha; NSE refuses the server). Enter live premiums above, and check spreads and liquidity before placing.'} Lot ${lot}.${apply}</div>
   </div>`;
 }
 
@@ -2734,10 +2355,6 @@ function mcxFillAsync(sym){
 
 /* The trailing level for the rest of the position: EMA20 while price is on the trade's side of it, else EMA50
    (a long already below EMA20 used to be told to exit "on a close through EMA20"). */
-function mcxTrailLevel(x){
-  const long = x.side !== 'SELL', e20ok = Number.isFinite(+x.e20) && (long ? x.price > x.e20 : x.price < x.e20);
-  return e20ok || !Number.isFinite(+x.e50) ? `EMA20 (${fmt(x.e20)})` : `EMA50 (${fmt(x.e50)})`;
-}
 function buildCommodityIdea(sym, D){
   const cfg = MCX_IDEA[sym];
   if(!cfg || !CUR_DATA?.daily?.C?.length) return null;
@@ -2851,7 +2468,7 @@ async function tabPulse(sym){
     </div>
     <div class="aib" style="margin-bottom:14px;font-size:.75rem">${breadth.label} · Based on ${breadth.total} Nifty 50 stocks · Updated ${timeAgo(breadth.updatedAt)}</div>` : '';
 
-  return`<div class="market-verdict" style="border-color:${verdictC==='bull'?'var(--bull)':verdictC==='bear'?'var(--bear)':'var(--brd)'}"><div class="mv-icon">${verdictIcon}</div><div class="mv-title" style="color:${verdictC==='bull'?'var(--bull)':verdictC==='bear'?'var(--bear)':'var(--neu)'}">${verdict}</div><div class="mv-sub">${verdictSub}</div></div>`+
+  return`<details class="tp-more mb-fold"><summary>Market bias: <b style="color:${verdictC==='bull'?'var(--bull)':verdictC==='bear'?'var(--bear)':'var(--neu)'}">${verdict}</b>${vix!=null?` · VIX ${vix.toFixed(1)}`:''}${breadth?` · A/D ${breadth.adRatio}:1`:''} - tap for breadth, VIX, IV and volume</summary><div class="market-verdict" style="border-color:${verdictC==='bull'?'var(--bull)':verdictC==='bear'?'var(--bear)':'var(--brd)'}"><div class="mv-icon">${verdictIcon}</div><div class="mv-title" style="color:${verdictC==='bull'?'var(--bull)':verdictC==='bear'?'var(--bear)':'var(--neu)'}">${verdict}</div><div class="mv-sub">${verdictSub}</div></div>`+
   breadthHtml+
   `<div class="pulse-row">
     ${isIndex&&vix!=null?`<div class="pulse-metric"><div class="pm-label">India VIX (Live)</div><div class="pm-val" style="color:${vixColor}">${vix.toFixed(2)}</div><div class="pm-sub">${vixLabel}</div><div class="vix-bar-wrap"><div class="vix-bar" style="width:${Math.min(100,(vix/30)*100)}%;background:${vixColor}"></div></div></div>`:''}
@@ -2864,7 +2481,7 @@ async function tabPulse(sym){
     <div class="gauge-card"><div class="gauge-title">IV Percentile</div><div class="gauge-val" style="color:${ivColor}">${ivPerc}%</div><div class="gauge-label" style="color:${ivColor}">${ivPerc>70?'Expensive':ivPerc<30?'Cheap':'Fair'}</div><div class="gauge-note">${ivRank?`${ivRank.daysBelow!=null?ivRank.daysBelow+'/'+ivRank.totalDays+' past year days had lower VIX':'52w VIX range: '+ivRank.lo52w+'–'+ivRank.hi52w}`:'Uses India VIX approximation when history is not loaded'}</div></div>
     <div class="gauge-card"><div class="gauge-title">Breadth Signal</div><div class="gauge-val" style="color:${breadth?.adRatio>1?'var(--bull)':'var(--bear)'}">${breadth?breadth.adRatio+':1':'--'}</div><div class="gauge-label" style="color:${breadth?.adRatio>1.2?'var(--bull)':breadth?.adRatio<0.8?'var(--bear)':'var(--neu)'}">${breadth?.label||'Loading...'}</div><div class="gauge-note">${breadth?`${breadth.hi52Count} at 52w high · ${breadth.lo52Count} at 52w low`:''}</div></div>
     <div class="gauge-card"><div class="gauge-title">Trend Bias</div><div class="gauge-val" style="color:${combinedBias>0.1?'var(--bull)':combinedBias<-0.1?'var(--bear)':'var(--neu)'}">${combinedBias>0.1?'Bull':combinedBias<-0.1?'Bear':'Flat'}</div><div class="gauge-label">Daily + Weekly</div><div class="gauge-note">Uses price trend plus daily/weekly recommendation only.</div></div>
-  </div>`;
+  </div></details>`;
 }
 
 /* Market Pulse for every index except Nifty 50: the verdict comes from THIS index - its own trend, its EMAs
@@ -3264,48 +2881,7 @@ function calcTradePlanRiskReward({bias, price, stopLoss, stopLoss2, target1, tar
   };
 }
 
-function eventRiskPenaltyFromSnapshot(evt){
-  if(!evt) return {penalty:0,reasons:[]};
-  let penalty = 0;
-  const reasons = [];
-  /* Earnings/result data is deliberately removed. User verifies it manually. */
-  if(evt.calendar?.nextHigh){
-    const e = evt.calendar.nextHigh;
-    const days = Number.isFinite(+e.daysUntil) ? +e.daysUntil : Math.ceil((new Date(e.date)-new Date(istDateKey()))/86400000);
-    /* A past event carries no forward risk. */
-    if(days < 0) return {penalty:0, reasons:[]};
-    if(days <= 1) penalty += 3;
-    else if(days <= 3) penalty += 2;
-    reasons.push(`HIGH impact calendar event in ${days} day${days===1?'':'s'}: ${e.event}`);
-  }
-  return {penalty:Math.min(3, penalty), reasons};
-}
 
-async function getTradeEventRiskSnapshot(sym){
-  const cacheKey = `eventrisk_${sym||'GLOBAL'}`;
-  const cached = AI_CACHE[cacheKey];
-  if(cached && Date.now()-cached.ts < 10*60*1000) return cached;
-  const out = {ts:Date.now(), calendar:{loaded:false, fresh:false, lastUpdated:null, nextHigh:null, note:'Calendar not loaded'}, earnings:{removed:true, note:'Earnings tab removed — verify manually before trade'}};
-  const today = istDateKey(); /* IST, not UTC: 00:00–05:30 IST used to count as the previous day */
-  const ageDays = (iso)=>{
-    if(!iso) return 999;
-    const d = new Date(iso);
-    if(!Number.isFinite(d.getTime())) return 999;
-    return Math.floor((new Date(today)-new Date(d.toISOString().slice(0,10)))/86400000);
-  };
-  try{
-    const cal = await apiFetch('/api/calendar');
-    const list = Array.isArray(cal?.upcoming) ? cal.upcoming : [];
-    const high = list.filter(e=>e.impact==='HIGH').map(e=>({...e, daysUntil:Math.ceil((new Date(e.date)-new Date(today))/86400000)})).find(e=>e.daysUntil>=0 && e.daysUntil<=3) || null;
-    out.calendar = {loaded:true, fresh:ageDays(cal?.updatedAt) <= 7, lastUpdated:cal?.updatedAt||null, lastChecked:cal?.checkedAt||null, nextHigh:high, note:cal?.source==='manual-static'?'Manual/static calendar — verify high impact dates':'Calendar loaded'};
-  }catch(e){ out.calendar.note = `Calendar error: ${e.message}`; }
-  /* Earnings/result API check removed by request. Manual verification is required before trade. */
-  const p = eventRiskPenaltyFromSnapshot(out);
-  out.penalty = p.penalty;
-  out.reasons = p.reasons;
-  AI_CACHE[cacheKey] = out;
-  return out;
-}
 
 function buildSwingDecisionSnapshot(sym, opts={}){
   const d = CUR_DATA?.daily || {}, C=d.C||[], H=d.H||[], L=d.L||[], V=d.V||[], O=d.O||[];
@@ -3632,14 +3208,6 @@ async function tabScore(sym){
 }
 
 /* ── ANTHROPIC AI CALL ── */
-async function callAI(prompt,tokens){
-  /* Browser-side Anthropic calls are not valid here:
-     1) the browser cannot safely hold an API key,
-     2) Anthropic API will fail CORS/auth without a server proxy,
-     3) waiting for that failed request slows every stock load.
-     Keep the deterministic fallback paths fast instead. */
-  throw new Error('Client-side AI disabled — using local deterministic fallback.');
-}
 
 
 /* ── NOTIFICATION ENGINE ── */
@@ -4292,7 +3860,7 @@ function ftApplyBar(row, bar, risk, barComplete=true){
   /* Records from 19 Nov 2026 follow the tested exit: all at 2R or the stop, else the close of day 15. */
   if(row.exitMode === '2R'){
     const tgt = +row.t2r, hitSL = ftValid(sl) && down(sl), hitT = ftValid(tgt) && up(tgt), day15 = barComplete && row.sessions >= 15 && Number.isFinite(bar.c);
-    if(hitSL && hitT) close('Ambiguous: SL & 2R target', null);
+    if(hitSL && hitT) close('Stop & 2R the same day - counted as the stop (as tested)', R(sl));
     else if(hitT) close('2R target hit', R(tgt));
     else if(hitSL) close('SL Hit', -1);
     else if(day15) close('Day 15 exit', R(bar.c));
@@ -4406,7 +3974,8 @@ async function tabForwardTest() {
     ['READY: gap-up near 52-week high', r => isGateR(r) && r.setup !== 'EMA20/50 cross', 'Backtest: 48% win, +0.20R (max 5 open)'],
     ['Old READY / buy limit (before 21 Nov 2026)', r => !r.pattern && !isGateR(r), 'Backtest: 44% win, +0.08R (max 5 open)'],
     ['Flat base breakout', r => isPat(r, 'flat base'), 'Backtest: 53% win, +0.13R (max 5 open)'],
-    ['Double bottom breakout', r => isPat(r, 'double bottom'), 'Backtest: 49% win, +0.07R']];
+    ['Double bottom breakout', r => isPat(r, 'double bottom'), 'Backtest: 49% win, +0.07R'],
+    ['20-day breakout (separate list)', r => isPat(r, '20-day'), 'Backtest: 51% win, +0.12R (max 5 open)']];
   const stratTable = rows.some(r => r.pattern || isGateR(r)) ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by strategy</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Strategy</th><th>Open</th><th>Closed: trades · win · avg</th><th>Backtest</th></tr></thead><tbody>${stratDefs.map(([l, f, bt]) => `<tr><td>${l}</td><td>${rows.filter(r => !r.closed && f(r)).length}</td><td>${tagStat(finished.filter(f))}</td><td style="color:var(--tx3)">${bt}</td></tr>`).join('')}</tbody></table></div></div>` : '';
   const tagTable = stratTable + (tagged.length ? `<div class="idea-card" style="margin-top:10px"><div class="idea-kicker">Results by tag (closed picks recorded with tags)</div><div class="j-table-wrap"><table class="j-table"><thead><tr><th>Tag</th><th>With: trades · win · avg</th><th>Without</th></tr></thead><tbody>${tagDefs.map(([k,l]) => `<tr><td>${l}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===true))}</td><td>${tagStat(tagged.filter(r=>r.tags[k]===false))}</td></tr>`).join('')}</tbody></table></div><div class="idea-foot">After 30+ trades per side this shows whether each tag really helps your picks - the backtest said yes for each tag.</div></div>` : '');
   const body = rows.length ? rows.slice(0,120).map(r=>{
@@ -4429,7 +3998,7 @@ async function tabForwardTest() {
   if(!live()) return;
   tc.innerHTML = `${typeof traceSubTabs === 'function' ? traceSubTabs('stock') : ''}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">Track Record — how past screener picks played out</div><button onclick="localStorage.removeItem(FORWARD_TEST_KEY);tabForwardTest()" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear Records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Every READY pick is recorded at the price when it turned READY (the server records the 11:00 / 15:00 scan picks even when the app is closed) and checked on each day's candle. Picks from 19 Nov 2026 follow the tested exit: all at 2R or the stop, else the close of day 15; older ones keep their T1 / T2 plan. The signal day's candle is not judged because its high/low may have come before the signal.</div></div>
   <div class="scr-summary"><div class="scr-sum-card"><div class="scr-sum-label">Records</div><div class="scr-sum-val">${rows.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Open / Trail</div><div class="scr-sum-val" style="color:var(--acc)">${openCount}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Closed R Samples</div><div class="scr-sum-val">${finished.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Win Rate</div><div class="scr-sum-val" style="color:var(--bull)">${winRate}${winRate==='--'?'':'%'}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Avg R</div><div class="scr-sum-val" style="color:${(+avgR||0)>=0?'var(--bull)':'var(--bear)'}">${avgR}${avgR==='--'?'':'R'}</div></div></div>
-  <table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th>Decision</th></tr></thead><tbody>${body}</tbody></table>
+  <div class="ft-wrap"><table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th>Decision</th></tr></thead><tbody>${body}</tbody></table></div>
   ${tagTable}
   <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R); from 19 Nov 2026 the whole position at 2R (+2R) or at the close of day 15. Older records: half booked at T1, the rest at T2 / trail stop / a close through EMA20, at the latest at the close of day 10. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
 }
@@ -4438,32 +4007,8 @@ async function tabForwardTest() {
    QUALIFIED TRADE SCREENER — Uses website scoring layers
 ══════════════════════════════════════════════════════════════════ */
 let SCREENER_CACHE_UI = null, SCREENER_TS_UI = 0;
-const SCREENER_TTL_UI = 24 * 60 * 60 * 1000; /* after-hours max; during NSE hours use getScreenerUiTtlMs() */
-const SCREENER_LOCAL_VERSION = DAILY_LOCAL_CACHE_VERSION;
 
-function screenerTodayKey() { return dailyCacheKey('qualified_screener_v12'); }
-function readLocalScreenerCache() { return readDailyLocalCache('qualified_screener_v12'); }
-function saveLocalScreenerCache(data) { saveDailyLocalCache('qualified_screener_v12', data); }
-function clearLocalScreenerCache() {
-  clearDailyLocalCache('qualified_screener_v12'); clearDailyLocalCache('qualified_screener_v11');
-  SCREENER_CACHE_UI = null;
-  SCREENER_TS_UI = 0;
-}
 
-function qualifiedReason(s) {
-  const setup = s.setup || 'Trend + momentum';
-  const vol = Number.isFinite(+s.volPressure) ? `${s.volPressure}x vol` : 'Volume ok';
-  const status = s.isStrictQualified ? 'Trade-ready scan' : 'Watchlist only';
-  return `${setup} · ${vol} · ${status}`;
-}
-function qualifiedGrade(score) {
-  score = +score || 0;
-  if (score >= 80) return 'A+ · Strong fresh-entry quality';
-  if (score >= 70) return 'A · Qualified fresh entry';
-  if (score >= 55) return 'B · Watchlist only';
-  if (score >= 40) return 'C · Weak / wait';
-  return 'Avoid · poor setup';
-}
 
 let CURRENT_SCREENER_MODE = 'mytrade';
 async function tabScreener(mode = CURRENT_SCREENER_MODE, force = false) {
@@ -4497,39 +4042,8 @@ let MY_TRADE_CACHE_UI = null, MY_TRADE_TS_UI = 0;
 function readMyTradeScreenerCache() { return readDailyLocalCache('ready_watch_screener_v15'); }
 function saveMyTradeScreenerCache(data) { saveDailyLocalCache('ready_watch_screener_v15', data); }
 function clearMyTradeScreenerCache() { clearDailyLocalCache('ready_watch_screener_v15'); clearDailyLocalCache('ready_watch_screener_v12'); clearDailyLocalCache('ready_watch_screener_v10','ready_watch_screener_v11'); clearDailyLocalCache('ready_watch_screener_v9'); clearDailyLocalCache('ready_watch_screener_v8'); MY_TRADE_CACHE_UI = null; MY_TRADE_TS_UI = 0; }
-function screenerUniverseStatsHtml(data) {
-  const u = data?.universeStats || {};
-  const parts = [];
-  if(Number.isFinite(+u.marketCapEligible)) parts.push(`MCap > ₹35kCr ${u.marketCapEligible}`);
-  if(Number.isFinite(+u.priceEligible)) parts.push(`Price > ₹10 ${u.priceEligible}`);
-  if(Number.isFinite(+u.biasEligible)) parts.push(`Bullish bias ${u.biasEligible}`);
-  if(!parts.length) return '';
-  const note = u.priceNote ? `<div style="font-size:.66rem;color:var(--tx3);margin-top:3px">${u.priceNote}</div>` : '';
-  return `<div style="font-size:.7rem;color:var(--tx2);margin-top:6px"><b>Universe count:</b> ${parts.join(' → ')}</div>${note}`;
-}
-function screenerFlowHtml(data) {
-  const flow = data?.screenerFlow || [
-    {step:'Bias', rule:'Bullish only'},
-    {step:'Setup', rule:'EMA20 Pullback / EMA50 Pullback / Support Bounce only'},
-    {step:'Entry / Action', rule:'RR≥1.25 + Volume≥0.8x + score gates decide Ready vs Watchlist'},
-    {step:'Ready Gate', rule:'Selected setup gate must PASS'}
-  ];
-  return `<div class="scr-filters" style="margin-top:10px">${flow.map((x,i)=>`<span class="scr-filter"><b>${i+1}. ${x.step}</b>: ${x.rule}</span>`).join('')}</div>`;
-}
 function screenerClientReadyOk(s) {
-  if (s?.gateV2) return String(s.tradeStatus || '').toUpperCase() === 'READY';   /* tested gate (20 Nov 2026): the server decided */
-  const setupScore = Math.round(+s?.selectedStrategyScore || +s?.finalQualification || 0);
-  const readyStatus = String(s?.tradeStatus || '').toUpperCase() === 'READY';
-  const gateOk = String(s?.readyGate || '').toUpperCase() === 'PASS';
-  const rrOk = Number(s?.rr) >= 1.25;
-  /* Volume is checked per setup on the server (pullback bounce-day / breakout rule); trust its READY. */
-  return !!(readyStatus && setupScore >= 70 && gateOk && rrOk);
-}
-function screenerBadgeHtml(s) {
-  const readyClientOk = screenerClientReadyOk(s);
-  const txt = readyClientOk ? 'Screener Match' : 'Watchlist';
-  const col = readyClientOk ? 'var(--bull)' : 'var(--neu)';
-  return `<span class="scr-badge" style="border:1px solid ${col};color:${col}">${txt}</span>`;
+  return String(s?.tradeStatus || '').toUpperCase() === 'READY';   /* the server applies the tested gate */
 }
 function screenerTriggerHtml(s) {
   const sec = s?.sector && Number.isFinite(+s?.sectorRank)
@@ -4593,22 +4107,9 @@ async function tabMyTradeScreener(force = false) {
 }
 /* Group 1 READY, 2 watchlist with a good setup score (waiting for its breakout or pullback), 3 low score /
    low R:R / near resistance. */
-function screenerRowGroup(s){
-  if(s._ready) return 1;
-  if(s.gateV2) return 2;
-  if(s.limitReady && s.limitEntry) return 1.5;
-  const sc = +s.selectedStrategyScore || +s.finalQualification || 0, rr = Number(s.rr), room = Number(s.resistanceRoom);
-  if(sc < 70 || (Number.isFinite(rr) && rr < SWING_MIN_RR) || (Number.isFinite(room) && room < 3)) return 3;
-  return 2;
-}
+function screenerRowGroup(s){ return s._ready ? 1 : 2; }
 function screenerRowTag(s, g){
-  if(s.gateV2) return g === 1 ? {t:'READY', c:'ready'} : s.forming ? {t:'Forming today', c:'watch'} : s.resultsBlock || s.eventBlock ? {t:'Results / event', c:'low'} : s.regimeBlock ? {t:'Market filter', c:'low'} : {t:'Cross coming', c:'watch'};
-  if(g === 1) return {t: (s.pickedSetup || s.selectedStrategy) === 'Breakout with Volume' ? 'READY · half size' : 'READY', c:'ready'};
-  if(g === 1.5) return {t:'Ready on limit', c:'ready'};
-  const setup = String(s.pickedSetup || s.selectedStrategy || '');
-  if(g === 2) return {t: /breakout|momentum/i.test(setup) ? 'Wait breakout' : /pullback|bounce/i.test(setup) ? 'Wait pullback' : 'Watch', c:'watch'};
-  const rr = Number(s.rr), room = Number(s.resistanceRoom);
-  return {t: Number.isFinite(rr) && rr < SWING_MIN_RR ? 'Low R:R' : Number.isFinite(room) && room < 3 ? 'Near resistance' : 'Low score', c:'low'};
+  return g === 1 ? {t:'READY', c:'ready'} : /^READY - ranked below/.test(s.watchReason || '') ? {t:'READY · not in top 10', c:'ready'} : s.forming ? {t:'Forming today', c:'watch'} : s.resultsBlock || s.eventBlock ? {t:'Results / event', c:'low'} : s.regimeBlock ? {t:'Market filter', c:'low'} : {t:'Cross coming', c:'watch'};
 }
 /* Backtested tags (19 Nov 2026) on a screener row - information, they do not change READY. */
 function screenerTagsHtml(t){
@@ -4630,43 +4131,39 @@ function renderMyTradeScreener(data, source='server') {
   const score = s => +s.selectedStrategyScore || +s.finalQualification || 0;
   const f = v => Number.isFinite(+v) ? fmt(+v) : '--';
   const row = (s, g) => {
-    const lim = g === 1.5 ? s.limitEntry : null;
-    const p = s.plan || {}, rr = lim ? Number(lim.rr) : Number(s.rr), tag = screenerRowTag(s, g);
-    const why = g === 1 ? (s.trigger || 'All checks pass') : lim ? `Buy limit ₹${f(lim.price)} - fills only if price comes back (now ₹${f(s.price)}, R:R from here ${Number(s.rr).toFixed(2)})` : (s.watchReason || s.trigger || '');
+    const p = s.plan || {}, tag = screenerRowTag(s, g), why = g === 1 ? (s.trigger || '') : (s.watchReason || s.trigger || '');
     return `<div class="pl-row ${g === 1 ? 'ready' : ''}" data-sym="NSE:${escHtml(s.sym)}" data-name="${escHtml(s.sym)}" title="Open ${escHtml(s.sym)}">
       <div class="pl-main">
         <div class="pl-sym">${escHtml(s.sym)} <span class="pl-tag ${tag.c}">${tag.t}</span>${screenerResultsChip(s)}</div>
-        <div class="pl-setup">${escHtml(s.pickedSetup || s.selectedStrategy || 'Setup')} · ₹${f(s.price)}${Number.isFinite(+s.weekChg) ? ` · <span style="color:${+s.weekChg >= 0 ? 'var(--bull)' : 'var(--bear)'}">${+s.weekChg >= 0 ? '+' : ''}${s.weekChg}% wk</span>` : ''}${s.sector ? ` · ${escHtml(s.sector)}` : ''}</div>
-        <div class="pl-why">${escHtml(String(why).slice(0, 160))}</div>
+        <div class="pl-setup">${escHtml(s.pickedSetup || 'Watch')} · ₹${f(s.price)}${Number.isFinite(+s.weekChg) ? ` · <span style="color:${+s.weekChg >= 0 ? 'var(--bull)' : 'var(--bear)'}">${+s.weekChg >= 0 ? '+' : ''}${s.weekChg}% wk</span>` : ''}${s.sector ? ` · ${escHtml(s.sector)}` : ''}</div>
+        <div class="pl-why">${escHtml(String(why).slice(0, 220))}</div>
         ${screenerTagsHtml(s.tags)}
-        ${g === 1 || lim ? `<div class="scr-ov" data-ov="${escHtml(s.sym)}">${s._overviewAction ? screenerOverviewLine(s) : 'Overview check…'}</div>` : ''}
-        ${lim ? `<button type="button" class="alert-chip" style="margin-top:6px" onclick="event.stopPropagation();openAlertPopup(${jsArg('NSE:' + s.sym)}, ${jsArg({limit:lim.price, sl:lim.stop, t1:lim.target})})">🔔 Alert at ₹${f(lim.price)}</button>` : ''}
+        ${g === 1 ? `<div class="scr-ov" data-ov="${escHtml(s.sym)}">${s._overviewAction ? screenerOverviewLine(s) : 'Overview check…'}</div>` : ''}
       </div>
-      <div class="pl-levels">
-        <div><span>${lim ? 'Limit' : 'Entry'}</span><b>${f(lim ? lim.price : p.entry)}</b></div>
-        <div><span>SL</span><b style="color:var(--bear)">${f(lim ? lim.stop : p.stop)}</b></div>
-        <div title="Tested exit: sell all at 2x the risk or at the close of day 15 (T1 ${f(lim ? lim.target : p.target)} is the first resistance)"><span>Exit 2R</span><b style="color:var(--bull)">${(lim ? lim.exit2R : s.exit2R) > 0 ? f(lim ? lim.exit2R : s.exit2R) : '--'}</b></div>
-        ${s.gateV2 ? `<div title="Risk from the price to the stop"><span>Risk</span><b>${Number.isFinite(+s.riskPct) ? (+s.riskPct).toFixed(1) + '%' : '--'}</b></div>` : `<div title="R:R to T1 (the first resistance) - the READY check"><span>R:R T1</span><b style="color:${rr >= SWING_MIN_RR ? 'var(--bull)' : 'var(--neu)'}">${Number.isFinite(rr) ? rr.toFixed(2) : '--'}</b></div>`}
-      </div>
+      ${p.stop ? `<div class="pl-levels">
+        <div><span>Entry</span><b>${f(p.entry)}</b></div>
+        <div><span>SL</span><b style="color:var(--bear)">${f(p.stop)}</b></div>
+        <div title="Tested exit: sell all at 2x the risk or at the close of day 15"><span>Exit 2R</span><b style="color:var(--bull)">${+s.exit2R > 0 ? f(s.exit2R) : '--'}</b></div>
+        <div title="Risk from the price to the stop"><span>Risk</span><b>${Number.isFinite(+s.riskPct) ? (+s.riskPct).toFixed(1) + '%' : '--'}</b></div>
+      </div>` : ''}
     </div>`;
   };
   const groups = [
     {g:1, title:'Ready to trade', sub:'Tested READY gate (10-year backtest: 49% wins, 8 of 10 years): EMA20 crosses above EMA50 while the stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high. Signal on a close - buy at the price, stop under the setup, sell all at 2R or the close of day 15. The Overview confirms each one below.', cls:'bull', id:'scrMatchGrid'},
-    {g:1.5, title:'Ready on limit', sub:'Good pullback, but price has run above the zone. Place a buy limit at the price shown - it fills only if price comes back; R:R there is 1.25 or better.', cls:'bull', id:'scrLimitGrid'},
     {g:2, title:'Watchlist', sub:'A tested signal forming today (READY if it holds at the close, from 15:00), held by results / the market filter, or EMA20 about to cross EMA50.', cls:'bull', id:'scrDemoted'},
-    {g:3, title:'Low score / low R:R', sub:'Weak setup, R:R under 1.25 or close to resistance - not a buy yet.', cls:'neutral', id:''},
   ];
-  /* One stock, one list (20 Nov 2026: the same stock showed in Pattern breakouts, Watchlist "Wait breakout" and Low R:R).
-     Order: READY / Ready on limit (the server already leaves them out of the pattern list) -> Pattern breakout ->
-     Quick bounce -> Watchlist -> Low score. The pattern row shows what the swing check said instead. */
+  /* One stock, one list. Order: READY (the server leaves it out of the other lists) -> Pattern breakout -> 20-day
+     breakout -> Quick bounce -> Watchlist. A pattern / breakout row shows what the swing check said instead. */
   const symU = s => String(s?.sym || '').toUpperCase();
-  const readySet = new Set(all.filter(s => [1, 1.5].includes(screenerRowGroup(s))).map(symU));
+  const readySet = new Set(all.filter(s => screenerRowGroup(s) === 1).map(symU));
   const pb = (data.patternBreakouts || []).filter(q => !readySet.has(symU(q)));
   const pbSet = new Set(pb.map(symU));
-  const qb = (data.quickBounce || []).filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)));
+  const bo = (data.breakouts20 || []).filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)));
+  const boSet = new Set(bo.map(symU));
+  const qb = (data.quickBounce || []).filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)) && !boSet.has(symU(q)));
   const swingNote = {};
-  all.forEach(s => { const g = screenerRowGroup(s); if(pbSet.has(symU(s)) && (g === 2 || g === 3)) swingNote[symU(s)] = screenerRowTag(s, g).t; });
-  const shownElsewhere = s => !readySet.has(symU(s)) && (pbSet.has(symU(s)) || qb.some(q => symU(q) === symU(s)));
+  all.forEach(s => { const g = screenerRowGroup(s); if((pbSet.has(symU(s)) || boSet.has(symU(s))) && g === 2) swingNote[symU(s)] = screenerRowTag(s, g).t; });
+  const shownElsewhere = s => !readySet.has(symU(s)) && (pbSet.has(symU(s)) || boSet.has(symU(s)) || qb.some(q => symU(q) === symU(s)));
   const qbRow = q => `<div class="pl-row" data-sym="NSE:${escHtml(q.sym)}" data-name="${escHtml(q.sym)}" title="Open ${escHtml(q.sym)}">
       <div class="pl-main">
         <div class="pl-sym">${escHtml(q.sym)} <span class="pl-tag watch">Quick bounce · watch</span>${screenerResultsChip(q)}</div>
@@ -4692,6 +4189,7 @@ function renderMyTradeScreener(data, source='server') {
         <div class="pl-setup">₹${f(q.price)} · ${escHtml(q.note || '')}${q.sector ? ` · ${escHtml(q.sector)}` : ''}</div>
         <div class="pl-why">Confirm on the day's close: buy near the close or next open if it holds above the level. Stop under the pattern ₹${f(q.stop)} (${f(q.riskPct)}% risk); sell all at 2R ₹${f(q.target)} or at the close of day 15.</div>
         ${screenerTagsHtml(q.tags)}
+        <div class="scr-ov" data-ovp="${escHtml(q.sym)}">Overview check…</div>
         ${swingNote[symU(q)] ? `<div class="pl-why" style="color:var(--tx3)">Swing check: ${escHtml(swingNote[symU(q)])} - not a swing buy; this pattern has its own stop and 2R exit, tested on its own.</div>` : ''}
       </div>
       <div class="pl-levels">
@@ -4701,20 +4199,38 @@ function renderMyTradeScreener(data, source='server') {
         <div><span>Risk</span><b>${f(q.riskPct)}%</b></div>
       </div>
     </div>`;
+  const boRow = q => `<div class="pl-row ready" data-sym="NSE:${escHtml(q.sym)}" data-name="${escHtml(q.sym)}" title="Open ${escHtml(q.sym)}">
+      <div class="pl-main">
+        <div class="pl-sym">${escHtml(q.sym)} <span class="pl-tag ${q.forming ? 'watch' : 'ready'}">${q.forming ? '20-day breakout · forming' : '20-day breakout'}</span>${screenerResultsChip(q)}</div>
+        <div class="pl-setup">₹${f(q.price)} · ${escHtml(q.why || '')}${q.sector ? ` · ${escHtml(q.sector)}` : ''}</div>
+        <div class="pl-why">${q.forming ? 'Forming today - it counts if it holds at the close (from 15:00).' : q.signalDay === 'yesterday' ? "Signal at yesterday's close: buy now." : "Signal at today's close: buy near the close or at the next open."} Stop ₹${f(q.stop)} (${f(q.riskPct)}% risk); sell all at 2R ₹${f(q.target)} or at the close of day 15.</div>
+        ${screenerTagsHtml(q.tags)}
+        <div class="scr-ov" data-ovp="${escHtml(q.sym)}">Overview check…</div>
+        ${swingNote[symU(q)] ? `<div class="pl-why" style="color:var(--tx3)">Swing check: ${escHtml(swingNote[symU(q)])} - not a swing READY; this list has its own stop and 2R exit, tested on its own.</div>` : ''}
+      </div>
+      <div class="pl-levels">
+        <div><span>Buy</span><b>${f(q.price)}</b></div>
+        <div><span>SL</span><b style="color:var(--bear)">${f(q.stop)}</b></div>
+        <div><span>Exit 2R</span><b style="color:var(--bull)">${f(q.target)}</b></div>
+        <div><span>Risk</span><b>${f(q.riskPct)}%</b></div>
+      </div>
+    </div>`;
+  const boGroup = `<div class="pl-group bull" id="scrBreakout20Grid">
+      <div class="pl-head"><div><div class="pl-title">20-day breakouts</div><div class="pl-sub">A separate tested list (not READY): the first close above the 20-day high on 1.5x volume, close above EMA50 above EMA200, higher highs &amp; lows, within 10% of the 52-week high, beating Nifty over 3 months. 10-year backtest: 51% wins, +0.12R a trade, profit in 8 of 10 years - less steady than READY (5 of 10 years with only 3 open). Stop under the 5-day low, sell all at 2R or the close of day 15.</div></div><div class="pl-count">${bo.length}</div></div>
+      ${bo.length ? bo.map(boRow).join('') : `<div class="pl-empty">${escHtml(data.breakouts20Note || (data.breakouts20 ? 'None in this scan.' : 'Refresh the scan to load this list.'))}</div>`}
+    </div>`;
   const pbGroup = `<div class="pl-group bull" id="scrPatternGrid">
       <div class="pl-head"><div><div class="pl-title">Pattern breakouts</div><div class="pl-sub">Double bottom (close above its neckline) or flat base (25 days within 12%, close above it on 1.3x volume), stock and Nifty in an uptrend. 10-year backtest: double bottoms +0.065R a trade over 2,912 trades, flat bases +0.056R (+0.134R with at most 5 open, 8 of 10 good years) - about as good as READY. Alerted at the 15:00 scan.</div></div><div class="pl-count">${pb.length}</div></div>
       ${pb.length ? pb.map(pbRow).join('') : `<div class="pl-empty">${escHtml(data.patternNote || 'None in this scan.')}</div>`}
     </div>`;
-  const gateScan = all.some(s => s.gateV2) || !all.length;
-  const html = groups.filter(G => !(gateScan && G.g === 3 && !all.some(s => screenerRowGroup(s) === G.g))).map(G => {
-    const list = all.filter(s => screenerRowGroup(s) === G.g && !(G.g >= 2 && shownElsewhere(s))).sort((a,b) => score(b) - score(a) || (+b.rankScore || 0) - (+a.rankScore || 0));
-    if(gateScan && G.g === 1.5 && !list.length) return pbGroup + qbGroup;   /* the old Ready-on-limit list is empty with the tested gate */
+  const html = groups.map(G => {
+    const list = all.filter(s => screenerRowGroup(s) === G.g && !(G.g === 2 && shownElsewhere(s))).sort((a,b) => score(b) - score(a) || (+b.rankScore || 0) - (+a.rankScore || 0));
     const empty = G.g === 1 ? `No stock is READY in this scan.${data?.marketTrend?.allowReady === false ? ' The market filter is holding back fresh longs.' : ''}` : 'None in this scan.';
     return `<div class="pl-group ${G.cls}"${G.id ? ` id="${G.id}"` : ''}>
       <div class="pl-head"><div><div class="pl-title">${G.title}</div><div class="pl-sub">${G.sub}</div></div><div class="pl-count">${list.length}</div></div>
       ${G.g === 2 ? '<div id="scrDemotedGrid"></div>' : ''}
       ${list.length ? list.map(s => row(s, G.g)).join('') : `<div class="pl-empty">${empty}</div>`}
-    </div>${G.g === 1.5 ? pbGroup + qbGroup : ''}`;
+    </div>${G.g === 1 ? pbGroup + boGroup + qbGroup : ''}`;
   }).join('');
   const ts = data.generatedAt ? new Date(data.generatedAt) : null;
   const when = ts ? ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : '--';
@@ -4728,8 +4244,8 @@ function renderMyTradeScreener(data, source='server') {
   }));
   /* One check at a time: an Overview probe swaps the page's current stock while it runs. */
   const live = tcGuard();
-  SCR_VERIFY = verifyScreenerPicksWithOverview(all.filter(s => s._ready || screenerRowGroup(s) === 1.5), data, tc, live)
-    .then(() => verifyQuickWithOverview(qb, tc, live)).catch(() => {});
+  SCR_VERIFY = verifyScreenerPicksWithOverview(all.filter(s => s._ready), data, tc, live)
+    .then(() => verifyQuickWithOverview(qb, tc, live)).then(() => verifyPatternWithOverview(pb.concat(bo), tc, live)).catch(() => {});
 }
 let SCR_VERIFY = Promise.resolve();
 async function verifyQuickWithOverview(list, tc, live){
@@ -4741,20 +4257,54 @@ async function verifyQuickWithOverview(list, tc, live){
     if(!live()) return;
     const el = tc.querySelector(`.scr-ov[data-ovq="${q.sym}"]`);
     if(el) el.innerHTML = !v ? `<span style="color:var(--neu)">Overview check unavailable — open the stock to confirm</span>`
-      : v.quick ? `<span style="color:var(--bull);font-weight:800">Overview: quick bounce ✓</span>` : `<span style="color:var(--neu);font-weight:800">Overview: no quick bounce</span>`;
+      : (v.quick ? `<span style="color:var(--bull);font-weight:800">Overview: quick bounce ✓</span>` : `<span style="color:var(--neu);font-weight:800">Overview: no quick bounce</span>`) + scoreChip(v);
+  }
+}
+function scoreChip(v){ return v && v.fresh != null ? ` <span class="sc-chip" title="Fresh entry / Hold score (Overview, without news)">Fresh ${v.fresh} · Hold ${v.hold}</span>` : ''; }
+async function verifyPatternWithOverview(list, tc, live){
+  for(const q of list){
+    if(!live()) return;
+    const sym = 'NSE:' + q.sym;
+    let v = null; try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[q.sym] || q.sym); } catch {}
+    if(!live()) return;
+    const el = tc.querySelector(`.scr-ov[data-ovp="${q.sym}"]`);
+    if(el) el.innerHTML = v ? `<span style="color:var(--tx2);font-weight:700">Overview:</span>${scoreChip(v)}` : `<span style="color:var(--neu)">Overview check unavailable</span>`;
   }
 }
 function screenerOverviewLine(s){
-  if(s.limitReady && s.limitEntry){
-    if(s._overviewAction === 'UNCHECKED') return `<span style="color:var(--neu)">Overview check unavailable — open the stock to confirm</span>`;
-    const hasLim = s._overviewLimit != null && Number.isFinite(+s._overviewLimit);
-    return hasLim && Math.abs(+s._overviewLimit - +s.limitEntry.price) < 0.06
-      ? `<span style="color:var(--bull);font-weight:800">Overview: limit ₹${fmt(s._overviewLimit)} ✓</span>`
-      : `<span style="color:var(--neu);font-weight:800">Overview: ${escHtml(s._overviewAction || '')}${hasLim ? ` · limit ₹${fmt(s._overviewLimit)}` : ' · no limit plan'}</span> <span style="color:var(--tx3)">${escHtml(s._overviewReason || '')}</span>`;
-  }
-  if(s._overviewAction === 'READY') return `<span style="color:var(--bull);font-weight:800">Overview: READY ✓</span>`;
+  if(s._overviewAction === 'READY') return `<span style="color:var(--bull);font-weight:800">Overview: READY ✓</span>${scoreChip(s._overviewScores)}`;
   if(s._overviewAction === 'UNCHECKED') return `<span style="color:var(--neu)">Overview check unavailable — open the stock to confirm</span>`;
   return `<span style="color:var(--neu);font-weight:800">Overview: ${escHtml(s._overviewAction)}</span> <span style="color:var(--tx3)">${escHtml(s._overviewReason || '')}</span>`;
+}
+
+/* ── Fresh entry / Hold scores card (Overview) ── */
+const STOCK_NEWS_SENT = {};   /* sym -> { sent, ts } from the News tab's feed, kept 30 min */
+function stockScoresHtml(sc, ctx){
+  const band = v => v == null ? 'neutral' : v >= 70 ? 'bull' : v >= 50 ? 'neutral' : 'bear';
+  const word = v => v == null ? '--' : v >= 70 ? 'Strong' : v >= 50 ? 'OK' : 'Weak';
+  const rows = list => `<ul class="sc-rows">${list.map(r => `<li class="${r.f == null ? 'na' : r.f >= 0.99 ? 'ok' : r.f > 0 ? 'part' : 'bad'}"><b>${escHtml(r.k)}</b> <span>${r.f == null ? 'n/a' : Math.round(r.w * r.f) + '/' + r.w}</span><em>${escHtml(r.t)}${r.tested ? ' · tested' : ''}</em></li>`).join('')}</ul>`;
+  const freshNote = ctx?.signal === 'breakout' ? 'The score was not separately tested on the 20-day breakout list - its own backtest (51% wins, 8 of 10 years) is the guide.'
+    : ctx?.signal === 'pattern' ? 'For pattern breakouts the backtest found no difference between high and low scores - follow the pattern\'s own stop and 2R.'
+    : 'Backtest: EMA20/50 crosses scoring 85+ made +0.25R a trade vs +0.13R at 70-84; quick bounces under 70 did worse (+0.12R vs +0.18R).';
+  return `<div class="sc-grid">
+    <div class="sc-tile ${band(sc.fresh)}"><span>Fresh entry score</span><b>${sc.fresh ?? '--'}<small>/100</small></b><em>${word(sc.fresh)} - for buying now</em></div>
+    <div class="sc-tile ${band(sc.hold)}"><span>Hold score</span><b>${sc.hold ?? '--'}<small>/100</small></b><em>${word(sc.hold)} - if you already hold it</em></div>
+  </div>
+  <details class="tp-more sc-more"><summary>Why these scores${ctx?.newsSent ? '' : ' (news loading…)'}</summary>
+    <div class="sc-cols"><div><div class="sc-h">Fresh entry</div>${rows(sc.freshRows)}</div><div><div class="sc-h">Hold</div>${rows(sc.holdRows)}</div></div>
+    <div class="idea-foot">${freshNote} Selling on a low Hold score did not beat the plan's exit in the backtest, so the exit stays the stop, 2R or day 15 - the Hold score tells you when something changed (trend, news, results). Checklist scores; the total is not a backtested rule.</div>
+  </details>`;
+}
+async function loadScoreNews(sym, name, ctx){
+  try{
+    const r = await fetchLiveNews(sym, name || sym.replace(/^NSE:/, ''));
+    const items = r?.items || [], bull = items.filter(i => i.s === 'bull').length, bear = items.filter(i => i.s === 'bear').length;
+    if(!items.length) return;   /* no headlines: news stays out of the scores */
+    const sent = r?.summary?.sentiment === 'bull' || r?.summary?.sentiment === 'bear' ? r.summary.sentiment : bull > bear * 1.5 ? 'bull' : bear > bull * 1.5 ? 'bear' : 'neutral';
+    STOCK_NEWS_SENT[sym] = { sent, ts: Date.now() }; setTimeout(() => { delete STOCK_NEWS_SENT[sym]; }, 30 * 60e3);
+    const el = document.querySelector(`[data-scores="${CSS.escape(sym)}"]`);
+    if(el && CUR_SYM === sym && CUR_DATA?.daily){ const c2 = { ...ctx, newsSent: sent }, sc = SwingPlan.stockScores(CUR_DATA.daily, c2); if(sc) el.innerHTML = stockScoresHtml(sc, c2); }
+  }catch{}
 }
 /* One stock at a time (no burst on Yahoo); quote + context come from the server's caches after the scan. */
 async function verifyScreenerPicksWithOverview(picks, data, tc, live = () => true){
@@ -4771,6 +4321,7 @@ async function verifyScreenerPicksWithOverview(picks, data, tc, live = () => tru
       s._overviewAction = v?.action || 'UNCHECKED';
       s._overviewReason = v?.reason || '';
       s._overviewLimit = v?.limit ?? null;
+      s._overviewScores = v ? { fresh: v.fresh, hold: v.hold } : null;
       /* The Trade Gate reads MY_TRADE_CACHE_UI.picks, not these display copies: a pick the Overview demoted used
          to be notified as "Trade Gate Ready". */
       const src = (MY_TRADE_CACHE_UI?.picks || []).find(p => p.sym === s.sym);
@@ -4780,7 +4331,7 @@ async function verifyScreenerPicksWithOverview(picks, data, tc, live = () => tru
     const line = tc.querySelector(`.scr-ov[data-ov="${s.sym}"]`);
     if(line) line.innerHTML = screenerOverviewLine(s);
     const card = line?.closest('.scr-card, .pl-row');
-    if(card && !s.limitReady && s._overviewAction !== 'READY' && s._overviewAction !== 'UNCHECKED'){
+    if(card && s._overviewAction !== 'READY' && s._overviewAction !== 'UNCHECKED'){
       const box = tc.querySelector('#scrDemoted'), grid = tc.querySelector('#scrDemotedGrid');
       if(box && grid){
         card.querySelector('.scr-rank')?.remove(); card.classList.remove('ready');
@@ -4790,7 +4341,7 @@ async function verifyScreenerPicksWithOverview(picks, data, tc, live = () => tru
       }
     }
   }
-  const confirmed = picks.filter(s => !s.limitReady && s._overviewAction === 'READY');
+  const confirmed = picks.filter(s => s._overviewAction === 'READY');
   if(document.body.contains(tc) && picks.length && !tc.querySelector('#scrMatchGrid .scr-card, #scrMatchGrid .pl-row')){
     tc.querySelector('#scrMatchGrid')?.insertAdjacentHTML('beforeend', `<div class="pl-empty">No stock is READY after the Overview check.</div>`);
   }
@@ -4984,33 +4535,23 @@ async function checkAllVsOverview(){
   const live = tcGuard();
   box.innerHTML = 'Waiting for the automatic Overview check to finish…';
   await SCR_VERIFY;   /* probes swap the current stock: never two at once */
-  const rows = [...(data.picks || []), ...(data.watchlist || [])];
-  let ok = 0, n = 0; const bad = [];
+  const shown = new Set([...document.querySelectorAll('#scrMatchGrid .pl-row[data-sym], #scrDemoted .pl-row[data-sym]')].map(e => e.dataset.sym.replace(/^NSE:/, '')));
+  const rows = [...(data.picks || []), ...(data.watchlist || [])].filter(s => !shown.size || shown.has(s.sym));
+  let ok = 0, n = 0; const bad = [], names = [];
   for(const s of rows){
     if(!live()) return;
     box.innerHTML = `Checking ${n + 1} of ${rows.length} against its Overview…`;
     const sym = 'NSE:' + s.sym; delete OVERVIEW_VERDICT[sym];
     let v = null; try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[s.sym] || s.sym); } catch {}
     if(!v){ await new Promise(r => setTimeout(r, 1500)); try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[s.sym] || s.sym); } catch {} }
-    n++;
+    n++; names.push(`${s.sym} (${String(s.tradeStatus).toUpperCase() === 'READY' ? 'READY' : 'Watchlist'})`);
     const why = [];
     if(!v) why.push('Overview did not load');
     else {
-      if(s.gateV2 && v.gateV2){
         const sReady = String(s.tradeStatus).toUpperCase() === 'READY';
         if(sReady !== (v.action === 'READY')) why.push(`action ${v.action} vs ${s.tradeStatus}`);
         if((v.setup || '') !== (s.pickedSetup || '') && sReady) why.push(`signal ${v.setup || 'none'} vs ${s.pickedSetup || 'none'}`);
         if(sReady && v.stop > 0 && +s.plan?.stop > 0 && Math.abs(v.stop - s.plan.stop) / s.plan.stop > 0.005) why.push(`stop ${fmt(v.stop)} vs ${fmt(s.plan.stop)}`);
-      } else {
-      if(v.bias !== 'Bullish') why.push(`Overview bias ${v.bias}`);
-      const noSetup = x => !x || /no active strategy|wait for breakout/i.test(x);   /* the Overview's wording for "no setup" */
-      const oSet = noSetup(v.setup) ? '' : v.setup, sSet = s.pickedSetup || '';
-      if(oSet !== sSet) why.push(`setup ${oSet || 'none'} vs ${sSet || 'none'}`);
-      if(!(Math.abs((+v.rr || 0) - (+s.rr || 0)) < 0.015)) why.push(`R:R ${(+v.rr || 0).toFixed(2)} vs ${(+s.rr || 0).toFixed(2)}`);
-      const sReady = String(s.tradeStatus).toUpperCase() === 'READY';
-      if(sReady !== (v.action === 'READY')) why.push(`action ${v.action} vs ${s.tradeStatus}`);
-      if(s.limitReady && s.limitEntry && !(Math.abs((+v.limit || 0) - +s.limitEntry.price) < 0.06)) why.push(`limit ${v.limit ?? 'none'} vs ${s.limitEntry.price}`);
-      }
       /* Different price = different R:R and setup by design: say so, it is not a rule mismatch. */
       const sp = +s.price, op = +v.price;
       if(why.length && sp > 0 && op > 0 && Math.abs(op - sp) / sp > 0.001) why.push(`price moved ${op > sp ? '+' : ''}${((op - sp) / sp * 100).toFixed(2)}% since the scan (₹${fmt(sp)} → ₹${fmt(op)}) - Refresh the scan to compare like for like`);
@@ -5022,10 +4563,10 @@ async function checkAllVsOverview(){
     box.innerHTML = `Checking quick bounce ${q.sym} against its Overview…`;
     const sym = 'NSE:' + q.sym; delete OVERVIEW_VERDICT[sym];
     let v = null; try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[q.sym] || q.sym); } catch {}
-    n++;
+    n++; names.push(`${q.sym} (quick bounce)`);
     if(!v) bad.push(`<b>${escHtml(q.sym)}</b>: Overview did not load`); else if(!v.quick) bad.push(`<b>${escHtml(q.sym)}</b>: no quick bounce on the Overview`); else ok++;
   }
-  box.innerHTML = `<b style="color:${bad.length ? 'var(--bear)' : 'var(--bull)'}">Screener vs Overview: ${ok} of ${n} match</b>${bad.length ? ` · ${bad.join(' · ')}` : ' - same action, signal and stop on every stock.'}`;
+  box.innerHTML = `<b style="color:${bad.length ? 'var(--bear)' : 'var(--bull)'}">Screener vs Overview: ${ok} of ${n} match</b>${bad.length ? ` · ${bad.join(' · ')}` : ` - same action, signal and stop on every stock (${escHtml(names.join(', '))}).`}`;
 }
 
 /* Market regime + results-calendar status shown above both screener lists. */
@@ -5274,9 +4815,6 @@ async function tabEarnings() {
   tc.innerHTML = `<div class="aib"><strong>📌 Earnings/result tab removed.</strong><br>Result dates are not auto-verified in this app. Check NSE/BSE/company announcements manually before every stock trade.</div>`;
 }
 
-async function checkEarningsWarning(sym) {
-  /* Disabled by request: no manual/static earnings alert is shown. */
-}
 
 /* ── SHOW GLOBAL TAB (no instrument needed) ── */
 async function showGlobalTab(tab) {
@@ -5310,11 +4848,6 @@ function getCurrentLivePrice(){
   const d = CUR_DATA || {}, C = d.daily?.C || [];
   return firstFiniteNumber(d.price, d.livePrice, C[C.length-1]) || 0;
 }
-function approxSame(a,b,pctTol=0.0005){
-  a=Number(a); b=Number(b);
-  if(!Number.isFinite(a) || !Number.isFinite(b) || b===0) return false;
-  return Math.abs(a-b)/Math.abs(b) <= pctTol;
-}
 function marketDateKeyFromTs(ts, tz='Asia/Kolkata'){
   const n = Number(ts);
   if(!Number.isFinite(n) || n <= 0) return '';
@@ -5323,39 +4856,6 @@ function marketDateKeyFromTs(ts, tz='Asia/Kolkata'){
   }catch{
     return new Date(n*1000).toISOString().slice(0,10);
   }
-}
-function marketDateKeyFromIso(iso, tz='Asia/Kolkata'){
-  const t = Date.parse(iso || '');
-  if(!Number.isFinite(t)) return '';
-  try{
-    return new Intl.DateTimeFormat('en-CA',{timeZone:tz,year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(t));
-  }catch{
-    return new Date(t).toISOString().slice(0,10);
-  }
-}
-function lastFiniteTimestamp(arr){
-  if(!Array.isArray(arr)) return null;
-  for(let i=arr.length-1;i>=0;i--){
-    const n=Number(arr[i]);
-    if(Number.isFinite(n) && n>0) return n;
-  }
-  return null;
-}
-function marketLocalTimeInfo(iso, tz='Asia/Kolkata'){
-  const t = Date.parse(iso || '');
-  if(!Number.isFinite(t)) return null;
-  try{
-    const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB',{
-      timeZone:tz,weekday:'short',hour:'2-digit',minute:'2-digit',hour12:false
-    }).formatToParts(new Date(t)).map(p=>[p.type,p.value]));
-    return {weekday:parts.weekday, minutes:Number(parts.hour)*60 + Number(parts.minute)};
-  }catch{ return null; }
-}
-function isLikelyActiveCashMarketSession(iso, tz='Asia/Kolkata'){
-  const x = marketLocalTimeInfo(iso, tz);
-  if(!x || !Number.isFinite(x.minutes)) return false;
-  if(['Sat','Sun'].includes(x.weekday)) return false;
-  return x.minutes >= 9*60 && x.minutes <= (15*60 + 45);
 }
 /* NSE intraday volume is U-shaped (heavy at open and close). Cumulative share of a normal day's
    volume by minutes since 09:15 IST. Used to project today's partial volume to a full-day figure so it
@@ -5632,13 +5132,7 @@ function getSectorBiasSnapshotFromList(sym, sectors){
   return {sector, label, cls, pct, note, source:hit.label, sectorKey:hit.key};
 }
 
-function getSectorBiasSnapshot(sym){
-  return getSectorBiasSnapshotFromList(sym, GLOBAL_DATA?.sectors || []);
-}
 
-function getScoreTabSnapshot(sym){
-  return buildSwingDecisionSnapshot(sym);
-}
 
 
 /* Shared Strategy-tab trade setup engine — one source for Overview trade-plan levels */
@@ -6542,8 +6036,11 @@ async function tabOverview(sym) {
     return { g, signalDay, forming, niftyOk, blocked, active: g.ok && !forming && niftyOk && !blocked, near: g.ok ? null : (gNow?.near || gPrev?.near || null) };
   })();
   const isStockOv = !isMCXSymbol(sym) && !isIndexSymbol(sym);
-  const stockTrend = price > e50 && e50 > e200 ? 'Uptrend' : price < e50 && e50 < e200 ? 'Downtrend' : 'Mixed';
-  const stockTrendSub = `Price ${fmt(price)} vs EMA50 ${fmt(e50)} and EMA200 ${fmt(e200)}${sgPlan?.g?.ok && sgPlan.g.setup === 'EMA20/50 cross' && stockTrend !== 'Uptrend' ? ' - normal for a fresh EMA20/50 cross: the new uptrend starts before EMA50 rises above EMA200' : ''}`;
+  /* Trend = the Analysis tab's own count (Analysis -> 1 Trend: 1 hour, daily, weekly, monthly), so the two always agree. */
+  const tfSigs = [CUR_DATA.intra?.rec, CUR_DATA.daily?.rec, CUR_DATA.weekly?.rec, CUR_DATA.monthly?.rec].filter(Boolean).map(r => sigRec(r.value));
+  const tfBull = tfSigs.filter(x => x.c === 'bull' || x.c === 'strong-bull').length, tfBear = tfSigs.filter(x => x.c === 'bear' || x.c === 'strong-bear').length, tfDen = tfSigs.length;
+  const stockTrend = tfBull > tfBear ? 'Uptrend' : tfBear > tfBull ? 'Downtrend' : 'Mixed';
+  const stockTrendSub = `${tfBull}/${tfDen} timeframes bullish, ${tfBear} bearish (same as Analysis → Trend)${e50 < e200 && price > e200 ? ` · EMA50 ${fmt(e50)} is still under EMA200 ${fmt(e200)}${sgPlan?.g?.ok && sgPlan.g.setup === 'EMA20/50 cross' ? ' - normal right after an EMA20/50 cross' : ''}` : ''}`;
   const sgWhy = sgPlan?.active ? '' : !sgPlan ? 'Not enough daily history for the READY check'
     : sgPlan.g.ok ? (sgPlan.forming ? `${sgPlan.g.setup} forming today - READY if it holds at the close (from 15:00)` : !sgPlan.niftyOk ? `${sgPlan.g.setup}, but Nifty is not in its uptrend` : `${sgPlan.g.setup}, but results or a corporate event are close`)
     : (sgPlan.near || 'No tested signal today (EMA20/50 cross with relative strength, or a gap-up near the 52-week high)');
@@ -6572,20 +6069,7 @@ async function tabOverview(sym) {
   /* Ready on limit (same rule as the screener): a pullback / bounce plan whose only failing checks are about
      price - R:R under 1.25 from here, late from EMA20, or the Fresh Entry Score that only the R:R points keep
      under 70 (re-scored at the limit's R:R). */
-  const limitPlan = (() => {
-    if(!isIndexSymbol(sym)) return null;   /* old buy-limit plan retired 20 Nov 2026: it belonged to the old (untested) READY */
-    if(activeTradeAllowed || bias !== 'Bullish' || !strategyPlan?.isActive || !/pullback|bounce/i.test(strategyPlan.setupName || '')) return null;
-    const fixable = /^RR .*below 1\.25|^EMA20 entry is late|^Fresh Entry Score \d+\/100 is below 70/;
-    if(!readyGate.reasons.length || !readyGate.reasons.every(r => fixable.test(r))) return null;
-    const lim = SwingPlan.limitEntry(strategyPlan.setupName, price, {entry:+strategyPlan.entryPrice, stop:+stopLoss, target:+target1});
-    if(!lim) return null;
-    if(readyGate.reasons.some(r => /^Fresh Entry Score/.test(r))){
-      const qL = buildSwingDecisionSnapshot(sym, {noCache:true, bias, setupInfo, rrNum:lim.rr, rrData:{...rrData, rr:lim.rr}, warnings, rawBiasScore, bullCt, bearCt, volRatio, volBlend, r1, s1, r2, s2, atr, stopLoss, target1, target2, priceLocation:priceLocationForSetup}).score100;
-      if(!(qL >= 70)) return null;
-    }
-    return lim;
-  })();
-  if(limitPlan && OVERVIEW_VERDICT[sym]) OVERVIEW_VERDICT[sym].limit = limitPlan.price;
+  const limitPlan = null;   /* the old buy-limit plan belonged to the untested READY (removed 20 Nov 2026) */
   /* Quick Bounce (RSI-2) on completed bars - the same function and filters as the screener's list. */
   const qbPlan = (() => {
     if(isMCXSymbol(sym) || isIndexSymbol(sym)) return null;
@@ -6608,6 +6092,30 @@ async function tabOverview(sym) {
     const niftyOk = marketRegime?.trendUp !== false;
     return { ...pb, niftyOk, active: niftyOk && !resultsSoon && !swingCtx?.events?.block };
   })();
+  /* 20-day breakout (separate tested list, SwingPlan.breakout20) - same signal-on-a-close rule as READY. */
+  const boPlan = (() => {
+    if(!isStockOv) return null;
+    const d = CUR_DATA.daily, nD = d.C?.length || 0; if(nD < 262 || !d.V) return null;
+    const e = getConfirmedDailyIndex(d, sym), live = e < nD - 1, t = istNowParts(), nearClose = t.hour * 60 + t.minute >= 15 * 60;
+    const D = { H: d.H, L: d.L, C: d.C, V: d.V, rs3m: relStrength?.rs3m ?? null, entry: price };
+    const bPrev = live ? SwingPlan.breakout20({ ...D, i: e }) : null, bNow = SwingPlan.breakout20({ ...D });
+    const b = bPrev?.ok ? bPrev : bNow?.ok ? bNow : null; if(!b) return null;
+    const niftyOk = marketRegime?.trendUp !== false, forming = !bPrev?.ok && live && !nearClose;
+    return { ...b, signalDay: bPrev?.ok ? 'yesterday' : 'today', forming, niftyOk, active: !forming && niftyOk && !resultsSoon && !swingCtx?.events?.block && !sgPlan?.active };
+  })();
+  /* Fresh entry and Hold scores (SwingPlan.stockScores) from the Analysis trend, the tested factors, sector and news
+     (news is loaded after the page, only when you open the stock). */
+  const scoreCtx = isStockOv ? {
+    signal: sgPlan?.active ? 'ready' : pbPlan?.active ? 'pattern' : boPlan?.active ? 'breakout' : qbPlan?.active ? 'quick' : (sgPlan?.near || sgPlan?.forming) ? 'near' : null,
+    stop: sgPlan?.active ? sgPlan.g.stop : pbPlan?.active ? pbPlan.stop : boPlan?.active ? boPlan.stop : qbPlan?.active ? qbPlan.stop : null,
+    niftyUp: marketRegime ? marketRegime.trendUp !== false : null, rs3m: relStrength?.rs3m ?? null, tf: tfDen ? { bull: tfBull, denom: tfDen } : null,
+    sectorUp: swingCtx?.sectorStrength?.ret1m != null && Number.isFinite(+swingCtx.sectorStrength.ret1m) ? +swingCtx.sectorStrength.ret1m > 0 : null,
+    eventsClear: swingCtx ? !resultsSoon && !swingCtx.events?.block : null,
+    holdEventsClear: swingCtx ? !(resultsSoon && +resultsSoon.tradingDaysUntil <= 2) : null,
+    newsSent: STOCK_NEWS_SENT[sym]?.sent ?? null } : null;
+  const scores = scoreCtx ? SwingPlan.stockScores(CUR_DATA.daily, scoreCtx) : null;
+  if(scores && OVERVIEW_VERDICT[sym]) Object.assign(OVERVIEW_VERDICT[sym], { fresh: scores.fresh, hold: scores.hold });
+  if(scores && !OVERVIEW_PROBE_NAME && !STOCK_NEWS_SENT[sym]) loadScoreNews(sym, name, scoreCtx);
   const noActiveTradeText = isStockOv ? 'No active trade — no tested signal' : bias === 'Sideways'
     ? 'No active trade — sideways/choppy'
     : actionBadge === 'CONFIRM'
@@ -6617,12 +6125,6 @@ async function tabOverview(sym) {
         : 'No active trade — watchlist only';
   const entrySub = actionBadgeSub === simpleDecision.miniReason ? actionBadgeSub : `${actionBadgeSub} · ${simpleDecision.miniReason}`;
   /* Join reason fragments once each (the same reason used to appear two or three times in one card). */
-  function uniqueReasonText(txt){
-    const seen = new Set(), out = [];
-    String(txt||'').split(/\s·\s|\.\s+(?=[A-Z])/).map(s=>s.replace(/^Main issue:\s*/i,'').replace(/\.$/,'').trim()).filter(Boolean)
-      .forEach(s => { const k = s.toLowerCase(); if(![...seen].some(x => x.includes(k) || k.includes(x))){ seen.add(k); out.push(s); } });
-    return out.join(' · ');
-  }
   const topDecisionDetails = `
     <div class="tp-decision-details">
       ${isStockOv ? `<div class="tp-detail ${stockTrend === 'Uptrend' ? 'bull' : stockTrend === 'Downtrend' ? 'bear' : 'neutral'}"><div class="tp-detail-label">Trend</div><div class="tp-detail-value">${stockTrend}</div><div class="tp-detail-sub">${stockTrendSub}</div></div>`
@@ -6712,6 +6214,14 @@ async function tabOverview(sym) {
         : `The pattern broke out, but it is paused: ${!pbPlan.niftyOk ? 'Nifty is not in its uptrend' : 'results or a corporate event are close'}.`}</div>
       ${pbPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup: pbPlan.name, entry: pbPlan.price, stop: pbPlan.stop, t1: pbPlan.target, exitDays: 15})})">📒 I took this trade</button>` : ''}
     </div>` : ''}
+    ${boPlan ? `<div class="tp-limit-card${boPlan.active ? '' : ' paused'}">
+      <div class="tp-limit-head"><span class="pl-tag ${boPlan.active ? 'ready' : 'low'}">20-DAY BREAKOUT</span> ${boPlan.active ? `buy near <b>₹${fmt(boPlan.entry)}</b> · stop ₹${fmt(boPlan.stop)} · 2R ₹${fmt(boPlan.target)}` : boPlan.forming ? 'forming today' : 'paused'}</div>
+      <div class="tp-limit-sub">${boPlan.active
+        ? `A separate tested list (Screener → 20-day breakouts), not READY. ${escHtml(boPlan.why)}. Signal at ${boPlan.signalDay === 'yesterday' ? "yesterday's" : "today's"} close; risk ${fmt(boPlan.riskPct)}%; sell all at 2R or the close of day 15. Backtest: 51% wins, profit in 8 of 10 years.`
+        : boPlan.forming ? `Closing above the 20-day high today - it counts if it holds at the close (from 15:00).`
+        : sgPlan?.active ? 'Also a READY signal - follow the READY plan above.' : `The breakout is there, but it is paused: ${!boPlan.niftyOk ? 'Nifty is not in its uptrend' : 'results or a corporate event are close'}.`}</div>
+      ${boPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup:'20-day breakout', entry: boPlan.entry, stop: boPlan.stop, t1: boPlan.target, exitDays: 15})})">📒 I took this trade</button>` : ''}
+    </div>` : ''}
     ${qbPlan ? `<div class="tp-limit-card tp-qb-card${qbPlan.active ? '' : ' paused'}">
       <div class="tp-limit-head"><span class="pl-tag ${qbPlan.active ? 'watch' : 'low'}">QUICK BOUNCE · WATCH ONLY · RSI-2 ${qbPlan.rsi2}</span> ${qbPlan.active ? `Buy near <b>₹${fmt(qbPlan.close)}</b>` : 'Paused'}</div>
       <div class="tp-limit-sub">${qbPlan.active
@@ -6719,10 +6229,6 @@ async function tabOverview(sym) {
         : `RSI-2 is ${qbPlan.rsi2}, but the setup is paused: ${!qbPlan.niftyOk ? 'Nifty is below its 200-day average' : 'results are due within 5 trading days'}.`}</div>
       ${qbPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup:'Quick Bounce', entry:qbPlan.close, stop:qbPlan.stop, t1: qbPlan.sma5 > qbPlan.close ? qbPlan.sma5 : null})})">📒 I took this trade</button>` : ''}
       ${qbPlan.active ? buildPositionSizeCalc({id:`poscalc_qb_${sym}`, bias:'Bullish', price:qbPlan.close, target1: qbPlan.sma5 > qbPlan.close ? qbPlan.sma5 : qbPlan.close + qbPlan.atr, stopLoss:qbPlan.stop, targetLabel:'5-day avg (est.)', note:'Sized from the Quick Bounce stop (2.5 × ATR). The exit is the first close above the 5-day average, so the gain shown is an estimate.'}) : ''}
-    </div>` : ''}
-    ${limitPlan ? `<div class="tp-limit-card">
-      <div class="tp-limit-head"><span class="pl-tag ready">READY ON LIMIT</span> Buy limit <b>₹${fmt(limitPlan.price)}</b></div>
-      <div class="tp-limit-sub">Every check passes except price: do not buy at the market (₹${fmt(price)}, R:R ${rrNum ? rrNum.toFixed(2) : '--'}). A buy limit at ₹${fmt(limitPlan.price)} - between today's price and the ${escHtml(strategyPlan.setupName)} level ${fmt(limitPlan.zone)} - gives R:R ${limitPlan.rr.toFixed(2)} with SL ${fmt(limitPlan.stop)} and T1 ${fmt(limitPlan.target)}. It fills only if price comes back; cancel it if price closes below the SL first, or if results are announced before it fills. Then sell all at 2R or at the close of day 15 (the tested exit).</div>
     </div>` : ''}
     <div class="tp-decision ${decisionClass}">
       <div class="tp-decision-top">
@@ -6759,6 +6265,7 @@ async function tabOverview(sym) {
         </div>
       </div>
 
+      ${scores ? `<div data-scores="${escHtml(sym)}">${stockScoresHtml(scores, scoreCtx)}</div>` : ''}
       <div class="tp-grid tp-exec-grid">
         ${activeTradeAllowed ? `
         ${planItem('Stop Loss', fmt(activeStopLoss), 'Active Strategy SL', 'stop-loss plan-stop')}
@@ -6834,10 +6341,8 @@ async function tabAnalysis(sym) {
     if(!live()) return;
     /* v17 fix: do not rewrite tc.innerHTML after tabStrategy starts loading the option result.
        Rewriting detached #opt-result and left the visible options builder stuck on loading. */
-    /* Nifty: the user's credit-spread rule above the builder, filled in when the (cached) chain answers. */
-    const slot = sym === 'NSE:NIFTY' ? '<div data-rule-slot><div class="idea-card"><div class="idea-kicker">Your credit-spread rule · Nifty</div><div class="idea-foot">Checking the live option chain…</div></div></div>' : '';
-    tc.insertAdjacentHTML('afterbegin', btnBar + slot);
-    if(slot) buildIndexOptionsIdea(sym).then(ix => { const el = tc.querySelector('[data-rule-slot]'); if(el && live() && CUR_SYM === sym) el.outerHTML = creditRuleHtml(ix) + weeklySellHtml(ix); }).catch(() => {});
+    /* The Nifty rule cards (credit-spread rule, weekly sells) are on Market Pulse only - they used to repeat here. */
+    tc.insertAdjacentHTML('afterbegin', btnBar);
     return;
   }
 
@@ -6907,18 +6412,7 @@ async function switchMarketInfo(view) {
 }
 
 /* Override tabSectors/Calendar to prepend the button bar */
-const _origTabSectors  = tabSectors;
-const _origTabCalendar = tabCalendar;
 
-async function tabSectorsWrapped() {
-  await _origTabSectors();
-  const tc=document.getElementById('tc');
-  if(tc&&!tc.querySelector('.analysis-bar')){
-    const views=[{id:'sectors',label:'🗺 Sectors'},{id:'calendar',label:'📅 Calendar'}];
-    const bar=`<div class="analysis-bar">${views.map(v=>`<button class="anl-btn${tabMarketInfo._view===v.id?' active':''}" onclick="switchMarketInfo('${v.id}')">${v.label}</button>`).join('')}</div>`;
-    tc.innerHTML=bar+tc.innerHTML;
-  }
-}
 
 /* ── TRADE GATE CHECK — replaces useless NSE Open notification ── */
 const TRADE_GATE_STATE_KEY = 'td_trade_gate_last_run_date';

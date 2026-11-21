@@ -5,7 +5,7 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '20 Nov 2026 · 7';
+const TD_UI_VERSION = '21 Nov 2026 · 3';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
 
 
@@ -91,7 +91,9 @@ function verdictBarHtml(v){
   if(!v) return '';
   const miss = (v.reasons || []).length, cls = v.action === 'READY' ? 'bull' : v.action === 'CONFIRM' ? 'neutral' : 'bear';
   return `<button type="button" class="td-verdict ${cls}" onclick="tdToggleDetails()" aria-label="Show or hide the decision details">
-    <b>${escHtml(v.action || '')}</b><span>${v.rr ? `R:R ${(+v.rr).toFixed(2)} · ` : ''}Score ${escHtml(String(v.score ?? '--'))}${miss ? ` · ${miss} check${miss > 1 ? 's' : ''} missing` : ''}</span><i>▾</i></button>`;
+    <b>${escHtml(v.action || '')}</b><span>${v.gateV2
+      ? `${escHtml(v.action === 'READY' ? v.setup || 'Tested signal' : 'No tested signal')}${v.fresh != null ? ` · Fresh ${v.fresh} · Hold ${v.hold}` : ''}`   /* stocks: the tested gate and the two scores (21 Nov 2026) */
+      : `${v.rr ? `R:R ${(+v.rr).toFixed(2)} · ` : ''}Score ${escHtml(String(v.score ?? '--'))}${miss ? ` · ${miss} check${miss > 1 ? 's' : ''} missing` : ''}`}</span><i>▾</i></button>`;
 }
 function tdToggleDetails(){
   const d = document.querySelector('#tc .tp-decision'); if(!d) return;

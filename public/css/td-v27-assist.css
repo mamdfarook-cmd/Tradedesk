@@ -153,3 +153,48 @@
 .tq-cell em{font-style:normal;font-size:.68rem;color:var(--tx3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 @media(max-width:820px){.tq-strip{grid-template-columns:repeat(2,minmax(0,1fr))}.tq-strip .tq-cell:last-child{grid-column:1/-1}}
 .ind-more{margin:12px 0 4px}
+
+/* Fresh / Hold scores (21 Nov 2026) */
+.sc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:10px 0 6px}
+.sc-tile{border:1px solid var(--brd);border-radius:12px;padding:9px 12px;background:var(--bgc);display:flex;flex-direction:column;gap:2px;min-width:0}
+.sc-tile span{font-size:.64rem;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:var(--tx3)}
+.sc-tile b{font-size:1.35rem;font-weight:900;font-variant-numeric:tabular-nums}
+.sc-tile b small{font-size:.7rem;color:var(--tx3);font-weight:700;margin-left:2px}
+.sc-tile em{font-style:normal;font-size:.7rem;color:var(--tx2)}
+.sc-tile.bull{border-color:rgba(76,175,80,.5)} .sc-tile.bull b{color:var(--bull)}
+.sc-tile.neutral b{color:var(--neu)} .sc-tile.bear{border-color:rgba(244,67,54,.45)} .sc-tile.bear b{color:var(--bear)}
+.sc-cols{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+.sc-h{font-size:.68rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3);margin:6px 0 4px}
+.sc-rows{list-style:none;margin:0;padding:0;display:grid;gap:4px;font-size:.74rem}
+.sc-rows li{display:grid;grid-template-columns:1fr auto;gap:0 8px;padding:4px 0;border-bottom:1px solid var(--brd)}
+.sc-rows li span{font-variant-numeric:tabular-nums;font-weight:800}
+.sc-rows li em{grid-column:1/-1;font-style:normal;color:var(--tx3);font-size:.68rem}
+.sc-rows li.ok span{color:var(--bull)} .sc-rows li.part span{color:var(--neu)} .sc-rows li.bad span{color:var(--bear)} .sc-rows li.na span{color:var(--tx3)}
+.sc-chip{display:inline-block;margin-left:6px;padding:1px 7px;border:1px solid var(--brd);border-radius:999px;font-size:.68rem;font-weight:800;color:var(--tx2)}
+.mb-fold{margin:0 0 12px}
+@media(max-width:820px){.sc-cols{grid-template-columns:1fr}}
+
+/* Track record tables scroll sideways on a phone (a phone rule hid their overflow - 21 Nov 2026) */
+.ft-wrap{max-width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+.ft-wrap>.ft-table,.j-table-wrap>.ft-table{display:table!important;max-width:none!important;overflow:visible!important}
+@media(max-width:820px){.ft-wrap>.ft-table,.j-table-wrap>.ft-table{white-space:nowrap!important}.ft-wrap>.ft-table td,.ft-wrap>.ft-table th{white-space:nowrap}}
+
+/* Compact support / resistance and Fibonacci (21 Nov 2026) */
+.srx{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:0 0 8px}
+.srx-col{background:var(--bgc);border:1px solid var(--brd);border-radius:12px;padding:8px 10px;min-width:0}
+.srx-h{font-size:.64rem;font-weight:900;letter-spacing:.1em;text-transform:uppercase;color:var(--tx3);margin-bottom:4px}
+.srx-row{display:grid;grid-template-columns:auto auto 1fr;gap:0 8px;align-items:baseline;padding:3px 0;border-top:1px solid var(--brd);font-size:.78rem}
+.srx-row:first-of-type{border-top:0}
+.srx-row b{font-variant-numeric:tabular-nums}.srx-row span{color:var(--tx2);font-variant-numeric:tabular-nums;font-size:.72rem}
+.srx-row em{font-style:normal;color:var(--tx3);font-size:.68rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;text-align:right}
+.srx-row.near b{color:var(--acc)!important}.srx-none{font-size:.74rem;color:var(--tx3)}
+.fbx{background:var(--bgc);border:1px solid var(--brd);border-radius:12px;padding:10px 12px;margin:0 0 8px}
+.fbx-bar{display:grid;grid-template-columns:auto 1fr auto;gap:8px;align-items:center;font-size:.68rem;color:var(--tx3);font-variant-numeric:tabular-nums}
+.fbx-bar>div{position:relative;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--bull),var(--neu),var(--bear));opacity:.75}
+.fbx-bar i{position:absolute;top:-4px;width:3px;height:14px;margin-left:-1px;border-radius:2px;background:var(--acc)}
+.fbx-chips{display:flex;flex-wrap:wrap;gap:5px;margin-top:8px}
+.fbx-chips span{border:1px solid var(--brd);border-radius:999px;padding:2px 8px;font-size:.7rem;font-variant-numeric:tabular-nums;color:var(--tx2)}
+.fbx-chips span b{margin-right:4px;color:var(--tx3);font-weight:800}
+.fbx-chips span.sup{border-color:rgba(76,175,80,.45)}.fbx-chips span.res{border-color:rgba(244,67,54,.4)}.fbx-chips span.near{border-color:var(--acc);color:var(--acc)}
+.fbx-note{margin-top:6px;font-size:.7rem;color:var(--tx3)}
+@media(max-width:520px){.srx{grid-template-columns:1fr}}

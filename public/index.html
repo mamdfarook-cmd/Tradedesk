@@ -17,16 +17,8 @@
   <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png">
   <meta name="apple-mobile-web-app-title" content="TradeDesk">
   <title>TradeDesk v1.0 — Live Indian Market</title>
-  <link rel="stylesheet" href="/css/base.css">
-
-
-<!-- v23 bottom tab slight lower: visual-only, keeps hit area and content clearance -->
-<link rel="stylesheet" href="/css/td-v23-bottom-tab-slight-lower.css">
-
-
-
-<!-- v24 professional trading terminal visual refresh: desktop only, CSS only, no mobile layout impact -->
-<link rel="stylesheet" href="/css/td-v24-professional-desktop-ui.css">
+  <!-- all stylesheets in one file, built by the server in the original order (server.js PAGE_CSS) -->
+  <link rel="stylesheet" href="/css/bundle.css">
 
 </head>
 <body class="td-index-mode">
@@ -115,46 +107,9 @@
   </div>
 </main>
 
-<!-- Shared swing-plan engine (same file the server uses for the screener) -->
-<script src="/swing-plan.js"></script>
-<script src="/js/app.js"></script>
-<script src="/js/td-journal.js"></script>
-<script src="/js/td-trace.js"></script>
-<script src="/js/td-ui.js"></script>
+<!-- all scripts in one deferred file, built by the server in the original order (server.js PAGE_JS) -->
+<script src="/js/bundle.js" defer></script>
 
-
-<!-- Real tab-mode + market compact fix: UI/routing only, no trading calculations changed -->
-<link rel="stylesheet" href="/css/td-screener-context.css">
-<link rel="stylesheet" href="/css/td-real-tab-mode-fix.css">
-<script src="/js/td-real-tab-mode-fix-js.js"></script>
-
-
-
-<!-- Bottom tab default-mode repair: UI only, no calculation changes -->
-<link rel="stylesheet" href="/css/td-bottom-default-fix.css">
-<script src="/js/td-bottom-default-fix-js.js"></script>
-
-
-
-<link rel="stylesheet" href="/css/td-polish-v7.css">
-<!-- Scroll + overlap fix only: CSS only, no logic/calculation changes -->
-<link rel="stylesheet" href="/css/td-scroll-overlap-fix-only.css">
-
-
-<!-- Bottom tab small lift + iPhone search zoom fix -->
-<link rel="stylesheet" href="/css/td-bottom-tab-small-lift-ios-fix.css">
-
-<!-- Final Markets top-nav repair: always show compact Global Market Snapshot in Markets view -->
-<script src="/js/td-final-market-snapshot-fix.js"></script>
-
-
-<link rel="stylesheet" href="/css/td-v25-quiet-terminal.css">
-<link rel="stylesheet" href="/css/td-v26-market-gradient.css">
-<link rel="stylesheet" href="/css/td-v24b.css">
 </body>
 </html>
 
-<!-- Final uniform mobile picker fix: Indices + MCX use the same compact two-column picker style as Global Markets -->
-<link rel="stylesheet" href="/css/td-final-uniform-picker-fix.css">
-<link rel="stylesheet" href="/css/td-ui-polish.css">
-<link rel="stylesheet" href="/css/td-v27-assist.css">

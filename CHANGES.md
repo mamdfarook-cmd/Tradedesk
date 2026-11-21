@@ -1,3 +1,62 @@
+# Final check before upload: plans matched to the backtests, review fixes (21 Nov 2026 · page version 21 Nov 2026 · 3)
+
+- Nifty bull put matched to its backtest. The app's own rule, sold at the close of the first trading day after a
+  weekly expiry and held to expiry: 127 trades, 95% wins, +Rs 363 a lot, 8 of 8 years. The app used to alert any day
+  at 10:00 with a 2x-credit stop (+Rs 27 a lot, 4 of 8 years) and the Track record closed at 80% (-Rs 64). Now all
+  three Nifty strategies come in one 15:05 alert on the entry day (a 10:00 reminder that day if Zerodha is not
+  connected, a retry until 15:25), the bull put is held to expiry (max loss = width - credit) and its Track record row
+  is settled at expiry. My trades counts a spread's risk as width - credit.
+- Track record: READY-gate rows keep the gate's own stop and 2R (they were rebuilt with the old engine's stop); a day
+  that touches both the stop and 2R counts as the stop, as in the backtest.
+- Screener scan: today's volume was scaled up to a full day twice (about 25% too high at 15:00), so a weak gap-up or
+  breakout could pass the 2x / 1.5x volume rule - fixed. The 15:00 alert runs on a scan from 15:00 or later, and a
+  signal is alerted and recorded once (not again the next day as "yesterday's").
+- MCX contract roll: a roll changes the history only after it is seen twice 10+ minutes apart, and is dropped if a later
+  answer shows no gap (one bad Yahoo previous close could otherwise rescale 40 days of bars).
+- Fixes: Nifty page error (LAST_IDX_IDEA), phone summary bar showed the old score ("Score 32 · 5 checks missing") -
+  now the tested signal and the two scores; unknown sector / no news no longer lower the scores; READY beyond the top
+  10 keeps a READY tag; the strangle alert names the side that was hit; brief / gold texts updated.
+- Removed: /api/screener-explain (explained the old READY), the old 10:00 Nifty job and two unused helpers.
+- Checked: backtest parity (READY 449/449, 20-day breakout 2,126/2,126, trend sell 281/281, strangle 404/404, MCX
+  buy-only 59% / 59% / 57%), every API endpoint, the scheduled-job texts, ESLint no-undef on the page bundle and the
+  server, and every page at 375 px and desktop width (no errors, no overflow, no undefined / NaN).
+
+# 20-day breakout list, compact S/R and Fibonacci, faster first load, cleanup (21 Nov 2026 · page version 21 Nov 2026 · 2)
+
+- New separate list "20-day breakouts" (not READY, like Pattern breakouts): first close above the 20-day high on 1.5x
+  volume, close > EMA50 > EMA200, higher highs & lows, within 10% of the 52-week high, beating Nifty over 3 months;
+  stop 0.25 ATR under the 5-day low, sell all at 2R or the close of day 15. Backtest: 474 trades, 51% wins, +0.12R,
+  8 of 10 years. The app's rule reproduces all 2,126 backtest signals with the same stops. Screener list, Overview
+  card, alerts (yesterday's-close signals at any scan, today's at 15:00), Track record row, Fresh score.
+- Analysis: support / resistance shows the nearest 3 levels above and below in two columns; Fibonacci is one strip
+  (52-week range bar and the seven levels); the full lists are folded.
+- Option Builder no longer repeats the Nifty rule cards (they are on Market Pulse). The idea builder behind them
+  no longer works out the old "Today's options idea" (iron condor / calendar), so it makes one option-chain request
+  fewer and does not wait for India VIX.
+- Faster first load (Lighthouse on a phone: 23 render-blocking requests, ~2.2 s): the 15 stylesheets and 8 scripts
+  are served as one /css/bundle.css and one deferred /js/bundle.js, built by the server from the same files in the
+  same order, gzipped, with ETags.
+- Cleanup: about 700 lines of unused code removed - the old READY engine's leftovers (Ready on limit, the old
+  strength gate, old screener groups and alerts), the retired options-idea card and ~45 functions nothing called.
+
+# Fresh entry and Hold scores, trend matches Analysis, phone Track record (21 Nov 2026 · page version 21 Nov 2026 · 1)
+
+- Every stock's Trade plan shows a Fresh entry score and a Hold score (0-100) with the reasons folded below: entry
+  signal (READY / pattern breakout / quick bounce), Nifty uptrend, higher highs & lows, beating Nifty over 3 months,
+  the Analysis trend (1 hour -> monthly), momentum, sector (1 month), news (loaded from the News tab's feed when you
+  open the stock) and results / events. Weights from a check on every signal of the tested entries: higher highs &
+  lows helped all of them; "room to resistance" did the opposite and "near the 52-week high" was mixed, so both
+  were dropped. EMA20/50 crosses scoring 85+ made +0.25R a trade vs +0.13R at 70-84; quick bounces under 70 did
+  worse; for pattern breakouts the score made no difference (said on the card). Selling on a low Hold score did not
+  beat the plan's exit, so the exit stays stop / 2R / day 15. The screener shows the scores next to READY, pattern
+  and quick-bounce rows.
+- Overview Trend = the Analysis tab's own count (1 hour, daily, weekly, monthly) - MAXHEALTH now reads Uptrend 4/4
+  like Analysis, with a note that EMA50 is still under EMA200 right after an EMA20/50 cross.
+- "Check all vs Overview" names every stock it checked and its list (READY, Watchlist, quick bounce) - the second
+  stock in "2 of 2" was the quick bounce row.
+- Track record: tables scroll sideways on a phone (a phone rule cut off the right-hand columns).
+- Nifty Market Pulse: the market bias card is folded into one line (bias, VIX, A/D) - tap for the details.
+
 # Stock Overview in one style (20 Nov 2026 · page version 20 Nov 2026 · 7)
 
 - The stock Overview shows only the tested READY gate: a Trend box (price vs EMA50 / EMA200) and a Tested signal box

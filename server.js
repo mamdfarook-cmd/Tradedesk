@@ -498,8 +498,8 @@ function pickYahooLivePrev({ daily, intra, meta, intraMeta = null }) {
        (9 Nov 2026 was the opposite case - a wrong previousClose - and the bar is nearer there.) */
     const ip = firstValidNumber(intraMeta?.chartPreviousClose, intraMeta?.previousClose, intraMeta?.regularMarketPreviousClose);
     if (p > 0 && ip > 0 && Math.abs(ip / p - 1) > 0.005 && Math.abs(liveRaw - ip) < Math.abs(liveRaw - p))
-      return { liveRaw, prevRaw: ip, roll: { ratio: ip / p, oldPrev: p, newPrev: ip, liveBarT: lastIsLive ? +daily.T[dn - 1] : null } };
-    if (p > 0) return { liveRaw, prevRaw: p };
+      return { liveRaw, prevRaw: ip, roll: { ratio: ip / p, oldPrev: p, newPrev: ip, prevBarT: +daily.T[lastIsLive ? dn - 2 : dn - 1], liveBarT: lastIsLive ? +daily.T[dn - 1] : null } };
+    if (p > 0) return { liveRaw, prevRaw: p, prevBarT: +daily.T[lastIsLive ? dn - 2 : dn - 1] };
   }
   /* NSE / BSE: take the previous close from the bars - the last session dated BEFORE the live price's session.
      Yahoo's previousClose / chartPreviousClose for NSE indices can lag a full day (e.g. on 29 Oct night it
@@ -640,11 +640,12 @@ async function getPriceAndChange(ticker, symForBasis=null) {
 
   const marketTime = Number(dailyMeta.regularMarketTime) || null;
   const roll = picked.roll ? noteFutRoll(ticker, picked.roll, marketTime) : null;
+  if (!picked.roll && picked.prevBarT > 0) dropFutRoll(ticker, picked.prevBarT);   /* no gap now: a roll noted from a bad quote is dropped */
   /* Last few daily closes for the list's mini chart (already fetched: no extra call); old-contract bars scaled. */
   const spark = futRollAdjust(ticker, daily).C.slice(-6).map(Number).filter(v => v > 0);
   if (spark.length && liveRaw > 0) { if (sameMarketDate(daily.T?.[dn - 1], marketTime, dailyMeta.exchangeTimezoneName || 'Asia/Kolkata')) spark[spark.length - 1] = liveRaw; else spark.push(liveRaw); }
   /* Roll day: Yahoo's day open (and sometimes high / low) can still be the old contract's - 299.66 against a 339 price. */
-  const fx = v => futRollLevel(v, roll);
+  const fx = v => futRollLevel(v, roll || picked.roll);   /* today's levels: the roll seen in this answer, confirmed or not */
   return { liveRaw, prevRaw, rawChg, rawPct, todayOpen: fx(todayOpen), todayHigh: fx(todayHigh), todayLow: fx(todayLow), todayVol, changeBasis, basisTime, marketTime, spark: spark.slice(-6), roll };
 }
 
@@ -655,26 +656,35 @@ async function getPriceAndChange(ticker, symForBasis=null) {
 const FUT_ROLL_FILE = require('path').join(__dirname, 'data', 'fut-rolls.json');
 let FUT_ROLLS = {};
 try { FUT_ROLLS = JSON.parse(require('fs').readFileSync(FUT_ROLL_FILE, 'utf8')) || {}; } catch {}
+/* A roll is kept only when it is seen again 10+ minutes later with the same size (Yahoo's previous close for a future
+   can be wrong for a few minutes - NG=F on 9 Nov 2026), and dropped when a later answer shows no gap. 'at' = one second
+   after the old contract's last daily bar: every bar up to it is scaled, the roll-day bar never is. 'dayT' = a time on
+   the roll day, for the week / month the roll falls in. */
 function noteFutRoll(ticker, roll, marketTime) {
-  if (!roll || !(roll.ratio > 0)) return null;
-  const at = roll.liveBarT || (Number(marketTime) > 0 ? Number(marketTime) - 6 * 3600 : Math.floor(Date.now() / 1000));
+  if (!roll || !(roll.ratio > 0) || !(roll.prevBarT > 0)) return null;
+  const at = roll.prevBarT + 1, dayT = roll.liveBarT || (Number(marketTime) > 0 ? Number(marketTime) : Math.floor(Date.now() / 1000));
   const list = (FUT_ROLLS[ticker] || []).filter(r => Date.now() / 1000 - r.at < 40 * 86400);
-  const same = list.find(r => Math.abs(r.at - at) < 2 * 86400);
+  let same = list.find(r => r.at === at);
   if (same) {
-    if (Math.abs(same.ratio / roll.ratio - 1) < 0.002 && same.oldPrev) return same;
-    Object.assign(same, { ratio: roll.ratio, at: Math.max(same.at, at), oldPrev: roll.oldPrev || same.oldPrev || null, newPrev: roll.newPrev || same.newPrev || null });
-  }
-  else list.push({ at, ratio: roll.ratio, oldPrev: roll.oldPrev || null, newPrev: roll.newPrev || null, seen: Date.now() });
-  FUT_ROLLS[ticker] = list;
-  try { const fs = require('fs'); fs.mkdirSync(require('path').dirname(FUT_ROLL_FILE), { recursive: true }); fs.writeFileSync(FUT_ROLL_FILE, JSON.stringify(FUT_ROLLS)); } catch {}
-  return same || list[list.length - 1];
+    if (Math.abs(same.ratio / roll.ratio - 1) < 0.003) { if (!same.ok && Date.now() - same.seen >= 10 * 60e3) same.ok = true; }
+    else Object.assign(same, { ratio: roll.ratio, seen: Date.now(), ok: false });   /* a different size: start again */
+    Object.assign(same, { oldPrev: roll.oldPrev || same.oldPrev, newPrev: roll.newPrev || same.newPrev, dayT });
+  } else list.push(same = { at, dayT, ratio: roll.ratio, oldPrev: roll.oldPrev || null, newPrev: roll.newPrev || null, seen: Date.now(), ok: false });
+  FUT_ROLLS[ticker] = list; saveFutRolls();
+  return same.ok ? same : null;
 }
+function dropFutRoll(ticker, prevBarT) {
+  const list = FUT_ROLLS[ticker]; if (!list?.length) return;
+  const keep = list.filter(r => r.at !== prevBarT + 1);
+  if (keep.length !== list.length) { FUT_ROLLS[ticker] = keep; saveFutRolls(); }
+}
+function saveFutRolls() { try { const fs = require('fs'); fs.mkdirSync(require('path').dirname(FUT_ROLL_FILE), { recursive: true }); fs.writeFileSync(FUT_ROLL_FILE, JSON.stringify(FUT_ROLLS)); } catch {} }
 /* A price from the roll day: old contract if it sits nearer the old contract's previous close than the new one's. */
 function futRollLevel(v, r) {
   if (!r || !(v > 0) || !(r.oldPrev > 0) || !(r.newPrev > 0)) return v;
   return Math.abs(Math.log(v / r.oldPrev)) < Math.abs(Math.log(v / r.newPrev)) ? v * r.ratio : v;
 }
-function futRollsFor(ticker) { return (FUT_ROLLS[ticker] || []).filter(r => Date.now() / 1000 - r.at < 40 * 86400).sort((a, b) => a.at - b.at); }
+function futRollsFor(ticker) { return (FUT_ROLLS[ticker] || []).filter(r => r.ok && r.dayT > 0 && Date.now() / 1000 - r.at < 40 * 86400).sort((a, b) => a.at - b.at); }
 /* Scales the bars before each roll. kind 'intraday': the switch inside the session is found as the bar-to-bar jump
    that matches the ratio (Yahoo switched NG=F's hourly series at 08:00 UTC, not at the daily bar). kind 'week' /
    'month': bars of earlier periods are scaled; the period holding the roll keeps its close (the live, new contract)
@@ -717,7 +727,7 @@ function futRollAdjust(ticker, bars, kind = 'daily', dailyAdj = null) {
   for (const r of rolls) {
     r0 = r;
     if (period) {
-      const ck = futPeriodKey(r.at, kind);
+      const ck = futPeriodKey(r.dayT, kind);
       /* Yahoo can return two bars for the current period (yesterday's snapshot + one stamped with the live time):
          only the last one is the new contract. */
       let lastCk = -1; for (let i = 0; i < n; i++) if (futPeriodKey(out.T[i], kind) === ck) lastCk = i;
@@ -735,7 +745,7 @@ function futRollAdjust(ticker, bars, kind = 'daily', dailyAdj = null) {
     if (kind === 'intraday') {
       let best = -1, bestErr = Infinity;
       for (let i = 1; i < n; i++) {
-        if (out.T[i] < r.at - 36 * 3600 || out.T[i] > r.at + 36 * 3600 || !(out.C[i] > 0) || !(out.C[i - 1] > 0)) continue;
+        if (out.T[i] < r.at || out.T[i] > r.dayT + 24 * 3600 || !(out.C[i] > 0) || !(out.C[i - 1] > 0)) continue;
         const e = Math.abs(Math.log(out.C[i] / out.C[i - 1]) - Math.log(r.ratio));
         if (e < bestErr) { bestErr = e; best = i; }
       }
@@ -743,7 +753,7 @@ function futRollAdjust(ticker, bars, kind = 'daily', dailyAdj = null) {
     }
     for (let i = 0; i < n; i++) if (out.T[i] < cut) scale(i);
     /* The roll day's own daily bar: open / high / low may still be old-contract prices. */
-    if (kind === 'daily') for (let i = 0; i < n; i++) if (out.T[i] >= cut && out.T[i] < cut + 86400) {
+    if (kind === 'daily') for (let i = 0; i < n; i++) if (out.T[i] >= cut && out.T[i] <= r.dayT + 86400) {
       for (const k of ['O', 'H', 'L']) out[k][i] = futRollLevel(+out[k][i], r);
       out.H[i] = Math.max(out.H[i], out.O[i], out.C[i]); out.L[i] = Math.min(out.L[i], out.O[i], out.C[i]);
     }
@@ -3343,33 +3353,6 @@ function getScreenerMcapCr(ticker) {
   return SCREENER_MCAP_35K[ticker] || 0;
 }
 /* User Excel whitelist: stocks marked YES in "WHITE LIST STOCK FOR SCREENER". */
-const SCREENER_FORCE_INCLUDE = new Set([
-  'HDFCBANK.NS','SBIN.NS','BAJFINANCE.NS','LICI.NS','ADANIPOWER.NS',
-  'ITC.NS','KOTAKBANK.NS','NTPC.NS','ONGC.NS','BEL.NS',
-  'COALINDIA.NS','POWERGRID.NS','HINDZINC.NS','TATASTEEL.NS','ETERNAL.NS',
-  'HINDALCO.NS','SHRIRAMFIN.NS','WIPRO.NS','IOC.NS','VBL.NS',
-  'JIOFIN.NS','DLF.NS','PFC.NS','BHEL.NS','TMCV.NS',
-  'MOTHERSON.NS','BANKBARODA.NS','TMPV.NS','TATAPOWER.NS','VEDL.NS',
-  'HDFCLIFE.NS','CGPOWER.NS','TATACAP.NS','IRFC.NS','BPCL.NS',
-  'UNIONBANK.NS','GROWW.NS','PNB.NS','CANBK.NS','INDUSTOWER.NS',
-  'INDIANB.NS','MARICO.NS','AMBUJACEM.NS','GODREJCP.NS','MAXHEALTH.NS',
-  'GAIL.NS','ZYDUSLIFE.NS','GMRAIRPORT.NS','JSWENERGY.NS','INDHOTEL.NS',
-  'ABCAPITAL.NS','NTPCGREEN.NS','LODHA.NS','ASHOKLEY.NS','MEESHO.NS',
-  'RECLTD.NS','LENSKART.NS','SAIL.NS','OIL.NS','DABUR.NS',
-  'NHPC.NS','IDBI.NS','HINDPETRO.NS','NMDC.NS','NYKAA.NS',
-  'ICICIPRULI.NS','NATIONALUM.NS','AUBANK.NS','FORTIS.NS','SWIGGY.NS',
-  'FEDERALBNK.NS','BAJAJHFL.NS','INDUSINDBK.NS','LTF.NS','BIOCON.NS',
-  'NAM-INDIA.NS','ATGL.NS','GICRE.NS','BANKINDIA.NS','JSL.NS',
-  'UNOMINDA.NS','NAUKRI.NS','MAHABANK.NS','SBICARD.NS','BERGEPAINT.NS',
-  'VMM.NS','RVNL.NS','FACT.NS','HDBFS.NS','JSWINFRA.NS',
-  'HINDCOPPER.NS','UPL.NS','KRT.BO','MOTILALOFS.NS','PATANJALI.NS',
-  'ALTIUSINVIT.BO','NLCINDIA.NS','PREMIERENE.NS','360ONE.NS','M&MFIN.NS',
-  'ANTHEM.NS','IRCTC.NS','AIIL.NS','EMBASSY.NS','HUDCO.NS',
-  'PETRONET.NS','ASTERDM.NS','CONCOR.NS','SONACOMS.NS','IREDA.NS',
-  'POONAWALLA.NS','KALYANKJIL.NS','ATHERENERG.NS','DELHIVERY.NS','TATAINVEST.NS',
-  'KPRMILL.NS','PWL.NS','ITCHOTELS.NS','HEXT.NS','JUBLFOOD.NS',
-  'MINDSPACE.BO','NHIT.BO','BANDHANBNK.NS','STARHEALTH.NS','ABSLAMC.NS',
-]);
 function isScreenerMcapEligible(ticker) {
   /* Live Ready/Watchlist screener uses one simple universe rule only:
      market cap above the configured minimum. The old force-include list is kept
@@ -3486,26 +3469,6 @@ function screenerEligibleUniverseS() {
   /* De-dupe first so aliases/duplicates cannot distort screener counts. */
   return uniqueTickersS(TOP250_TICKERS).filter(isScreenerMcapEligible);
 }
-function stockWeekAlertFromStrategyS(strategyScores) {
-  const strategies = [
-    strategyScores?.emaPullback,
-    strategyScores?.ema50DeepPullback,
-    strategyScores?.supportBounce,
-    strategyScores?.breakoutVolume,
-    strategyScores?.momentumContinuation,
-  ].filter(Boolean);
-  const active = strategies
-    .filter(x => x.active === true && (x.action === 'READY' || x.action === 'CONFIRM'))
-    .sort((a,b) => (+b.score || 0) - (+a.score || 0))[0] || null;
-  const best = active || strategyScores?.best || strategies.sort((a,b)=>(+b.score || 0)-(+a.score || 0))[0] || null;
-  return {
-    buyAlert: !!active,
-    alertAction: active?.action || 'WATCH',
-    alertSetup: best?.name || 'No active setup',
-    alertScore: Number.isFinite(+best?.score) ? Math.round(+best.score) : null,
-    alertReason: active ? 'Strategy gate passed' : 'Legacy base screen passed, but no strategy gate is READY/CONFIRM',
-  };
-}
 
 /* ── Screener indicator math (server-side, mirrors frontend) ── */
 function emaS(arr, period) {
@@ -3566,7 +3529,6 @@ function macdS(C) {
 /* ── Qualified Screener scoring helpers — mirrors the website Swing Decision logic without AI calls ── */
 function clampNum(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
 function sigClassScore(c) { return ({'strong-bull':2,bull:1,neutral:0,bear:-1,'strong-bear':-2,na:0}[c] ?? 0); }
-function sigRecS(v) { if(v==null) return {c:'na'}; if(v>=.5) return {c:'strong-bull'}; if(v>=.1) return {c:'bull'}; if(v>-.1) return {c:'neutral'}; if(v>-.5) return {c:'bear'}; return {c:'strong-bear'}; }
 function sigRsiClass(v){ if(v==null) return {c:'na'}; if(v>=80) return {c:'strong-bear'}; if(v>=70) return {c:'bear'}; if(v<=20) return {c:'strong-bull'}; if(v<=30) return {c:'bull'}; return v>50?{c:'bull'}:{c:'bear'}; }
 function sigMacdClass(m){ if(!m) return {c:'na'}; if(m.hist>0) return {c:m.macd>0?'bull':'neutral'}; return {c:m.macd<0?'bear':'neutral'}; }
 function sigEmaClass(price,e20,e50,e200){
@@ -3637,37 +3599,6 @@ function atrS(C,H,L,p=14){
   for(let i=p;i<tr.length;i++) atr=(atr*(p-1)+tr[i])/p;
   return atr || Math.max((C[C.length-1]||1)*0.015, 1);
 }
-function swingRRS({bias, price, e20, e50, r1, r2, s1, s2, C, H, L, atr}){
-  const valid=v=>Number.isFinite(+v)&&+v>0;
-  const recentHigh=Math.max(...H.slice(Math.max(0,H.length-21), Math.max(0,H.length-1)).filter(valid), 0);
-  const lows=L.slice(Math.max(0,L.length-21), Math.max(0,L.length-1)).filter(valid);
-  const recentLow=lows.length?Math.min(...lows):0;
-  const minReward=Math.max(atr*0.75, price*0.008);
-  if(bias==='Bullish'){
-    /* Stop = nearest structure that is at least 0.75 ATR below price, minus a 0.25 ATR buffer (same idea as
-       the Strategy-tab cards). The old rule put the stop ON the closest level (often EMA20 just under price),
-       which normal noise hits and which inflated screener RR versus the Overview plan. */
-    const stopCandidates=[s1,s2,e20,e50,recentLow].filter(v=>valid(v)&&+v<=price-atr*0.75).map(Number).sort((a,b)=>b-a);
-    const stop=stopCandidates.length ? stopCandidates[0]-atr*0.25 : price-atr*1.5;
-    const risk=Math.max(price-stop, atr*0.75);
-    const targets=[r1,r2,recentHigh,price+atr*2].filter(v=>valid(v)&&+v>price).map(Number);
-    const meaningful=targets.filter(v=>v-price>=minReward).sort((a,b)=>a-b);
-    const target=meaningful[0] || (targets.length?Math.max(...targets):price+atr*1.5);
-    const reward=Math.max(target-price,0);
-    return {rr:risk>0&&reward>0?+(reward/risk).toFixed(2):0, stop, target, stopAtr:+(risk/atr).toFixed(2)};
-  }
-  if(bias==='Bearish'){
-    const stopCandidates=[r1,r2,e20,e50,recentHigh].filter(v=>valid(v)&&+v>=price+atr*0.75).map(Number).sort((a,b)=>a-b);
-    const stop=stopCandidates.length ? stopCandidates[0]+atr*0.25 : price+atr*1.5;
-    const risk=Math.max(stop-price, atr*0.75);
-    const targets=[s1,s2,recentLow,price-atr*2].filter(v=>valid(v)&&+v<price).map(Number);
-    const meaningful=targets.filter(v=>price-v>=minReward).sort((a,b)=>b-a);
-    const target=meaningful[0] || (targets.length?Math.min(...targets):price-atr*1.5);
-    const reward=Math.max(price-target,0);
-    return {rr:risk>0&&reward>0?+(reward/risk).toFixed(2):0, stop, target, stopAtr:+(risk/atr).toFixed(2)};
-  }
-  return {rr:0, stop:null, target:null, stopAtr:null};
-}
 
 /* ── Independent 4-strategy scoring modules ──
    These modules READ the already-calculated EMA, RSI, MACD, ATR and S/R values.
@@ -3676,36 +3607,7 @@ function pctDistS(a, b) {
   a = Number(a); b = Number(b);
   return Number.isFinite(a) && Number.isFinite(b) && b !== 0 ? Math.abs(a - b) / Math.abs(b) * 100 : 999;
 }
-function recentHighLowS(H, L, days = 10) {
-  const valid = v => Number.isFinite(+v) && +v > 0;
-  const hs = (H || []).slice(Math.max(0, H.length - days), H.length).filter(valid).map(Number);
-  const ls = (L || []).slice(Math.max(0, L.length - days), L.length).filter(valid).map(Number);
-  return { high: hs.length ? Math.max(...hs) : null, low: ls.length ? Math.min(...ls) : null };
-}
 
-function completedSwingLevelsS(H, L) {
-  const valid = v => Number.isFinite(+v) && +v > 0;
-  const h = (H || []).map(Number).filter(valid);
-  const l = (L || []).map(Number).filter(valid);
-  /* Screener breakout/support levels must match website S&R logic:
-     R1/S1 = completed 7D high/low, R2/S2 = completed 14D high/low.
-     Exclude the latest candle so today's price can genuinely break yesterday's range. */
-  const endH = Math.max(0, h.length - 1);
-  const endL = Math.max(0, l.length - 1);
-  const hi = (arr, days, end) => {
-    const x = arr.slice(Math.max(0, end - days), end);
-    return x.length ? Math.max(...x) : null;
-  };
-  const lo = (arr, days, end) => {
-    const x = arr.slice(Math.max(0, end - days), end);
-    return x.length ? Math.min(...x) : null;
-  };
-  return {
-    r1: hi(h, 7, endH),  s1: lo(l, 7, endL),
-    r2: hi(h, 14, endH), s2: lo(l, 14, endL),
-    r3: hi(h, 21, endH), s3: lo(l, 21, endL),
-  };
-}
 
 function rrLongS(price, stop, target) {
   price = Number(price); stop = Number(stop); target = Number(target);
@@ -4101,15 +4003,8 @@ function scanPredatesCloseS(at) {
   return n.d !== s.d || n.m >= 930;
 }
 
-function softScreenerGateReasonsS(reasons) {
-  /* Final alignment fix: Screener Match must not be presented as final trade confirmation.
-     Earlier versions ignored RSI/ADX/late-entry warnings here, so Screener could show READY
-     while Overview showed CONFIRM/WAIT. Now every selected-strategy gate reason blocks READY. */
-  return (reasons || []).filter(Boolean);
-}
 
 /* Setups that can be shown and alerted on, but are never a READY (buy-now) signal. */
-const WATCH_ONLY_SETUPS = new Set(['Pre-Breakout Watch', 'Momentum Continuation']);   /* = SwingPlan.WATCH_ONLY */
 /* Same wording as the Overview's Ready Gate. */
 const NIFTY_TREND_WHY = 'Nifty not in an uptrend (needs Nifty above its EMA50 and EMA20 above EMA50) - no fresh swing longs';
 /* Daily bars that are complete: today's bar is still forming between 09:15 and 15:35 IST (same rule as the
@@ -4119,97 +4014,11 @@ function completedLenS(T) {
   const { m, key } = istNowParts();
   return istDateKeyS(T[n - 1]) === key && m >= 9 * 60 + 15 && m < 15 * 60 + 35 ? n - 1 : n;
 }
-function selectedFromStrategyS(x) {
-  const reasons = x?.readyGate?.reasons || [];
-  return { name: x.name, score: Math.round(+x.score || 0), action: WATCH_ONLY_SETUPS.has(x.name) ? 'WATCH' : (x.readyGate?.passed ? (x.action === 'READY' || +x.score >= 80 ? 'READY' : 'CONFIRM') : 'WATCH'),
-    gatePassed: !!x.readyGate?.passed && Math.round(+x.score || 0) >= 70, gateReasons: reasons, hardGateReasons: reasons, softGateOnly: false };
-}
-function bestReadyStrategyS(strategyScores) {
-  /* Screener qualification now includes pullback/bounce plus the missing swing modules:
-     Pre-Breakout Watch, Breakout with Volume, and Momentum Continuation. */
-  const list = [
-    strategyScores?.emaPullback,
-    strategyScores?.ema50DeepPullback,
-    strategyScores?.supportBounce,
-    strategyScores?.preBreakoutWatch,
-    strategyScores?.breakoutVolume,
-    strategyScores?.momentumContinuation,
-  ].filter(Boolean);
-
-  const enriched = list.map(x => {
-    const reasons = x?.readyGate?.reasons || [];
-    const hardReasons = softScreenerGateReasonsS(reasons);
-    const score = Math.round(+x.score || 0);
-    const overviewAlignedPass = Number.isFinite(score) && score >= 70 && hardReasons.length === 0;
-    return {
-      raw:x,
-      score,
-      reasons,
-      hardReasons,
-      overviewAlignedPass,
-      distancePct:Number.isFinite(+x.distancePct) ? +x.distancePct : 999,
-      rank:(overviewAlignedPass ? 1000 : 0) + score
-    };
-  });
-
-  const byActiveDistanceThenScore = (a,b) => {
-    if(a.overviewAlignedPass !== b.overviewAlignedPass) return (b.overviewAlignedPass?1:0) - (a.overviewAlignedPass?1:0);
-    if(Math.abs(a.distancePct-b.distancePct) > 0.15) return a.distancePct-b.distancePct;
-    return b.score-a.score;
-  };
-  const active = enriched
-    .filter(x => x.overviewAlignedPass)
-    .sort(byActiveDistanceThenScore)[0] || null;
-  const bestWrap = active || enriched.sort(byActiveDistanceThenScore)[0] || null;
-  if (!bestWrap) return null;
-  const best = bestWrap.raw;
-  return {
-    name: best.name || 'Strategy setup',
-    score: bestWrap.score,
-    action: active ? (WATCH_ONLY_SETUPS.has(best.name) ? 'WATCH' : (best.action === 'READY' ? 'READY' : (bestWrap.score >= 80 ? 'READY' : 'CONFIRM'))) : 'WATCH',
-    gatePassed: !!active,
-    gateReasons: bestWrap.reasons,
-    hardGateReasons: bestWrap.hardReasons,
-    softGateOnly: !!active && bestWrap.reasons.length > 0 && bestWrap.hardReasons.length === 0
-  };
-}
 
 /* The stock-level READY checks, in one place: the live scan and the backtest call this, so the backtest
    measures exactly the rules the screener applies. Results dates and the sector-strength gate are applied by
    the caller (the backtest has no historical results calendar). */
-const LIMIT_FIXABLE = new Set(['RR below 1.25', 'Late from EMA20']);
-function readyChecksS(m, T, C) {
-  const pickedObj = m.picked ? m.strategyScores[SETUP_KEY[m.picked]] : null;
-  const selected = pickedObj ? selectedFromStrategyS(pickedObj) : bestReadyStrategyS(m.strategyScores);
-  const wk = SwingPlan.weeklyTrend(T, C);
-  const weeklyOk = !wk || wk.up;   /* weekly close above a rising 20-week EMA */
-  const volOk = m.picked ? SwingPlan.setupVolumeOk(m.picked, m.volRatio, m.pv) : false;   /* pullback: bounce-day volume; breakout: 1.1x */
-  const baseTrendOk = !!(m.price > m.e200 && m.e50 > m.e200);
-  const readyCore = !!(baseTrendOk && m.picked && !SwingPlan.WATCH_ONLY.has(m.picked) &&
-    selected && selected.gatePassed && selected.score >= 70 && m.decisionScore >= 70 && m.rrBull >= 1.25 &&
-    volOk && !m.highSellingVolume && weeklyOk);
-  /* Ready on limit: a pullback that fails only on price (R:R, late from EMA20); everything else as READY. */
-  const limitCore = !!(m.limit && !readyCore && baseTrendOk && selected && selected.score >= 70 &&
-    (selected.gateReasons || []).length && (selected.gateReasons || []).every(r => LIMIT_FIXABLE.has(r)) &&
-    m.decisionScoreAtLimit >= 70 && volOk && !m.highSellingVolume && weeklyOk);
-  return { selected, wk, weeklyOk, volOk, baseTrendOk, readyCore, limitCore };
-}
 
-function watchReasonS({m, selected, emaGap, resistanceRoom, slRisk}) {
-  const reasons = [];
-  if (!selected || selected.score < 70) reasons.push('Needs stronger setup score');
-  if (selected?.name === 'Pre-Breakout Watch') reasons.push('Buy only after close above resistance with volume');
-  if (selected?.name === 'Momentum Continuation') reasons.push('Momentum is watch-only: wait for an EMA20 pullback or a fresh breakout');
-  if (selected && !selected.gatePassed) reasons.push((selected.gateReasons || [])[0] || 'Ready gate not passed');
-  if (m.volRatio < 0.8) reasons.push('Needs volume');
-  if (m.rrBull < 1.25 && !reasons.some(r => /^RR /i.test(r))) reasons.push('RR not enough');
-  if (emaGap > 8) reasons.push('Entry late from EMA20');
-  if (emaGap < -2) reasons.push('Below EMA20');
-  if (Number.isFinite(resistanceRoom) && resistanceRoom < 2) reasons.push('Too close to resistance');
-  if (Number.isFinite(slRisk) && slRisk > 8) reasons.push('SL risk high');
-  if (m.rsi < 48) reasons.push('RSI still weak');
-  return reasons.slice(0,3).join(' · ') || 'Near-ready watchlist candidate';
-}
 
 function screenerCardPayloadS({ticker, m, selected, status, reason, rankScore, emaGap, resistanceRoom, slRisk}) {
   const sym = ticker.replace(/\.(NS|BO)$/,''); /* .BO trusts are opened as NSE:SYM (mapped back to .BO) */
@@ -4558,31 +4367,6 @@ async function apiMyTradeScreener(req, res) {
 }
 
 /* One line: what exactly has to happen (and at what price) for this stock to become READY. */
-function triggerTextS({ m, rs, rsOk, volOk, weeklyOk, wk, readyCore, selected }) {
-  const f = v => Number.isFinite(+v) ? '₹' + (+v).toLocaleString('en-IN', { maximumFractionDigits: 2 }) : '--';
-  if (readyCore) return 'All stock checks pass';
-  const p = m.picked, plan = m.plan;
-  if (!weeklyOk && wk) return wk.close <= wk.ema20 ? `Weekly close needs to get back above the 20-week EMA ${f(wk.ema20)}` : `Weekly trend needs the 10-week EMA (${f(wk.ema10)}) back above the 20-week EMA (${f(wk.ema20)})`;
-  if (!p) return `No setup in play: wait for a pullback to EMA20 ${f(m.e20)} or a close above ${f(m.r1)} on 1.1x+ volume`;
-  if (p === 'Pre-Breakout Watch') return `Alert: buy only on a close above ${f(plan?.entry)} with 1.1x+ volume`;
-  if (p === 'Momentum Continuation') return `Alert only: wait for a pullback to EMA20 ${f(m.e20)}`;
-  if (m.highSellingVolume) return 'High-volume red day: wait for the selling to stop';
-  if (!volOk) {
-    if (p === 'Breakout with Volume') return `Above ${f(plan?.entry)}: the close needs 1.1x+ volume (now ${(+m.volRatio || 0).toFixed(2)}x)`;
-    if (m.pv?.heavyPullback) return `Heavy selling into the pullback (${m.pv.dryRatio}x): wait for volume to dry up`;
-    const lvl = p === 'EMA20 Pullback' ? 'EMA20' : p === 'EMA50 Deep Pullback' ? 'EMA50' : 'support';
-    return `Needs a green close above ${lvl} ${f(plan?.entry)} on 1.0x+ volume (now ${(+m.pv?.todayRatio || 0).toFixed(2)}x)`;
-  }
-  if (!(m.rrBull >= 1.25) && plan && Number.isFinite(+plan.stop) && Number.isFinite(+plan.target)) {
-    const better = (+plan.target + 1.25 * +plan.stop) / 2.25;   /* price where R:R = 1.25 */
-    return better < m.price ? `R:R ${(+m.rrBull || 0).toFixed(2)}: buy nearer ${f(better)} (R:R 1.25 there)` : `R:R ${(+m.rrBull || 0).toFixed(2)} is below 1.25`;
-  }
-  if (!rsOk) return `Needs to outperform Nifty (3M RS ${Number.isFinite(rs.rs3m) ? rs.rs3m + '%' : 'n/a'})`;
-  const g = selected?.readyGate?.reasons?.[0];
-  if (g) return g;
-  if (!(m.decisionScore >= 70)) return `Score ${m.decisionScore}/100 needs 70`;
-  return 'Needs one more confirmation';
-}
 
 /* Per-stock outcome of the last scan (every eligible stock, not just the top 20) - for /api/screener-diag. */
 async function runMyTradeScreenerScan() {
@@ -4615,7 +4399,7 @@ async function runMyTradeScreenerScan() {
   let biasEligibleCount = 0;
   const ready = [];
   const watch = [];
-  const quickCands = [], patternCands = [];
+  const quickCands = [], patternCands = [], bo20Cands = [];
 
   for (let i = 0; i < universe.length; i += BATCH) {
     if (Date.now() - startedAt > maxScanMs) { timedOut = true; break; }
@@ -4665,13 +4449,20 @@ async function runMyTradeScreenerScan() {
            pullback / breakout READY (44% wins, 6 of 10 years) is no longer a READY rule. */
         const rs = SwingPlan.relStrength(C, niftyCloses);
         const nB = C.length, liveBar = completedLenS(daily.T) < nB, nearClose = istNowParts().m >= 15 * 60;
-        const vToday = liveBar ? (+V[nB - 1] || 0) / Math.max(0.25, nseSessionShare()) : null;
+        const vToday = null;   /* enrichDailyForLiveScreenerS already projected today's volume to a full day - do not do it twice */
         const D = { O: daily.O, H, L, C, V, rs3m: rs.rs3m, entry: m.price };
         const gPrev = liveBar ? SwingPlan.swingGate({ ...D, i: nB - 2 }) : null;
         const gNow = SwingPlan.swingGate({ ...D, vToday });
         const g = gPrev?.ok ? gPrev : gNow;
+        /* 20-day breakout list (separate from READY, tested 21 Nov 2026): same signal-on-a-close rule as READY. */
+        { const bPrev = liveBar ? SwingPlan.breakout20({ H, L, C, V, i: nB - 2, rs3m: rs.rs3m, entry: m.price }) : null;
+          const bNow = SwingPlan.breakout20({ H, L, C, V, rs3m: rs.rs3m, vToday, entry: m.price });
+          const bo = bPrev?.ok ? bPrev : bNow?.ok ? bNow : null;
+          if (bo) bo20Cands.push({ sym: sym0, ticker, ...bo, price: +m.price.toFixed(2), signalDay: bPrev?.ok ? 'yesterday' : 'today', signalDate: istDateKeyS(daily.T[bPrev?.ok ? nB - 2 : nB - 1]),
+            forming: !bPrev?.ok && liveBar && !nearClose, tags }); }
         if (!g) return null;
         const signalDay = gPrev?.ok ? 'yesterday' : 'today', forming = g.ok && signalDay === 'today' && liveBar && !nearClose;
+        const signalDate = istDateKeyS(daily.T[gPrev?.ok ? nB - 2 : nB - 1]);
         const nearTxt = !g.ok ? (gNow?.near || gPrev?.near || null) : null;
         if (!g.ok && !nearTxt) return null;
         const resultsInfo = resultsCheckFor(sym0, resultsCal, todayKey), resultsBlock = !!resultsInfo?.block;
@@ -4687,7 +4478,7 @@ async function runMyTradeScreenerScan() {
         const extra = {
           resultsDate: resultsInfo?.date || null, resultsTradingDays: resultsInfo ? resultsInfo.tradingDays : null, resultsBlock, resultsRecent: !!resultsInfo?.recent,
           eventBlock, eventReasons: evChk.reasons, eventNotes: evChk.notes, surveillance: evChk.surveillance, regimeBlock: false,
-          gateV2: true, signalDay, forming, gateInfo: g.info || null,
+          gateV2: true, signalDay, signalDate, forming, gateInfo: g.info || null,
           pickedSetup: g.ok ? g.setup : null, selectedStrategy: g.ok ? g.setup : 'Watch',
           plan: g.ok ? { entry: g.entry, stop: g.stop, target: g.target } : null, exit2R: g.ok ? g.target : null, rr: g.ok ? 2 : null, riskPct: g.ok ? g.riskPct : null,
           rs3m: rs.rs3m, rs6m: rs.rs6m, stock3m: rs.stock3m, nifty3m: rs.nifty3m, rsOk: Number.isFinite(rs.rs3m) && rs.rs3m > 0, tags,
@@ -4721,37 +4512,14 @@ async function runMyTradeScreenerScan() {
     .sort((a, b) => b.ret - a.ret);
   const secPos = Object.fromEntries(secRank.map((x, i) => [x.sector, { rank: i + 1, ret: x.ret, of: secRank.length, n: x.n }]));
   if (secRank.length >= 5) { SV().LAST_SECTOR_STRENGTH = { ts: Date.now(), map: secPos }; saveUniverseToDisk(); }
-  /* Strength gate (replaces the Nifty-regime hold): a long passes when its sector is up over 1 month OR the
-     stock beats Nifty over 3 months. A weak Nifty alone no longer holds a stock back - it only adds a
-     smaller-size note. */
-  const strengthWhy = x => {
-    const sec = sectorInfoFor(x.sym)?.sector, sp = sec ? secPos[sec] : null;
-    const secUp = sp ? sp.ret > 0 : null, rsUp = Number.isFinite(x.rs3m) ? x.rs3m > 0 : null;
-    if (secUp || rsUp) return '';
-    if (secUp === null && rsUp === null) return marketTrend.allowReady ? '' : `Market ${String(marketTrend.status).toLowerCase()} - ${marketTrend.note}`;
-    return [sp ? `${sec} sector down ${Math.abs(sp.ret)}% in 1 month` : 'Sector strength unknown', rsUp === null ? 'RS vs Nifty unavailable' : `lagging Nifty (3M RS ${x.rs3m}%)`].join(' and ');
-  };
+  /* The tested READY gate needs Nifty in its uptrend (as tested); its own strength rule (RS for the cross) is in the gate. */
   for (const x of ready.splice(0)) {
     if (marketTrend.trendUp === false) {
       regimeBlockedCount++;
       watch.push({ ...x, tradeStatus:'WATCH', isStrictQualified:false, regimeBlock:true, watchReason: NIFTY_TREND_WHY, confirmationNeeded: NIFTY_TREND_WHY, trigger:'Needs Nifty back above its EMA50 with EMA20 above EMA50' });
       continue;
     }
-    if (x.gateV2) { ready.push(x); continue; }   /* the tested gate already has its own strength rule (RS for the cross) */
-    const why = strengthWhy(x);
-    if (!why) {
-      if (!marketTrend.allowReady) x.marketNote = `Market ${String(marketTrend.status).toLowerCase()}: passed on sector / relative strength - use smaller size`;
-      ready.push(x); continue;
-    }
-    regimeBlockedCount++;
-    watch.push({ ...x, tradeStatus:'WATCH', isStrictQualified:false, regimeBlock:true, watchReason: why, confirmationNeeded: why, trigger: `Needs its sector up over 1 month or to outperform Nifty` });
-  }
-  for (const x of watch) {
-    /* Ready-on-limit passes the same strength gate as READY. */
-    if (x.limitReady) { const why = marketTrend.trendUp === false ? NIFTY_TREND_WHY : strengthWhy(x); if (why) { x.limitReady = false; x.rankScore -= 500; x.watchReason = `${why} · ${x.watchReason}`; x.confirmationNeeded = x.watchReason; } continue; }
-    if (x.gateV2 || x.regimeBlock || x.rsOk !== false) continue;
-    const why = strengthWhy(x);
-    if (why) { x.watchReason = `${why} · ${x.watchReason || ''}`.replace(/ · $/, ''); x.confirmationNeeded = x.watchReason; }
+    ready.push(x);
   }
   ready.concat(watch).forEach(x => {
     const sec = sectorInfoFor(x.sym)?.sector, sp = sec ? secPos[sec] : null;
@@ -4798,6 +4566,14 @@ async function runMyTradeScreenerScan() {
     .filter(p => !p.resultsBlock && !p.eventBlock)
     .sort((a, b) => a.riskPct - b.riskPct).slice(0, 15);
   const patternNote = marketTrend.trendUp === false ? `Pattern breakouts paused: ${NIFTY_TREND_WHY}` : '';
+  /* 20-day breakouts: Nifty in its uptrend (as tested), not READY, no results / corporate event close. Tightest stop first. */
+  const breakouts20 = marketTrend.trendUp === false ? [] : bo20Cands
+    .filter(b => !readySymsAll.has(b.sym.toUpperCase()))
+    .map(b => { const ri = resultsCheckFor(b.sym, resultsCal, todayKey), ev = stockEventCheckS(b.sym, todayKey);
+      return { ...b, sector: sectorInfoFor(b.sym)?.sector || null, resultsDate: ri?.date || null, resultsBlock: !!ri?.block, resultsTradingDays: ri ? ri.tradingDays : null, eventBlock: ev.block }; })
+    .filter(b => !b.resultsBlock && !b.eventBlock)
+    .sort((a, b) => a.riskPct - b.riskPct).slice(0, 15);
+  const breakouts20Note = marketTrend.trendUp === false ? `20-day breakouts paused: ${NIFTY_TREND_WHY}` : '';
   SV().LAST_SCAN_DIAG = { ts: Date.now(), rows: scanDiag };
   const result = {
     picks,
@@ -4806,6 +4582,8 @@ async function runMyTradeScreenerScan() {
     quickBounceNote,
     patternBreakouts,
     patternNote,
+    breakouts20,
+    breakouts20Note,
     pcrInfo: { date: KITE_PCR.date, final: !!KITE_PCR.final, stocks: Object.keys(KITE_PCR.pcr || {}).length, error: KITE_PCR.error },
     screen1: picks,
     screen2: watchlist,
@@ -4845,6 +4623,7 @@ async function runMyTradeScreenerScan() {
       {step:'Backtest', rule:'A and B in one 5-slot book: 49% wins, +0.18R a trade, profit in 8 of 10 years (9-10 with 3 or 8 open), worst fall -13%. The old pullback / breakout READY: 44%, 6 of 10 years'},
       {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days, or a corporate event close`},
       {step:'Pattern breakouts', rule:'Separate list (unchanged): double bottom or flat base breakouts, own stop and 2R exit'},
+      {step:'20-day breakouts', rule:'Separate list: first close above the 20-day high on 1.5x volume, close > EMA50 > EMA200, higher highs & lows, within 10% of the 52-week high, beating Nifty over 3 months; stop under the 5-day low, 2R or day 15 (51% wins, 8 of 10 years)'},
       {step:'Quick Bounce', rule:'Watch only: RSI-2 under 10, close above the 50/200-day averages, Nifty above its 200-day average'}
     ],
     filters: {
@@ -5222,27 +5001,6 @@ function assembleSectors(results) {
   }
 }
 
-/* ── /api/screener-explain?sym=NSE:X ── one stock through the screener's own maths: chosen setup, its stop /
-   target / R:R, volume rule, relative strength and every gate reason. Uses cached charts. */
-async function apiScreenerExplain(req, res, p) {
-  const sym = String(p.get('sym') || '').toUpperCase();
-  if (!/^NSE:[A-Z0-9&_.-]+$/.test(sym)) return err(res, 'NSE symbol required', 400);
-  try {
-    const ticker = sym.slice(4) + '.NS';
-    await getNiftyRegime();
-    const raw = await withTimeout(yfChart(ticker, '1d', '2y'), 15000, sym + ' explain');
-    const daily = enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {});
-    if (daily.n < 200) return send(res, { sym, eligible:false, reason:'Less than 200 days of history' });
-    const m = qualifiedMetricsS({ C:daily.C, H:daily.H, L:daily.L, V:daily.V, weekly:null, marketCapCr:screenerMcapNow(ticker, daily.C[daily.n-1]), prevIdx:daily._prevSessionIdx });
-    const rs = SV().NIFTY_CLOSES ? SwingPlan.relStrength(daily.C, SV().NIFTY_CLOSES) : null;
-    const pickedObj = m.picked ? m.strategyScores[SETUP_KEY[m.picked]] : null;
-    send(res, { sym, price:m.price, bias:m.bias, marketCapCr:m.marketCapCr, picked:m.picked, plan:m.plan, rr:m.rrBull, rrBySetup:m.rrBy,
-      volume:{ blend:+m.volRatio.toFixed(2), ...m.pv, ok: m.picked ? SwingPlan.setupVolumeOk(m.picked, m.volRatio, m.pv) : null },
-      rs, decisionScore:m.decisionScore, highSellingVolume:m.highSellingVolume,
-      setupScore: pickedObj ? Math.round(+pickedObj.score) : null, gate: pickedObj ? pickedObj.readyGate : null,
-      regime: marketRegime(SV().NIFTY_REGIME_CACHE), updatedAt:new Date().toISOString() });
-  } catch (er) { err(res, er.message); }
-}
 
 /* ── /api/swing-context ── everything the Overview needs to apply the SAME gates as the screener:
    market regime (Nifty + breadth), relative strength vs Nifty, results within 5 trading days, NSE sector.
@@ -6142,6 +5900,30 @@ function parseBody(req) {
   });
 }
 
+/* Page bundles (21 Nov 2026 - Lighthouse on a phone: 15 stylesheets + 8 scripts were 23 render-blocking requests,
+   ~2.2 s). The same files joined in the page's own order into /css/bundle.css and /js/bundle.js, built from the sources
+   at the first request after a change (by the files' mtimes), gzipped once, with an ETag like every other file. */
+const PAGE_CSS = ['base.css', 'td-v23-bottom-tab-slight-lower.css', 'td-v24-professional-desktop-ui.css', 'td-screener-context.css', 'td-real-tab-mode-fix.css',
+  'td-bottom-default-fix.css', 'td-polish-v7.css', 'td-scroll-overlap-fix-only.css', 'td-bottom-tab-small-lift-ios-fix.css', 'td-v25-quiet-terminal.css',
+  'td-v26-market-gradient.css', 'td-v24b.css', 'td-final-uniform-picker-fix.css', 'td-ui-polish.css', 'td-v27-assist.css'].map(f => 'css/' + f);
+const PAGE_JS = ['swing-plan.js', 'js/app.js', 'js/td-journal.js', 'js/td-trace.js', 'js/td-ui.js', 'js/td-real-tab-mode-fix-js.js', 'js/td-bottom-default-fix-js.js',
+  'js/td-final-market-snapshot-fix.js'];
+const BUNDLES = {};
+function pageBundle(req, res, kind) {
+  const files = kind === 'css' ? PAGE_CSS : PAGE_JS, full = files.map(f => path.join(__dirname, 'public', f));
+  let sig = ''; try { sig = full.map(f => fs.statSync(f).mtimeMs).join('|'); } catch (e) { res.writeHead(500, { 'Content-Type': 'text/plain; charset=utf-8' }); res.end('bundle: ' + e.message); return; }
+  const serve = ent => {
+    const hdr = { 'Content-Type': kind === 'css' ? 'text/css; charset=utf-8' : 'application/javascript; charset=utf-8', 'Cache-Control': 'no-cache', 'ETag': ent.etag, 'Vary': 'Accept-Encoding' };
+    if (String(req.headers['if-none-match'] || '') === ent.etag) { res.writeHead(304, hdr); res.end(); return; }
+    const useGz = String(req.headers['accept-encoding'] || '').includes('gzip');
+    res.writeHead(200, useGz ? { ...hdr, 'Content-Encoding': 'gzip' } : hdr); res.end(useGz ? ent.gz : ent.raw);
+  };
+  if (BUNDLES[kind]?.sig === sig) return serve(BUNDLES[kind]);
+  /* scripts: each file ends its own statement list (";") so one file cannot run into the next */
+  const raw = Buffer.from(full.map((f, k) => `/* ${files[k]} */\n` + fs.readFileSync(f, 'utf8') + (kind === 'js' ? '\n;\n' : '\n')).join('\n'), 'utf8');
+  const ent = { sig, raw, gz: zlib.gzipSync(raw, { level: 9 }), etag: '"' + require('crypto').createHash('sha1').update(raw).digest('base64url').slice(0, 16) + '"' };
+  BUNDLES[kind] = ent; serve(ent);
+}
 function staticFile(req,res,fp){
   const publicRoot = path.resolve(__dirname, 'public');
   const safePath = path.resolve(fp);
@@ -6357,11 +6139,13 @@ function scanSignals(data, slot) {
   for (const x of data.picks || []) {
     const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
     const t2 = +x.exit2R > 0 ? +x.exit2R : +pl.stop > 0 && fill > pl.stop ? fill + 2 * (fill - pl.stop) : null;   /* the screener's own 2R, so list, alert and record agree */
-    out.push({ id: `ready|${x.sym}`, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · exit 2R ${t2 ? inr(t2) : '--'} or day 15${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · exit 2R ${t2 ? inr(t2) : '--'} or day 15${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
   }
-  for (const x of (data.watchlist || []).filter(x => x.limitReady && x.limitEntry)) out.push({ id: `limit|${x.sym}`, text: `Ready on limit ${x.sym}: buy limit ${inr(x.limitEntry.price)} · stop ${inr(x.limitEntry.stop)} · exit 2R ${x.limitEntry.exit2R ? inr(x.limitEntry.exit2R) : '--'} or day 15${sizingLine(x.limitEntry.price, x.limitEntry.stop)}` });
   /* Quick Bounce is watch-only (2 in 3 win, but no profit with 5 positions open over 10 years): no alert. Pattern
      breakouts are judged on the day's close, so they are alerted at the 15:00 scan only. */
+  /* 20-day breakouts: yesterday's-close signals at any scan, today's at the last scan (near the close). */
+  for (const x of (data.breakouts20 || []).filter(x => x.signalDay === 'yesterday' || slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]).filter(x => !x.forming).slice(0, 5))
+    out.push({ id: `bo20|${x.sym}`, signalDate: x.signalDate || null, text: `20-day breakout ${x.sym}: buy ~${inr(x.price)} · stop ${inr(x.stop)} · exit 2R ${inr(x.target)} or day 15 (signal at ${x.signalDay === 'yesterday' ? "yesterday's" : "today's"} close)${sizingLine(x.price, x.stop)}` });
   if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) for (const x of (data.patternBreakouts || []).slice(0, 5))
     out.push({ id: `pattern|${x.sym}`, text: `${x.name} ${x.sym}: buy near the close / next open if it holds ~${inr(x.price)} · stop ${inr(x.stop)} · exit 2R ${inr(x.target)} or day 15${sizingLine(x.price, x.stop)}` });
   return out;
@@ -6373,18 +6157,24 @@ async function scheduledScanTick() {
   if (slot == null || USER_STORE.scans[`${key}|${slot}`]) return;
   USER_STORE.scans = { [`${key}|${slot}`]: Date.now() };   /* keep only the latest marker */
   saveStore();
-  let data = SV().MY_TRADE_SCREENER_CACHE && Date.now() - SV().MY_TRADE_SCREENER_TS < 20 * 60 * 1000 ? SV().MY_TRADE_SCREENER_CACHE : null;
+  const istMin = ts => { const t = new Date(ts + 5.5 * 3600e3); return t.getUTCHours() * 60 + t.getUTCMinutes(); };
+  const lastSlot = slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1];
+  let data = SV().MY_TRADE_SCREENER_CACHE && Date.now() - SV().MY_TRADE_SCREENER_TS < 20 * 60 * 1000 && (!lastSlot || istMin(SV().MY_TRADE_SCREENER_TS) >= 15 * 60) ? SV().MY_TRADE_SCREENER_CACHE : null;
   if (!data) {
     if (!SV().MY_TRADE_SCREENER_INFLIGHT) SV().MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { SV().MY_TRADE_SCREENER_INFLIGHT = null; });
     data = await SV().MY_TRADE_SCREENER_INFLIGHT;
   }
-  const sig = scanSignals(data, slot), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
+  const sig = scanSignals(data, slot).filter(x => !x.signalDate || flagOnce(`sig|${x.id}|${x.signalDate}`)), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
   try { traceStockRecord(data?.picks || [], key); } catch (e) { console.warn('Stock trace:', e.message); }
   /* Pattern breakouts are judged on the day's close: recorded at the last scan with their own stop and 2R target. */
   if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) try {
     traceStockRecord((data?.patternBreakouts || []).slice(0, 5).map(x => ({ sym: x.sym, price: x.price, plan: { stop: x.stop, target: x.target },
       pickedSetup: x.name, exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true })), key);
   } catch (e) { console.warn('Pattern trace:', e.message); }
+  if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) try {
+    traceStockRecord((data?.breakouts20 || []).filter(x => !x.forming).slice(0, 5).map(x => ({ sym: x.sym, price: x.price, plan: { stop: x.stop, target: x.target },
+      pickedSetup: '20-day breakout', exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true, signalDate: x.signalDate })), key);
+  } catch (e) { console.warn('20-day breakout trace:', e.message); }
   if (sig.length) {
     await pushAll({ title: `🟢 ${sig.length} stock${sig.length > 1 ? 's' : ''} ready · ${hhmm} scan`, body: sig.map(x => x.text).join('\n'), tag: 'td-scan', url: '/?view=screener' });
   } else if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) {
@@ -6456,21 +6246,9 @@ async function goldPlanS(sym = 'MCX:GOLDPETAL') {
 function goldPlanText(p) {
   const head = p.side === 'BUY' && !p.driverBlock ? `BUY · ${p.action}` : p.side === 'BUY' ? `WAIT · ${p.action}` : p.side === 'SELL' ? `SELL (small size - all 3 drivers point down) · ${p.action}` : p.side === 'AVOID' ? `AVOID · ${p.action}` : `WAIT · ${p.why}`;
   const lv = p.side === 'BUY' || p.side === 'SELL' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · Target ${inr(p.exitTarget || p.t1)} (${p.exitRule || 'T1'}) · R:R to T1 ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
-  const drv = p.drivers?.known ? `\nDrivers ${p.drivers.count}/3: ${p.drivers.text}` : '';
+  const drv = p.drivers?.known ? `\nDrivers (information only) ${p.drivers.count}/3: ${p.drivers.text}` : '';
   const exp = p.expiry && p.expiry.tradingDaysLeft <= 5 ? `\n⚠ Contract expires ${p.expiry.date} (${p.expiry.tradingDaysLeft} trading days) - roll or exit` : '';
   return `${head}${lv}${drv}${exp}\nNow ${inr(p.price)}${p.calibrated ? ' (your MCX calibration)' : ' (proxy - calibrate in the app for exact MCX levels)'}`;
-}
-/* Nifty options: the user's rule on the next weekly expiry after today (an expiry-day chain has no time left). */
-async function niftyRuleS() {
-  /* Same expiry as the page: the first one at least 3 days away (Zerodha Kite chain). */
-  const exp = await withTimeout(niftyRuleExpiry(true), 25000, 'expiry list');
-  const chain = await withTimeout(getOptionChain('NSE:NIFTY', exp, { fresh: 5 * 60e3 }), 25000, 'Nifty chain');
-  const reg = await getNiftyRegime();
-  const spot = +chain.spot || +reg.nifty;
-  const days = Math.max(1, Math.round((Date.parse(chain.expiry + 'T15:30:00+05:30') - Date.now()) / 86400e3));
-  const rule = SwingPlan.creditSpreadRule(chain, { spot, trendUp: reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown: reg.nifty < reg.ema20 && reg.ema20 < reg.ema50, daysToExpiry: days, step: 50, wing: 200,
-    monthly: SwingPlan.isMonthlyExpiry(chain.expiry, chain.expiries) });
-  return { rule, chain, reg };
 }
 function niftyRuleText({ rule, chain }) {
   const p = rule.pick;
@@ -6478,7 +6256,7 @@ function niftyRuleText({ rule, chain }) {
   if (p && !p.none) {
     lines.push(`Sell ${p.sell} ${p.ty === 'P' ? 'PE' : 'CE'} ${p.sellPx} / buy ${p.buy} ${p.ty === 'P' ? 'PE' : 'CE'} ${p.buyPx} · credit ${p.credit} pts (${inr(p.credit * 65, 0)}/lot) · max loss ${inr(p.maxLoss * 65, 0)}/lot`);
     lines.push(p.checks.map(c => `${c.pass ? '✓' : c.need ? '✗' : 'ℹ'} ${c.name}`).join('\n'));
-    if (rule.ok) lines.push('Stop when the loss reaches 2× the credit.');
+    if (rule.ok) lines.push(`Hold to expiry (the tested exit) - the most it can lose is ${inr(p.maxLoss * 65, 0)}/lot.`);
   }
   return lines.join('\n');
 }
@@ -6499,8 +6277,11 @@ async function openTradeWatchTick() {
         if (!symMarketOpenS('NSE:NIFTY')) continue;
         let q; try { q = await quickPriceFor('NSE:NIFTY'); } catch { continue; }
         const p = +q?.price, k = +t.shortStrike;
-        if (p > 0 && k > 0 && ((t.optType === 'P' ? p < k : p > k) || (+t.callStrike > 0 && p > +t.callStrike)) && flagOnce(`j|${t.id}|tested|${today}`))
-          await pushAll({ title: `⚠ Nifty through your short ${k} ${t.optType === 'P' ? 'PE' : 'CE'}`, body: `Nifty ${p.toFixed(0)}. ${t.label || 'Credit spread'}: check the spread value - exit at 2× the credit loss.`, tag: `j-${t.id}`, url: '/?view=trades' });
+        const ck = +t.callStrike, putHit = p > 0 && k > 0 && (t.optType === 'P' ? p < k : p > k), callHit = p > 0 && ck > 0 && p > ck;
+        if ((putHit || callHit) && flagOnce(`j|${t.id}|tested|${today}`)) {
+          const leg = callHit ? `${ck} CE` : `${k} ${t.optType === 'P' ? 'PE' : 'CE'}`, naked = !(+t.wing > 0);
+          await pushAll({ title: `⚠ Nifty through your short ${leg}`, body: `Nifty ${p.toFixed(0)}. ${t.label || 'Option trade'}: ${naked ? 'naked sell - exit if the option(s) close at 2x what you sold for (the tested exit).' : 'the tested plan holds the spread to expiry - the loss is capped at the spread width minus the credit.'}`, tag: `j-${t.id}`, url: '/?view=trades' });
+        }
         if (t.expiry === today && flagOnce(`j|${t.id}|expiry`)) await pushAll({ title: `Expiry today: ${t.label || 'credit spread'}`, body: 'Close it before 15:15 or let it expire if both strikes are safely out of the money.', tag: `j-${t.id}`, url: '/?view=trades' });
         continue;
       }
@@ -6628,7 +6409,7 @@ async function morningBrief() {
     lines.push(h.length ? 'News:\n' + h.map(i => `${i.impactScore > 0 ? '▲' : '▼'} ${String(i.title).slice(0, 120)}${i.source ? ` (${i.source})` : ''}`).join('\n') : 'News: no big market-moving headline since last evening');
   } catch { lines.push('News: not reachable - check the News tab'); }
   try { const e = SwingPlan.goldPetalExpiry(today, isNseHoliday); if (e.tradingDaysLeft <= 5) lines.push(`Gold Petal contract expires ${e.date} (${e.tradingDaysLeft} trading days) - roll or exit`); } catch {}
-  lines.push('MCX (Gold Petal, Crude Oil, Natural Gas at 09:45 / 17:00) and Nifty options (10:00) alert only when there is a trade ready; stock scans at 11:00 and 15:00.');
+  lines.push('MCX (Gold Petal, Crude Oil, Natural Gas): 09:45 alerts only a ready buy, 17:00 always sends a status line. Nifty options 10:00 (bull put) and 15:05 on the day after an expiry (weekly sells). Stock scans 11:00 and 15:00.');
   return lines.join('\n');
 }
 
@@ -6679,41 +6460,39 @@ async function assistantTick() {
           await pushAll({ title: 'MCX evening check · nothing ready', body: MCX_ALERT_SYMS.map(s => `${MCX_EMOJI[s]} ${MCX_NAME[s]}: ${MCX_STATUS[s]?.day === key ? MCX_STATUS[s].text : 'plan not checked'}`).join('\n'), tag: 'td-mcx-evening', url: '/' });
       }
     }
-    /* Nifty options at 10:00 (opening premiums settle in the first 30 min): an alert only when your rule passes. */
-    /* Missed at 10:00 (deploy after 10:00, or Zerodha connected later): checked once as soon as Zerodha is connected,
-       until 15:00. */
-    const niftyCatch = nseDay && m >= 10 * 60 + 20 && m < 15 * 60 && (NIFTY_STATUS?.day !== key || NIFTY_STATUS.failed) && kiteReady() && flagOnce(`job|nifty-catchup|${key}`);
-    if (nseDay && (at(10 * 60, 'nifty-opt') || niftyCatch)) {
-      try {
-        const r = await niftyRuleS();
-        NIFTY_STATUS = { day: key, text: String(r.rule.verdict || (r.rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) + (niftyCatch ? ` (checked at ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')})` : '') };
-        if (r.rule.ok) { traceNiftyRecord(r, key); await pushAll({ title: `📊 Nifty options · your rule passed`, body: niftyRuleText(r), tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY' }); }
-      } catch (e) {
-        NIFTY_STATUS = { day: key, failed: true, text: `option premiums not available (${e.message})` };
-        /* Silent before: since 18 Nov 2026 premiums come only from Zerodha Kite, whose login ends at 06:00 every day -
-           a day without "Connect Zerodha" sent nothing at all, which looked like a broken app. */
-        if (!niftyCatch) await pushAll({ title: 'Nifty options: not checked at 10:00', body: `${/Zerodha/i.test(e.message) ? 'Zerodha is not connected today (its login ends at 06:00 daily).' : 'Option premiums were not available.'} Connect Zerodha (My trades -> Connect Zerodha), then open Markets -> Nifty to see your credit-spread rule.`, tag: 'td-nifty-opt', url: '/?view=trades' });
-      }
-      await traceNiftyCheck(key, m, 'morning').catch(e => console.warn('Nifty trace:', e.message));
-    }
-    /* 15:05: the day's second (last) NSE premiums - the rule's expiry for the pages, then the Track record check
-       (80% / stop every day; on the week's last trading day the end-of-week close). Settle expiries at 15:40. */
-    if (nseDay && at(15 * 60 + 5, 'nse-evening')) {
+    /* Nifty options (21 Nov 2026, matched to the backtests): all three are entered at the close of the FIRST trading day
+       after a weekly expiry - the bull-put rule held to expiry (the app's own rule: 95% wins, profit in 8 of 8 years;
+       alerting any day with a 2x-credit stop was +Rs 27 a lot, 4 of 8 years), the trend sell and the short strangle (exit on
+       a close at 2x). One alert at 15:05 that day (a retry until 15:25 if the premiums were missing), a 10:00 reminder that
+       day when Zerodha is not connected. The Track record is marked at 15:05 and settled at 15:40. */
+    const genExp = (() => { try { return generatedFnoExpiries(key, 40).map(x => x.date); } catch { return []; } })();
+    const enGen = nseDay ? SwingPlan.weeklySellEntry(key, genExp.find(e => e >= key), isNseHoliday, genExp) : null;
+    if (nseDay && enGen && !enGen.isEntryDay && NIFTY_STATUS?.day !== key) NIFTY_STATUS = { day: key, text: `no entry today - next entry ${enGen.entryDay} at the close (the day after an expiry)` };
+    if (nseDay && enGen?.isEntryDay && KITE.key && !kiteReady() && at(10 * 60, 'nifty-kite-reminder'))
+      await pushAll({ title: 'Nifty options: entry day today', body: "The bull put and the weekly sells are entered at today's close. Connect Zerodha before 15:00 so the 15:05 check has live premiums (My trades -> Connect Zerodha).", tag: 'td-nifty-opt', url: '/?view=trades' });
+    const niftyRetry = nseDay && m >= 15 * 60 + 6 && m < 15 * 60 + 26 && NIFTY_STATUS?.day === key && NIFTY_STATUS.failed && kiteReady() && flagOnce(`job|nifty-retry|${key}|${m}`);
+    if (nseDay && (at(15 * 60 + 5, 'nse-evening') || niftyRetry)) {
       let chain15 = null;
-      try { chain15 = await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
-      /* Weekly option selling (trend sell / short strangle): entered at the close of the first trading day after an
-         expiry - so the alert comes at 15:05 on that day only. */
-      try {
-        const nearest = (chain15?.expiries || []).find(e => e >= key), en = SwingPlan.weeklySellEntry(key, nearest, isNseHoliday, chain15?.expiries);
-        if (chain15?.strikes?.length && en?.isEntryDay && flagOnce(`job|weekly-sell|${key}`)) {
+      try { chain15 = await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: niftyRetry ? 60e3 : 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
+      const exps = chain15?.expiries?.length ? chain15.expiries : genExp, en = SwingPlan.weeklySellEntry(key, exps.find(e => e >= key), isNseHoliday, exps);
+      if (en?.isEntryDay && !chain15?.strikes?.length) {
+        const first = NIFTY_STATUS?.day !== key || !NIFTY_STATUS.failed;
+        NIFTY_STATUS = { day: key, failed: true, text: 'entry day, but option premiums were not available' };
+        if (first) await pushAll({ title: 'Nifty options: entry day, premiums missing', body: `${kiteReady() ? 'Option premiums were not available.' : 'Zerodha is not connected (its login ends at 06:00 daily).'} Connect Zerodha before 15:25 - the check runs again - or open Markets -> Nifty.`, tag: 'td-nifty-opt', url: '/?view=trades' });
+      } else if (en?.isEntryDay && flagOnce(`job|nifty-entry|${key}`)) {
+        try {
           const reg = await getNiftyRegime(), spot = +chain15.spot || +reg.nifty;
           const days = Math.max(1, Math.round((Date.parse(chain15.expiry + 'T15:30:00+05:30') - Date.now()) / 86400e3));
-          const w = SwingPlan.niftyWeeklySells(chain15, { spot, trendUp: reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown: reg.nifty < reg.ema20 && reg.ema20 < reg.ema50, daysToExpiry: days, step: 50 });
-          if (w) await pushAll({ title: `📊 Nifty weekly sells · entry today at the close (expiry ${chain15.expiry})`, tag: 'td-nifty-weekly', url: '/?sym=NSE:NIFTY',
-            body: `1. Trend sell: ${w.trend.ok ? `SELL ${w.trend.strike} ${w.trend.ty === 'P' ? 'PE' : 'CE'} ~${w.trend.premium} (${inr(w.trend.premium * 65, 0)}/lot) · exit if it closes at ${w.trend.exitAt}+` : w.trend.why}\n2. Strangle: ${w.strangle.ok ? `SELL ${w.strangle.put} PE ${w.strangle.putPx} + ${w.strangle.call} CE ${w.strangle.callPx} = ${w.strangle.credit} pts · exit if the pair closes at ${w.strangle.exitAt}+` : w.strangle.why}\nNaked: margin ~₹1.5L a lot; the 2x exit is the only protection. Check premiums before ordering.` });
-        }
-      } catch (e) { console.warn('Weekly sells:', e.message); }
-      await traceNiftyCheck(key, m, key === lastTradingDayOfWeek(key) ? 'week' : 'morning').catch(e => console.warn('Nifty trace:', e.message));
+          const trendUp = reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown = reg.nifty < reg.ema20 && reg.ema20 < reg.ema50;
+          const rule = SwingPlan.creditSpreadRule(chain15, { spot, trendUp, trendDown, daysToExpiry: days, step: 50, wing: 200, monthly: SwingPlan.isMonthlyExpiry(chain15.expiry, chain15.expiries) });
+          const w = SwingPlan.niftyWeeklySells(chain15, { spot, trendUp, trendDown, daysToExpiry: days, step: 50 });
+          NIFTY_STATUS = { day: key, text: String(rule.verdict || (rule.ok ? 'rule passed' : 'rule not met')).slice(0, 110) };
+          if (rule.ok) traceNiftyRecord({ rule, chain: chain15 }, key);
+          await pushAll({ title: `📊 Nifty options · entry today at the close (expiry ${chain15.expiry})`, tag: 'td-nifty-opt', url: '/?sym=NSE:NIFTY',
+            body: `1. Bull put: ${niftyRuleText({ rule, chain: chain15 })}\n2. Trend sell: ${w?.trend?.ok ? `SELL ${w.trend.strike} ${w.trend.ty === 'P' ? 'PE' : 'CE'} ~${w.trend.premium} (${inr(w.trend.premium * 65, 0)}/lot) · exit if it closes at ${w.trend.exitAt}+` : w?.trend?.why || 'no quote'}\n3. Strangle: ${w?.strangle?.ok ? `SELL ${w.strangle.put} PE ${w.strangle.putPx} + ${w.strangle.call} CE ${w.strangle.callPx} = ${w.strangle.credit} pts · exit if the pair closes at ${w.strangle.exitAt}+` : w?.strangle?.why || 'no quote'}\nNaked sells: margin ~₹1.5L a lot; the 2x exit is the only protection. Check premiums before ordering.` });
+        } catch (e) { NIFTY_STATUS = { day: key, failed: true, text: `entry day, check failed (${e.message})` }; console.warn('Nifty entry:', e.message); }
+      }
+      if (!niftyRetry) await traceNiftyCheck(key, m, 'mark').catch(e => console.warn('Nifty trace:', e.message));
     }
     if (at(15 * 60 + 40, 'trace-nifty-settle')) await traceNiftyCheck(key, m, 'settle').catch(e => console.warn('Nifty trace:', e.message));
     if (nseDay && at(9 * 60 + 20, 'trade-checks')) {
@@ -6758,9 +6537,9 @@ let NIFTY_STATUS = null;
      alert sees price reach it that day ("Not filled" otherwise). Checked each morning at 09:45 on the completed
      daily candles (the same quote the 09:45 plan uses - no extra call): stop -1R · at T1 half booked and the stop
      moved to entry · the rest at T2, at entry, or on a daily close through the plan's EMA.
-   - Nifty options: recorded when the 10:00 rule passes (premiums from NSE). Checked each morning at 10:00: closed
-     once 80% of the premium is earned, or at the stop (loss 2x the credit); otherwise closed at 15:05 on the last
-     trading day of the week (Friday), or settled at expiry if that comes first. 1R = 2x the credit.
+   - Nifty options: recorded when the bull-put rule passes at 15:05 on the first trading day after an expiry, held to
+     expiry and settled from Nifty's close (1R = width minus credit). Rows from before 21 Nov 2026 keep their old
+     exit (80% of the premium, a 2x-credit stop or Friday's close; 1R = 2x the credit).
    Stored in the synced key td_trace so the phone keeps a copy and uploads it again after a Render restart wiped
    the server's disk; the server and the page merge the two copies by record id.
 ══════════════════════════════════════════════════════════════════ */
@@ -6791,13 +6570,14 @@ function traceStockRecord(picks, key) {
   let added = 0;
   for (const x of picks) {
     const sym = String(x.sym || '').toUpperCase(), price = +x.price, pl = x.plan || {};
-    if (!sym || !(price > 0) || t.rows.some(r => r.kind === 'stock' && r.date === key && r.sym === sym)) continue;
+    if (!sym || !(price > 0) || t.rows.some(r => r.kind === 'stock' && r.sym === sym && (r.date === key || (x.signalDate && r.signalDate === x.signalDate)))) continue;
     const tg = x.tags || {};
     t.rows.push({ id: `stock|${key}|${sym}`, kind: 'stock', sym, date: key, createdAt: now, upd: now, entry: r2(price),
       sl: +pl.stop > 0 ? r2(pl.stop) : null, t1: +pl.target > 0 ? r2(pl.target) : null, setup: x.pickedSetup || x.selectedStrategy || null,
       exitMode: '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
       tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, pcrOk: tg.pcrOk ?? null },
-      bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null, pattern: !!x.pattern });
+      bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null, pattern: !!x.pattern,
+      signalDate: x.signalDate || null, planLocked: !!(x.pattern || x.gateV2) });
     added++;
   }
   if (added) traceSave(t);
@@ -6909,7 +6689,7 @@ function traceNiftyRecord({ rule, chain }, key) {
   const now = Date.now();
   const row = { id: `nifty|${chain.expiry}|${p.ty}|${now}`, kind: 'nifty', sym: 'NSE:NIFTY', date: key, createdAt: now, upd: now,
     type: p.type, ty: p.ty, sell: +p.sell, buy: +p.buy, credit: r2(p.credit), width: Math.abs(+p.sell - +p.buy), expiry: chain.expiry, lot: 65,
-    spot: r2(rule.spot), stopValue: r2(3 * p.credit), targetValue: r2(0.2 * p.credit), mark: r2(p.credit), markAt: now, status: 'Open', closed: false, resultR: null, pnlPts: null };
+    spot: r2(rule.spot), hold: true, mark: r2(p.credit), markAt: now, status: 'Open · held to expiry', closed: false, resultR: null, pnlPts: null };
   t.rows.push(row); traceSave(t);
   return row;
 }
@@ -6925,19 +6705,9 @@ async function niftyCloseOn(dateKey, todayKey, m) {
 }
 function traceNiftySettle(r, spot) {
   const intrinsic = Math.max(0, Math.min(r.width, r.ty === 'P' ? r.sell - spot : spot - r.sell));
-  r.pnlPts = r2(r.credit - intrinsic); r.resultR = r2(r.pnlPts / (2 * r.credit)); r.closed = true; r.closedAt = Date.now(); r.exitSpot = r2(spot);
+  r.pnlPts = r2(r.credit - intrinsic); r.resultR = r2(r.pnlPts / (r.hold ? Math.max(1, r.width - r.credit) : 2 * r.credit)); r.closed = true; r.closedAt = Date.now(); r.exitSpot = r2(spot);
   r.status = intrinsic <= 0 ? 'Expired worthless · full credit kept' : intrinsic >= r.width ? 'Expired · max loss' : 'Expired · part of the credit lost';
   r.mark = r2(intrinsic); r.markAt = Date.now(); r.upd = Date.now();
-}
-/* The last NSE trading day of the week that contains `key` (Friday, or earlier when Friday is a holiday). */
-function lastTradingDayOfWeek(key) {
-  const d = new Date(key + 'T00:00:00Z'), dow = d.getUTCDay();
-  for (let i = 5 - dow; i >= 0; i--) {
-    const x = new Date(d); x.setUTCDate(d.getUTCDate() + i);
-    const k = x.toISOString().slice(0, 10);
-    if (!isNseHoliday(k)) return k;
-  }
-  return key;
 }
 /* mode: 'morning' (10:00: 80% / stop), 'week' (15:05 on the week's last trading day: close everything older than
    today), 'settle' (15:40: expiries of today). Expiries already past (server was down) settle from Yahoo's close. */
@@ -6952,7 +6722,7 @@ async function traceNiftyCheck(key, m, mode = 'morning') {
       if (spot > 0) { rows.forEach(r => traceNiftySettle(r, spot)); changed = true; }
       continue;
     }
-    if (mode === 'settle') continue;
+    if (mode === 'settle') continue;   /* 'mark' (15:05): update open rows; the bull put is held to expiry (older rows: 80% / stop) */
     const due = mode === 'week' ? rows.filter(r => r.date < key) : rows;
     if (!due.length) continue;
     let chain; try { chain = await withTimeout(getOptionChain('NSE:NIFTY', exp, { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch { continue; }
@@ -6962,7 +6732,8 @@ async function traceNiftyCheck(key, m, mode = 'morning') {
       const a = ocPxS(chain, r.sell, r.ty), b = ocPxS(chain, r.buy, r.ty);
       if (!(a > 0) || b == null) continue;
       const v = r2(Math.max(0, a - b)), tgt = +r.targetValue || r2(0.2 * r.credit);
-      r.pnlPts = r2(r.credit - v); r.resultR = r2(r.pnlPts / (2 * r.credit)); r.mark = v; r.markAt = Date.now(); r.upd = Date.now(); changed = true;
+      r.pnlPts = r2(r.credit - v); r.resultR = r2(r.pnlPts / (r.hold ? Math.max(1, r.width - r.credit) : 2 * r.credit)); r.mark = v; r.markAt = Date.now(); r.upd = Date.now(); changed = true;
+      if (r.hold) { r.status = spot > 0 && (r.ty === 'P' ? spot < r.sell : spot > r.sell) ? 'Open · Nifty through the short strike (held to expiry)' : 'Open · held to expiry'; continue; }
       const shut = status => { r.closed = true; r.closedAt = Date.now(); r.exitSpot = r2(spot); r.status = status; };
       if (v <= tgt) shut('80% of the premium earned · closed');
       else if (v >= r.stopValue) shut('Stop hit (loss 2x the credit)');
@@ -7140,7 +6911,6 @@ async function handleRequest(req,res){
   if(pn==='/api/store')            return apiStore(req,res);
   if(pn==='/api/momentum')         return apiMomentum(req,res,ps);
   if(pn.startsWith('/api/push/'))  return apiPush(req,res,pn);
-  if(pn==='/api/screener-explain') return apiScreenerExplain(req,res,ps);
   if(pn==='/api/screener-diag') return send(res, SV().LAST_SCAN_DIAG);
   if(pn==='/api/sector-map') {
     const map = {}; Object.entries(LIVE_UNIVERSE?.industry || {}).forEach(([k, v]) => { if (v.sector) map[k] = v.sector; });
@@ -7150,6 +6920,8 @@ async function handleRequest(req,res){
     if (ps.get('refresh') === '1') { refreshUniverse(true); return send(res, { ...universeSummary(), refreshing:true, rows:LIVE_UNIVERSE?.rows || [] }); }
     return send(res, { ...universeSummary(), refreshing: !!UNIVERSE_INFLIGHT, rows: liveUniverseUsable() ? LIVE_UNIVERSE.rows : [] });
   }
+  if (req.method === 'GET' && pn === '/css/bundle.css') return pageBundle(req, res, 'css');
+  if (req.method === 'GET' && pn === '/js/bundle.js') return pageBundle(req, res, 'js');
   const publicRoot = path.join(__dirname,'public');
   let relPath;
   try {

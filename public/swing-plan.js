@@ -640,6 +640,97 @@
     return { ok: false, near, info };
   }
 
+  /* Fresh entry score and Hold score (0-100) for any stock, from what the Analysis, News and Sector tabs show.
+     Checklist scores: each item is a factor from the backtests (marked tested) or a plain check; a missing input
+     (news not loaded, sector unknown) is left out and the rest is scaled to 100. The exit stays the plan's own
+     (stop, 2R or day 15) - the scores are for confidence, not a new rule.
+     ctx: { signal: 'ready'|'pattern'|'quick'|'near'|null, stop, niftyUp, rs3m, tf: {bull, denom} (Analysis trend,
+     1 hour -> monthly; daily EMAs when absent), sectorUp, newsSent: 'bull'|'bear'|'neutral'|null, eventsClear,
+     holdEventsClear }. i = bar to score (default the last). */
+  function stockScores({ H, L, C }, ctx = {}, i) {
+    const n = (C || []).length; i = Number.isInteger(i) ? i : n - 1;
+    if (i < 210) return null;
+    const ema = p => { const k = 2 / (p + 1); let e = +C[0]; for (let j = 1; j <= i; j++) e = +C[j] * k + e * (1 - k); return e; };
+    const e20 = ema(20), e50 = ema(50), e200 = ema(200), price = +C[i];
+    let atr = 0; for (let j = 0; j <= i; j++) { const tr = j ? Math.max(H[j] - L[j], Math.abs(H[j] - C[j - 1]), Math.abs(L[j] - C[j - 1])) : H[j] - L[j]; atr = j < 14 ? (atr * j + tr) / (j + 1) : (atr * 13 + tr) / 14; }
+    let g = 0, l = 0; for (let j = i - 27; j <= i; j++) { const d = C[j] - C[j - 1], up = Math.max(d, 0), dn = Math.max(-d, 0); if (j <= i - 14) { g += up / 14; l += dn / 14; } else { g = (g * 13 + up) / 14; l = (l * 13 + dn) / 14; } }
+    const rsi = l === 0 ? 100 : 100 - 100 / (1 + g / l);
+    const em = (p, k0) => { const k = 2 / (p + 1); let e = +C[k0]; const out = []; for (let j = k0; j <= i; j++) { e = j === k0 ? +C[j] : +C[j] * k + e * (1 - k); out.push(e); } return out; };
+    const k0 = Math.max(0, i - 120), m12 = em(12, k0), m26 = em(26, k0), macd = m12.map((v, j) => v - m26[j]);
+    const sg = (() => { const k = 2 / 10; let e = macd[0]; for (let j = 1; j < macd.length; j++) e = macd[j] * k + e * (1 - k); return e; })();
+    const macdUp = macd[macd.length - 1] >= sg;
+    const tags = stockTags({ H: H.slice(0, i + 1), L: L.slice(0, i + 1), C: C.slice(0, i + 1) }) || {};
+    const sr = srLevels({ H, L, C, i: i - 1, price });
+    const res = (sr.resistances || []).map(x => +x.v).filter(v => v > price * 1.002).sort((a, b) => a - b)[0] || null;
+    const stop = valid(ctx.stop) && ctx.stop < price ? +ctx.stop : price - 1.5 * atr, risk = price - stop;
+    const room = res && risk > 0 ? (res - price) / risk : null;
+    const tfPct = ctx.tf && ctx.tf.denom > 0 ? ctx.tf.bull / ctx.tf.denom : null;
+    const trendPts = tfPct != null ? tfPct : ((price > e20 ? 1 : 0) + (e20 > e50 ? 1 : 0) + (e50 > e200 ? 1 : 0)) / 3;
+    const trendTxt = tfPct != null ? `${ctx.tf.bull}/${ctx.tf.denom} timeframes bullish (Analysis → Trend)` : `daily EMAs: price ${price > e20 ? '>' : '<'} EMA20, EMA20 ${e20 > e50 ? '>' : '<'} EMA50, EMA50 ${e50 > e200 ? '>' : '<'} EMA200`;
+    const news = ctx.newsSent === 'bull' ? 1 : ctx.newsSent === 'bear' ? 0 : ctx.newsSent === 'neutral' ? 0.6 : null;
+    const yes = v => v == null ? null : v ? 1 : 0;
+    const sigPts = { ready: 1, pattern: 0.8, breakout: 0.8, quick: 0.6, near: 0.3 }[ctx.signal] ?? 0;
+    const sigTxt = { ready: 'READY signal (tested gate)', pattern: 'Pattern breakout (tested)', breakout: '20-day breakout (tested, separate list)', quick: 'Quick bounce (tested, watch-only)', near: 'A READY signal is close' }[ctx.signal] || 'No tested entry signal today';
+    /* Weights from the 20 Nov 2026 check on every signal of the tested entries: higher highs & lows helped all of them
+       (+0.01R to +0.11R a trade), momentum helped quick bounces (+0.18R vs +0.03R); "room to resistance" did the
+       opposite and "near the 52-week high" was mixed, so neither is in the score. */
+    const fresh = [
+      { k: 'Entry signal', w: 30, f: sigPts, t: sigTxt, tested: true },
+      { k: 'Nifty uptrend', w: 15, f: yes(ctx.niftyUp), t: ctx.niftyUp == null ? 'unknown' : ctx.niftyUp ? 'Nifty above EMA50, EMA20 above EMA50' : 'Nifty not in its uptrend', tested: true },
+      { k: 'Higher highs & lows', w: 15, f: yes(tags.hhhl), t: tags.hhhl ? 'swing structure intact' : 'structure broken', tested: true },
+      { k: 'Beats Nifty (3 months)', w: 10, f: ctx.rs3m == null ? null : ctx.rs3m > 0 ? 1 : 0, t: ctx.rs3m == null ? 'unknown' : `${ctx.rs3m > 0 ? '+' : ''}${R2(ctx.rs3m)}% vs Nifty`, tested: true },
+      { k: 'Trend', w: 10, f: trendPts, t: trendTxt },
+      { k: 'Momentum', w: 5, f: ((rsi >= 40 && rsi <= 75 ? 1 : 0) + (macdUp ? 1 : 0)) / 2, t: `RSI ${R2(rsi)}, MACD ${macdUp ? 'above' : 'below'} signal`, tested: true },
+      { k: 'Sector (1 month)', w: 5, f: yes(ctx.sectorUp), t: ctx.sectorUp == null ? 'not loaded' : ctx.sectorUp ? 'sector up' : 'sector down' },
+      { k: 'News', w: 5, f: news, t: ctx.newsSent ? { bull: 'positive', bear: 'negative', neutral: 'neutral' }[ctx.newsSent] : 'not loaded' },
+      { k: 'No results / event close', w: 5, f: yes(ctx.eventsClear), t: ctx.eventsClear == null ? 'unknown' : ctx.eventsClear ? 'clear' : 'results or a corporate event within 5 trading days' },
+    ];
+    let lastSwingLow = null; { const lows = []; for (let k = Math.max(3, i - 60); k <= i - 3; k++) { let lo = true; for (let j = k - 3; j <= k + 3; j++) if (j !== k && L[j] <= L[k]) lo = false; if (lo) lows.push(k); } if (lows.length) lastSwingLow = +L[lows[lows.length - 1]]; }
+    const hold = [
+      { k: 'Above EMA20', w: 15, f: price > e20 ? 1 : 0, t: `EMA20 ${R2(e20)}` },
+      { k: 'Above EMA50', w: 15, f: price > e50 ? 1 : 0, t: `EMA50 ${R2(e50)}` },
+      { k: 'Above the last swing low', w: 15, f: lastSwingLow == null ? null : price > lastSwingLow ? 1 : 0, t: lastSwingLow == null ? 'none found' : `swing low ${R2(lastSwingLow)}` },
+      { k: 'Trend', w: 10, f: trendPts, t: trendTxt },
+      { k: 'Beats Nifty (3 months)', w: 10, f: ctx.rs3m == null ? null : ctx.rs3m > 0 ? 1 : 0, t: ctx.rs3m == null ? 'unknown' : `${ctx.rs3m > 0 ? '+' : ''}${R2(ctx.rs3m)}% vs Nifty`, tested: true },
+      { k: 'Nifty uptrend', w: 10, f: yes(ctx.niftyUp), t: ctx.niftyUp == null ? 'unknown' : ctx.niftyUp ? 'yes' : 'no', tested: true },
+      { k: 'Momentum', w: 10, f: ((rsi >= 40 && rsi <= 75 ? 1 : 0) + (macdUp ? 1 : 0)) / 2, t: `RSI ${R2(rsi)}${rsi > 75 ? ' (stretched)' : rsi < 40 ? ' (weak)' : ''}, MACD ${macdUp ? 'above' : 'below'} signal` },
+      { k: 'Sector (1 month)', w: 5, f: yes(ctx.sectorUp), t: ctx.sectorUp == null ? 'not loaded' : ctx.sectorUp ? 'sector up' : 'sector down' },
+      { k: 'News', w: 5, f: news, t: ctx.newsSent ? { bull: 'positive', bear: 'negative', neutral: 'neutral' }[ctx.newsSent] : 'not loaded' },
+      { k: 'No results / ex-date in 2 days', w: 5, f: yes(ctx.holdEventsClear ?? ctx.eventsClear), t: (ctx.holdEventsClear ?? ctx.eventsClear) == null ? 'unknown' : (ctx.holdEventsClear ?? ctx.eventsClear) ? 'clear' : 'results / ex-date close - gap risk' },
+    ];
+    const total = rows => { const kn = rows.filter(r => r.f != null), w = kn.reduce((a, r) => a + r.w, 0); return w ? Math.round(kn.reduce((a, r) => a + r.w * r.f, 0) / w * 100) : null; };
+    return { fresh: total(fresh), hold: total(hold), freshRows: fresh, holdRows: hold, rsi: R2(rsi), e20: R2(e20), e50: R2(e50), e200: R2(e200) };
+  }
+
+  /* 20-day breakout list (separate from READY, like Pattern breakouts - added 21 Nov 2026). 10-year backtest, same
+     rules as READY (buy the next open, stop 0.25 ATR under the 5-day low kept 0.75-3 ATR away, sell all at 2R or the
+     close of day 15, Nifty in its uptrend, at most 5 open, 0.25% costs): close above the 20-day high (first close
+     above it) on 1.5x the 20-day volume, close > EMA50 > EMA200, higher highs & lows intact, within 10% of the 52-week
+     high, beating Nifty over 3 months. 474 trades, 51% wins, +0.12R a trade, profit in 8 of 10 years; less steady than
+     READY (5 of 10 years with 3 open), so it is a separate list. The caller checks Nifty, results and events. */
+  function breakout20({ H, L, C, V, i, rs3m, vToday, entry }) {
+    const n = (C || []).length; i = Number.isInteger(i) ? i : n - 1;
+    if (i < 260 || i >= n || !V) return null;
+    const ema = p => { const k = 2 / (p + 1); let e = +C[0]; for (let j = 1; j <= i; j++) e = +C[j] * k + e * (1 - k); return e; };
+    const e50 = ema(50), e200 = ema(200), close = +C[i];
+    let atr = 0; for (let j = 0; j <= i; j++) { const tr = j ? Math.max(H[j] - L[j], Math.abs(H[j] - C[j - 1]), Math.abs(L[j] - C[j - 1])) : H[j] - L[j]; atr = j < 14 ? (atr * j + tr) / (j + 1) : (atr * 13 + tr) / 14; }
+    let v20 = 0; for (let j = i - 20; j < i; j++) v20 += +V[j] || 0; v20 /= 20;
+    const vt = Number.isFinite(+vToday) && +vToday > 0 ? +vToday : +V[i] || 0;
+    const hh = (a, b) => { let m = -Infinity; for (let j = a; j <= b; j++) m = Math.max(m, +H[j]); return m; };
+    const hi20 = hh(i - 20, i - 1), hi20prev = hh(i - 21, i - 2), hi52 = hh(Math.max(0, i - 251), i);
+    const off52 = hi52 > 0 ? (hi52 - close) / hi52 * 100 : null;
+    const tags = stockTags({ H: H.slice(0, i + 1), L: L.slice(0, i + 1), C: C.slice(0, i + 1) }) || {};
+    const rsOk = Number.isFinite(+rs3m) && +rs3m > 0;
+    const info = { hi20: R2(hi20), volX: v20 > 0 ? R2(vt / v20) : null, off52: R2(off52), rs3m: Number.isFinite(+rs3m) ? R2(+rs3m) : null, e50: R2(e50), e200: R2(e200), atr: R2(atr) };
+    const ok = close > e50 && e50 > e200 && close > hi20 && +C[i - 1] <= hi20prev && v20 > 0 && vt >= 1.5 * v20 && !!tags.hhhl && off52 != null && off52 <= 10 && rsOk;
+    if (!ok) return { ok: false, info };
+    const px = valid(entry) ? +entry : close;
+    let stop = Math.min(...L.slice(i - 5, i + 1).map(Number)) - 0.25 * atr;
+    if (px - stop > 3 * atr) stop = px - 3 * atr; if (px - stop < 0.75 * atr) stop = px - 0.75 * atr;
+    return { ok: true, name: '20-day breakout', entry: R2(px), stop: R2(stop), target: R2(px + 2 * (px - stop)), riskPct: R2((px - stop) / px * 100), maxDays: 15, info,
+      why: `Closed above the 20-day high ${info.hi20} on ${info.volX}x volume, higher highs & lows, ${info.off52}% below the 52-week high, beating Nifty by ${info.rs3m}% over 3 months` };
+  }
+
   return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
-    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry };
+    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry, stockScores, breakout20 };
 });
