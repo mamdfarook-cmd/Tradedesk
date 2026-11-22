@@ -94,6 +94,11 @@
     const biasCol = bias?.cls==='bull'?'var(--bull)':bias?.cls==='bear'?'var(--bear)':'var(--neu)';
     const breadth = d.breadth;
     const iv = d.ivRank;
+    /* FII / DII (22 Nov 2026): last session's cash-market net, Rs Cr; the reason when no source answered */
+    const fd = d.fiiDii?.days?.[0], fsg = v => v == null ? 'n/a' : `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString('en-IN')}`;
+    const fiiCard = `<div class="td-mtab" title="${fd ? 'Net buying, Rs Cr (cash market) - ' + escHtml(d.fiiDii.source || '') : escHtml(d.fiiDiiError || 'not loaded yet')}"><div class="td-mtab-name">FII/DII${fd ? ' ' + new Date(fd.date + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'}) : ''}</div>`
+      + (fd ? `<div class="td-mtab-val" style="color:${fd.fii >= 0 ? 'var(--bull)' : 'var(--bear)'}">FII ${fsg(fd.fii)}</div><div class="td-mtab-chg" style="color:${fd.dii == null ? 'var(--tx3)' : fd.dii >= 0 ? 'var(--bull)' : 'var(--bear)'}">DII ${fsg(fd.dii)}</div>`
+        : `<div class="td-mtab-val" style="color:var(--tx3)">--</div><div class="td-mtab-chg" style="color:var(--tx3)">${d.fiiDiiError ? 'source unreachable' : 'loading'}</div>`) + `</div>`;
     const biasCard = `<div class="td-mtab"><div class="td-mtab-name">Global Bias</div><div class="td-mtab-val" style="color:${biasCol}">${bias?.label||'--'}</div><div class="td-mtab-chg" style="color:${biasCol}">Score ${Number.isFinite(bias?.score)?bias.score.toFixed(1):'--'}</div></div>`;
     const breadthCard = `<div class="td-mtab"><div class="td-mtab-name">A/D Ratio</div><div class="td-mtab-val" style="color:${(breadth?.adRatio||0)>1?'var(--bull)':'var(--bear)'}">${breadth?breadth.advances+'↑ '+breadth.declines+'↓':'--'}</div><div class="td-mtab-chg">${breadth?breadth.adRatio+':1':'--'}</div></div>`;
     const ivCard = `<div class="td-mtab"><div class="td-mtab-name">IV Percentile</div><div class="td-mtab-val" style="color:${iv?.rank<30?'var(--bull)':iv?.rank>70?'var(--bear)':'var(--neu)'}">${iv?.rank??'--'}%</div><div class="td-mtab-chg">${iv?.signal==='cheap'?'BUY opts':iv?.signal==='expensive'?'SELL opts':'Fair'}</div></div>`;
@@ -101,7 +106,7 @@
       <div class="td-market-head"><div class="td-market-title">Global Market Snapshot</div><div class="td-market-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>
       <div class="td-market-sec">India</div>
       <div class="td-market-grid">
-        ${biasCard}${marketCard('India VIX',d.vix,2)}${ivCard}${breadthCard}
+        ${biasCard}${marketCard('India VIX',d.vix,2)}${ivCard}${breadthCard}${fiiCard}
       </div>
       <div class="td-market-sec">US now · futures (trade almost round the clock)</div>
       <div class="td-market-grid">

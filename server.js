@@ -1537,6 +1537,9 @@ function classifyAndScoreNews(item, ctx) {
   };
 }
 
+function isQuotePageTitle(t) {
+  return /\b(share|stock) price\b/i.test(t) && !/\b(jumps?|jumped|falls?|fell|rises?|rose|gains?|gained|drops?|dropped|slumps?|surges?|surged|soars?|tanks?|targets?|tops?|hits?|crash(es|ed)?|rall(y|ies|ied)|slips?|climbs?|plunges?|up|down|after|on|as)\b/i.test(t);
+}
 function finalizeNews(rawItems, ctx, opts = {}) {
   const seen = new Set();
   const out = [];
@@ -1547,7 +1550,7 @@ function finalizeNews(rawItems, ctx, opts = {}) {
     const title = newsClean(raw.title || '');
     if (title.length < 10) continue;
     /* Quote pages ("ITC Share Price Today - Live NSE/BSE", "ITC Share Price - Upstox") are not news (22 Nov 2026). */
-    if (/(share|stock) price/i.test(title) && !/(jump|fall|rise|gain|drop|slump|surge|soar|tank|target|top|hit|crash|rall|slip|climb|plunge|up|down)\w*/i.test(title)) continue;
+    if (isQuotePageTitle(title)) continue;
     const item = classifyAndScoreNews({ ...raw, title, desc: newsClean(raw.desc || raw.description || '') }, ctx);
     if (maxAgeHrs > 0) {
       const ageHrs = Math.max(0, (Date.now() - (item.publishedAt || Date.now())) / 3600000);
@@ -1811,7 +1814,7 @@ async function apiNews(req, res, p) {
   const raw  = String(p.get('name') || sym).slice(0, 80);
   const name = raw.replace(/MCX:|NSE:|CRYPTO:/g,'').replace(/[()]/g,'').trim();
   const ctx  = buildNewsContext(name, sym);
-  const key  = `news_v14_${sym}_${newsHash(name)}`;
+  const key  = `news_v15_${sym}_${newsHash(name)}`;
 
   const hit = NEWS_CACHE[key];
   if (hit && Date.now() - hit.ts < (hit.ttl || NEWS_TTL)) {
@@ -4409,6 +4412,8 @@ setTimeout(() => freeCalendarTick().catch(() => {}), 3 * 60e3);
 setInterval(() => freeCalendarTick().catch(() => {}), 60 * 60e3);
 /* FII / DII cash-market net (Rs Cr) from Moneycontrol, last 10 sessions; the saved copy when it fails. */
 let FII_INFLIGHT = null;
+setTimeout(() => getFiiDii().catch(() => {}), 60e3);
+setInterval(() => getFiiDii().catch(() => {}), 60 * 60e3);
 async function getFiiDii() {
   if (FREE_CAL.fiiDii && Date.now() - FREE_CAL.fiiTs < 3 * 3600e3) return FREE_CAL.fiiDii;
   if (FII_INFLIGHT) return FII_INFLIGHT;
@@ -4422,8 +4427,29 @@ async function getFiiDii() {
       const days = (Array.isArray(rows) ? rows : []).map(x => ({ date: String(x.date || '').slice(0, 10), fii: num(x.fiiCM), dii: num(x.diiCM), fiiIdxFut: num(x.fiiIdxFut) }))
         .filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x.date) && x.fii != null && x.dii != null).slice(0, 10);
       if (!days.length) throw new Error('no FII / DII rows');
-      FREE_CAL.fiiDii = { days, source: 'Moneycontrol (NSE provisional data)', fetchedAt: new Date().toISOString() }; FREE_CAL.fiiTs = Date.now(); saveFreeCal();
-    } catch (e) { console.warn('FII / DII:', e.message); FREE_CAL.fiiTs = Date.now() - 2 * 3600e3; }   /* try again in an hour */
+      FREE_CAL.fiiDii = { days, source: 'Moneycontrol (NSE provisional data)', fetchedAt: new Date().toISOString() }; FREE_CAL.fiiTs = Date.now(); FREE_CAL.fiiErr = null; saveFreeCal();
+    } catch (e) {
+      const mcErr = 'Moneycontrol: ' + e.message;
+      console.warn('FII / DII', mcErr);
+      /* Second source: NSDL (the depository) - FPI equity net on the stock exchanges, reported for the previous
+         trading day. FII only (no DII). Used when Moneycontrol refuses this server. */
+      try {
+        const r = await withTimeout(get('https://www.fpi.nsdl.co.in/web/Reports/Latest.aspx', { Accept: 'text/html' }), 15000, 'NSDL FPI');
+        if (r.status !== 200) throw new Error('HTTP ' + r.status);
+        const t = String(r.body).replace(/<script[\s\S]*?<\/script>/g, ' ').replace(/<[^>]+>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ');
+        const m = t.match(/(\d{2}-[A-Za-z]{3}-\d{4})\s+Equity\s+Stock Exchange\s+([\d,.]+)\s+([\d,.]+)\s+(\(?[\d,.]+\)?)/);
+        if (!m) throw new Error('unexpected NSDL page');
+        const num = v => { const neg = /\(/.test(v), n = +String(v).replace(/[(),]/g, ''); return neg ? -n : n; };
+        const date = nseDdMmmToKey(m[1]);
+        if (!date) throw new Error('NSDL date');
+        const prev = (FREE_CAL.fiiDii?.days || []).filter(x => x.date !== date && x.src === 'nsdl');
+        FREE_CAL.fiiDii = { days: [{ date, fii: num(m[4]), dii: null, src: 'nsdl' }, ...prev].slice(0, 10), source: 'NSDL (FPI equity, stock exchange; no DII)', fetchedAt: new Date().toISOString() };
+        FREE_CAL.fiiTs = Date.now(); FREE_CAL.fiiErr = mcErr; saveFreeCal();
+      } catch (e2) {
+        FREE_CAL.fiiErr = `${mcErr}; NSDL: ${e2.message}`; console.warn('FII / DII NSDL:', e2.message);
+        FREE_CAL.fiiTs = Date.now() - 2 * 3600e3;   /* try again in an hour */
+      }
+    }
     return FREE_CAL.fiiDii;
   })().finally(() => { FII_INFLIGHT = null; });
   return FII_INFLIGHT;
@@ -5813,7 +5839,9 @@ async function apiGlobal(req,res){
     data.ivRank = ivRankData;
 
     data.breadth = await breadthP;
-    try { data.fiiDii = await withTimeout(getFiiDii(), 16000, 'FII / DII'); } catch { data.fiiDii = FREE_CAL.fiiDii || null; }
+    /* fetched in the background (start-up, then hourly when 3 h old): the page waits at most 4 s for it */
+    data.fiiDii = await withTimeoutFallback(getFiiDii().catch(() => FREE_CAL.fiiDii || null), 4000, FREE_CAL.fiiDii || null);
+    data.fiiDiiError = FREE_CAL.fiiErr || null;
 
     /* A ticker that still failed shows its last good value (up to 30 min old, marked stale) instead of
        nothing; whatever is missing or stale is listed in partial and the result is cached for 30 s only,
@@ -5906,7 +5934,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){const ks=kiteStatus();send(res,{kite:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,noMarketData:ks.noMarketData,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
+function apiHealth(req,res){const ks=kiteStatus();send(res,{freeSources:{fiiDii:FREE_CAL.fiiDii?{source:FREE_CAL.fiiDii.source,last:FREE_CAL.fiiDii.days?.[0]?.date,fetchedAt:FREE_CAL.fiiDii.fetchedAt}:null,fiiDiiError:FREE_CAL.fiiErr||null,yahooCalendarStocks:Object.keys(FREE_CAL.earn||{}).length,yahooSplitsAt:FREE_CAL.splitsTs?new Date(FREE_CAL.splitsTs).toISOString():null,resultsSource:RESULTS_CAL_CACHE?.source||null},kite:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,noMarketData:ks.noMarketData,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -6537,7 +6565,7 @@ async function globalCueS() {
 /* Market-moving headlines for the brief: the Nifty news list (the News tab's cache when under an hour old),
    last 18 hours, only headlines with a clear up / down impact, strongest first. */
 async function marketHeadlinesS() {
-  const sym = 'NSE:NIFTY', name = 'NIFTY', ctx = buildNewsContext(name, sym), c = NEWS_CACHE[`news_v14_${sym}_${newsHash(name)}`];
+  const sym = 'NSE:NIFTY', name = 'NIFTY', ctx = buildNewsContext(name, sym), c = NEWS_CACHE[`news_v15_${sym}_${newsHash(name)}`];
   let items = c && Date.now() - c.ts < 60 * 60e3 ? c.payload?.items || [] : null;
   if (!items) { const all = await withTimeout(gatherAllNews(ctx), 15000, 'news'); items = finalizeNews(all.items || [], ctx); }
   /* Market recaps ("Sensex jumps 500 points", "Stock market LIVE") and broker pick lists ("Stocks to buy") describe

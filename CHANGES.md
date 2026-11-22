@@ -1,3 +1,13 @@
+# FII / DII on the phone, news headlines only (22 Nov 2026 · page version 22 Nov 2026 · 3)
+
+- FII / DII: the phone's Markets page now has a FII/DII card (it was only added to the desktop sidebar). A second
+  source, NSDL (the depository), is used when Moneycontrol refuses the server: FII only, the settled figure for the
+  previous trading day (it differs from the provisional NSE figure). When neither answers the card says
+  "source unreachable"; /api/health shows the reason under freeSources. Fetched in the background at start-up and
+  hourly, so the Markets page never waits for it.
+- News: headlines only, as before (the news APIs send the article's opening text, which was printed under each
+  headline). Quote pages ("ITC Share Price - Upstox", "... Share Price Today ...") are now really dropped.
+
 # When NSE or Zerodha is missing: free fallbacks, fewer Yahoo calls, news fixed (22 Nov 2026 · page version 22 Nov 2026 · 2)
 
 - NSE refuses Render, so results dates, bonus / split dates and FII / DII never arrived there. Now, while NSE's own list

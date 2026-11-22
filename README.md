@@ -108,7 +108,8 @@ the last error, if any; nseCookie: how often NSE's cookie page was fetched (abou
 answers to this server (status, time, cookies, start of the body when not 200 - "Access Denied" / 403 means NSE
 refuses this server's address); nseRefused: how often that happened (no NSE live call for 5 minutes after each).
 
-FII / DII (22 Nov 2026): from Moneycontrol's FII / DII page, every 3 hours (NSE refuses Render's address; Kite has none).
+FII / DII (22 Nov 2026): from Moneycontrol's FII / DII page, every 3 hours; NSDL (FPI only, settled figure) when
+Moneycontrol refuses. NSE refuses Render's address; Kite has none. /api/health -> freeSources shows the source or the error.
 When NSE refuses: results dates and dividend ex-dates from Yahoo's calendar (estimates are notes, not blocks), bonus /
 split ex-dates from Yahoo's split calendar, the universe re-priced from the saved list. ASM / GSM: NSE only. Saved in
 data/free-cal.json.

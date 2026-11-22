@@ -379,11 +379,6 @@ async function fetchLiveNews(sym, name) {
 }
 
 /* Google News puts the headline (plus the source) in the description, so the card printed it twice. */
-function newsDescRepeatsTitle(i){
-  const n = s => String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
-  const t = n(i.title).split(' ').slice(0, 10).join(' '), d = n(i.desc);
-  return !!t && d.startsWith(t);
-}
 /* ── INDIA VIX ── */
 async function fetchVIX() {
   try { return (await apiFetch('/api/vix')).vix; } catch { return null; }
@@ -542,7 +537,7 @@ async function loadGlobalBar() {
       if (el) { el.innerHTML = `<div style="font-weight:700;color:${c(x.fii)}">FII ${f(x.fii)}</div><div style="font-size:.75rem;color:${c(x.dii)}">DII ${f(x.dii)}</div>`;
         el.title = `5 sessions: FII ${f(sum('fii'))} · DII ${f(sum('dii'))} Cr (${d.fiiDii.source})`; }
       if (lab) lab.textContent = `Cash ₹ Cr · ${new Date(x.date + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'})}`;
-    }
+    } else if (d.fiiDiiError) { const lab = document.getElementById('g-fii-d'); if (lab) { lab.textContent = 'Source unreachable'; lab.title = d.fiiDiiError; } }
     return GLOBAL_DATA;
 
   } catch(e) { console.warn('Global data load failed:', e.message); return GLOBAL_DATA; }
@@ -2632,7 +2627,6 @@ async function tabNews(sym, opts = {}){
       const catStr = i.category ? ` · ${i.category}` : '';
       return `<div class="ni" style="border-left:3px solid ${sentCol}">
         <div class="nit"><a href="${safeUrl(i.link)}" target="_blank" rel="noopener" style="text-decoration:none;color:var(--tx)">${escHtml(i.title || 'Untitled')}</a></div>
-        ${i.desc && !newsDescRepeatsTitle(i)?`<div style="font-size:.72rem;color:var(--tx2);margin:4px 0 6px;line-height:1.4">${escHtml(i.desc)}</div>`:''}
         <div class="nim">
           <span class="nis">${escHtml(i.source || 'News')}</span>
           <span>${timeAgo(i.publishedAt || i.date)}</span>
