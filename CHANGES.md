@@ -1,3 +1,10 @@
+# Nifty Midcap 150 works as an index; "Analysis" tab name (22 Nov 2026 · page version 22 Nov 2026 · 4)
+
+- Nifty Midcap 150 opened like a stock (Overview, stock checks): the page's own list of index codes was missing it,
+  and 8 sector indices (Consumer Durables, Fin Services ex-Bank, Housing, Consumption, PSE, Commodities, Digital,
+  Tourism). The list now matches the server's, so they open on Analysis with Market Pulse like Nifty Next 50.
+- Index pages: the "Technicals" sub-tab is now called "Analysis", the same name the other pages use.
+
 # FII / DII on the phone, news headlines only (22 Nov 2026 · page version 22 Nov 2026 · 3)
 
 - FII / DII: the phone's Markets page now has a FII/DII card (it was only added to the desktop sidebar). A second

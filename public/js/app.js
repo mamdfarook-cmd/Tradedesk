@@ -14,7 +14,9 @@ const API = window.location.hostname === 'localhost' || window.location.hostname
   : ''; /* same origin on Render too */
 
 const POPULAR=[]; /* Popular stocks removed: use search only */
-const NSE_INDEX_CODES = new Set(['NIFTY','BANKNIFTY','NIFTYNXT50','FINNIFTY','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYMEDIA','NIFTYPSUBANK','NIFTYPVTBANK','NIFTYENERGY','NIFTYOILGAS','NIFTYHEALTH','NIFTYINFRA']);
+/* Same list as the server's (22 Nov 2026: Midcap 150 and 8 sector indices were missing here, so the page treated them as stocks). */
+const NSE_INDEX_CODES = new Set(['NIFTY','BANKNIFTY','NIFTYNXT50','FINNIFTY','NIFTYIT','NIFTYAUTO','NIFTYPHARMA','NIFTYFMCG','NIFTYMETAL','NIFTYREALTY','NIFTYMEDIA','NIFTYPSUBANK','NIFTYPVTBANK','NIFTYENERGY','NIFTYOILGAS','NIFTYHEALTH','NIFTYINFRA',
+  'NIFTYMID150','NIFTYCONSDUR','NIFTYFINEXBANK','NIFTYHOUSING','NIFTYCONSUMPTION','NIFTYPSE','NIFTYCOMMODITIES','NIFTYDIGITAL','NIFTYTOURISM']);
 
 let CUR_SYM=null, CUR_DATA=null, DATA_CACHE={}, AI_CACHE={};
 let LOAD_SEQ = 0;
@@ -29,7 +31,7 @@ Object.keys(AI_CACHE).filter(k => k.startsWith('news_')).forEach(k => delete AI_
 
 /* Global stock name map — used by search, screener, doSearch */
 const CLIENT_NAMES = {
-  'NIFTY':'Nifty 50','BANKNIFTY':'Bank Nifty','NIFTYNXT50':'Nifty Next 50',
+  'NIFTY':'Nifty 50','BANKNIFTY':'Bank Nifty','NIFTYNXT50':'Nifty Next 50','NIFTYMID150':'Nifty Midcap 150',
   'FINNIFTY':'Nifty Financial Services',
   'NIFTYIT':'Nifty IT','NIFTYAUTO':'Nifty Auto','NIFTYPHARMA':'Nifty Pharma','NIFTYFMCG':'Nifty FMCG',
   'NIFTYMETAL':'Nifty Metal','NIFTYREALTY':'Nifty Realty','NIFTYMEDIA':'Nifty Media','NIFTYPSUBANK':'Nifty PSU Bank',
@@ -2739,7 +2741,7 @@ const STOCK_SECTOR = {
   'NSE:NIFTYIT':'Index','NSE:NIFTYAUTO':'Index','NSE:NIFTYPHARMA':'Index','NSE:NIFTYFMCG':'Index',
   'NSE:NIFTYMETAL':'Index','NSE:NIFTYREALTY':'Index','NSE:NIFTYMEDIA':'Index','NSE:NIFTYPSUBANK':'Index',
   'NSE:NIFTYPVTBANK':'Index','NSE:NIFTYENERGY':'Index','NSE:NIFTYOILGAS':'Index','NSE:NIFTYHEALTH':'Index',
-  'NSE:NIFTYINFRA':'Index',
+  'NSE:NIFTYINFRA':'Index','NSE:NIFTYMID150':'Index',
 };
 
 /* Sector from NSE's official industry classification (server /api/sector-map), loaded once per session. */
@@ -5118,7 +5120,7 @@ function getPriceLocationSnapshot(srLevels){
 const PRIVATE_BANK_KEYS = new Set(['HDFCBANK','ICICIBANK','KOTAKBANK','AXISBANK','INDUSINDBK','FEDERALBNK','AUBANK','BANDHANBNK','IDFCFIRSTB','YESBANK']);
 const PSU_BANK_KEYS = new Set(['SBIN','PNB','BANKBARODA','CANBK','UNIONBANK','BANKINDIA','CENTRALBK','INDIANB','IOB','MAHABANK','UCOBANK']);
 const INDEX_SECTOR_KEY = {
-  NIFTY:['nifty50'], BANKNIFTY:['bank'], FINNIFTY:['finnifty','finexbank'], NIFTYNXT50:['next50'],
+  NIFTY:['nifty50'], BANKNIFTY:['bank'], FINNIFTY:['finnifty','finexbank'], NIFTYNXT50:['next50'], NIFTYMID150:['midcap150'],
   NIFTYIT:['it'], NIFTYAUTO:['auto'], NIFTYPHARMA:['pharma'], NIFTYFMCG:['fmcg'], NIFTYMETAL:['metal'],
   NIFTYREALTY:['realty'], NIFTYMEDIA:['media'], NIFTYPSUBANK:['psubank'], NIFTYPVTBANK:['pvtbank'],
   NIFTYENERGY:['energy'], NIFTYOILGAS:['oilgas'], NIFTYHEALTH:['health'], NIFTYINFRA:['infra']
@@ -6335,10 +6337,10 @@ async function tabAnalysis(sym) {
   const hasOptions = isIndex && !!IDX_OPT[sym];
   const views = isIndex ? [
     {id:'pulse',      label:'Market Pulse'},
-    {id:'technicals', label:'Technicals'},
+    {id:'technicals', label:'Analysis'},
     ...(hasOptions ? [{id:'strategy', label:'Option Builder'}] : []),
   ] : [
-    {id:'technicals', label:'Technicals'},
+    {id:'technicals', label:'Analysis'},
   ];
 
   if(!views.some(v => v.id === ANALYSIS_VIEW)) ANALYSIS_VIEW = isIndex ? 'pulse' : 'technicals';
