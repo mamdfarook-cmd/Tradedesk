@@ -46,6 +46,7 @@ function importStockTrace(){
     rows.push({ date: r.date, source: 'server scan', rank: '-', sym: r.sym, side: 'Long', bias: r.bias || 'Bullish', entry: ftR(r.entry), current: ftR(r.entry),
       sl: ftR(r.sl), t1: ftR(r.t1), t2: null, trailSl: null, atr: null, rr1: null, rr2: null, score10: r.score10 || null, final: r.final || null, setup: r.setup || null,
       exitMode: r.exitMode || null, t2r: r.t2r ? ftR(r.t2r) : null, tags: r.tags || null, sector: r.sector || null,
+      fresh: Number.isFinite(+r.fresh) && r.fresh !== null ? +r.fresh : null,
       ...(r.pattern ? { pattern: true, planLocked: true, side: 'Long', source: 'pattern breakout' } : {}),
       /* the tested READY gate's own stop and 2R (rows recorded before 21 Nov 2026 have no flag - known by their setup) */
       ...(r.planLocked || ['EMA20/50 cross', 'Gap-up near 52-week high'].includes(String(r.setup || '')) ? { planLocked: true } : {}),

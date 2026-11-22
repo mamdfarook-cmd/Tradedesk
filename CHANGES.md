@@ -1,3 +1,35 @@
+# When NSE or Zerodha is missing: free fallbacks, fewer Yahoo calls, news fixed (22 Nov 2026 · page version 22 Nov 2026 · 2)
+
+- NSE refuses Render, so results dates, bonus / split dates and FII / DII never arrived there. Now, while NSE's own list
+  is missing: results dates and dividend ex-dates come from Yahoo's calendar (a date Yahoo marks as an estimate is shown
+  but does not block an entry), bonus / split ex-dates from Yahoo's split calendar (a bonus appears there as a split),
+  FII / DII from Moneycontrol (new row under A/D Ratio: the last session's cash-market net, 5-session sum on hover).
+  The weekly universe rebuild re-prices the saved list when NSE's index files are refused. ASM / GSM lists stay NSE-only.
+- Zerodha not connected: the Nifty credit-spread and weekly-sell cards use Black-Scholes premiums from India VIX,
+  clearly marked "Estimated premiums"; the 15:05 entry-day alert names the estimated strikes and credit. Estimates are
+  never recorded in the Track record and never used by the scheduled checks.
+- Yahoo load: background checks (price alerts, open-trade stops, MCX buy levels) accept a price up to 90 s old (about
+  half the calls; an alert is at most ~1.5 min late); USD/INR for MCX is fetched every 2 min instead of 10 s; share
+  counts kept 45 days (were refetched weekly); the weekly rebuild skips stocks under Rs 15,000 Cr except in a full
+  check every 4 weeks. The weekly rebuild drops from ~2,400 Yahoo calls to ~500.
+- News: "ITC" matched inside "bitcoin" - names now match whole words only. Marketaux / NewsData.io / Finnhub keys are
+  used on every fetch (they only ran when the free feeds found under 4 headlines - almost never). Quote pages
+  ("ITC Share Price - Upstox") are dropped.
+- Fix: data/universe.json could be overwritten with an empty universe if the results calendar was saved before the
+  universe had loaded.
+
+# Candles drawn, momentum read-out, Fresh score in the Track record (22 Nov 2026 · page version 22 Nov 2026 · 1)
+
+- Analysis -> Candles: the last 3 daily candles are drawn (today's forming one dashed), each with a one-line reading
+  (strong green, long lower wick, doji...) and its close / change; open / high / low / close are in the tooltip.
+- Monthly momentum: a read-out of the 20 stocks - this month from the list's close to now, and their 6 / 12-month
+  returns up to the list date - with Nifty alongside. A stock whose one share costs more than the per-stock amount
+  says so instead of showing quantity 0.
+- Track record (stocks): the "Decision" column showed the old setup engine's score; it is now the Fresh entry score at
+  the signal (worked out by the server during the scan, the Overview's own function, without news / sector).
+- Screener: the universe line says what "built" means - the company list is rebuilt weekly (and after a deploy when it
+  is older than 7 days); prices and market cap are live at every scan.
+
 # Final check before upload: plans matched to the backtests, review fixes (21 Nov 2026 · page version 21 Nov 2026 · 3)
 
 - Nifty bull put matched to its backtest. The app's own rule, sold at the close of the first trading day after a

@@ -198,3 +198,11 @@
 .fbx-chips span.sup{border-color:rgba(76,175,80,.45)}.fbx-chips span.res{border-color:rgba(244,67,54,.4)}.fbx-chips span.near{border-color:var(--acc);color:var(--acc)}
 .fbx-note{margin-top:6px;font-size:.7rem;color:var(--tx3)}
 @media(max-width:520px){.srx{grid-template-columns:1fr}}
+
+/* Last 3 candles (22 Nov 2026) */
+.c3{margin:6px 0 4px}
+.c3 svg{display:block;width:100%;max-width:420px;height:auto;margin:0 auto}
+.c3-legend{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:6px;margin-top:6px}
+.c3-legend div{display:flex;flex-direction:column;gap:1px;font-size:.7rem;color:var(--tx2);text-align:center;min-width:0}
+.c3-legend b{color:var(--tx);font-size:.72rem}.c3-legend em{font-style:normal;color:var(--tx3);font-variant-numeric:tabular-nums}
+.mom-perf{grid-template-columns:repeat(3,minmax(0,1fr))!important}

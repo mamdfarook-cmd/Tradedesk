@@ -68,7 +68,8 @@ Recommended Environment Variable: APP_SECRET = any long random text (32+ charact
   Without it the server makes data/secret.key, which Render's free disk loses on every deploy: you would have to
   log in again and turn background alerts on again after each deploy.
 Recommended Environment Variable: NODE_ENV = production
-Optional news API variables: MARKETAUX_KEY, FINNHUB_KEY, NEWSDATA_KEY
+Optional news API variables: MARKETAUX_KEY, FINNHUB_KEY, NEWSDATA_KEY (used on every news fetch alongside the free
+  feeds; a symbol's news is cached 15 minutes, well inside their free daily limits)
 Optional: TRUST_PROXY_HOPS (default 1 in production, 0 locally)
 Optional: NSE_HOLIDAYS = extra trading holidays, comma-separated YYYY-MM-DD (the server also reads NSE's own list daily)
 ```
@@ -107,11 +108,15 @@ the last error, if any; nseCookie: how often NSE's cookie page was fetched (abou
 answers to this server (status, time, cookies, start of the body when not 200 - "Access Denied" / 403 means NSE
 refuses this server's address); nseRefused: how often that happened (no NSE live call for 5 minutes after each).
 
-FII / DII was removed on 18 Nov 2026: NSE refuses Render's address and Zerodha Kite has no FII / DII data.
+FII / DII (22 Nov 2026): from Moneycontrol's FII / DII page, every 3 hours (NSE refuses Render's address; Kite has none).
+When NSE refuses: results dates and dividend ex-dates from Yahoo's calendar (estimates are notes, not blocks), bonus /
+split ex-dates from Yahoo's split calendar, the universe re-priced from the saved list. ASM / GSM: NSE only. Saved in
+data/free-cal.json.
 
 Data sources (18 Nov 2026). NSE refuses Render's address, so NSE market-data requests were removed:
 - Option premiums: Zerodha Kite only (live, any expiry). Not connected: the last saved Kite chain on the pages,
-  Black-Scholes estimates otherwise; the entry-day rule check and the Track record need Kite.
+  Black-Scholes estimates from India VIX otherwise (marked "Estimated premiums"; the 15:05 entry-day alert names the
+  estimated strikes); the Track record needs Kite.
 - Index values and previous closes: Zerodha Kite when connected, else Yahoo. Fin Services Ex-Bank = FINIETF ETF x the
   ratio learned from Kite, else the built-in ratio 978.8 (FINEXBANK_RATIO overrides it).
 - Trading holidays: NSE's 2026 list is built in (NSE_HOLIDAYS=YYYY-MM-DD,... adds days; add 2027 in December).

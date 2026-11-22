@@ -534,6 +534,15 @@ async function loadGlobalBar() {
         el.innerHTML = `<div style="font-weight:700;color:${col}">${d.breadth.advances}↑ ${d.breadth.declines}↓</div><div style="font-size:.75rem;color:${col}">${d.breadth.adRatio}:1</div>`;
       }
     }
+    /* FII / DII cash-market net from Moneycontrol (22 Nov 2026): the last session, and the 5-session sum on hover. */
+    if (d.fiiDii?.days?.length) {
+      const el = document.getElementById('g-fii-v'), lab = document.getElementById('g-fii-d'), x = d.fiiDii.days[0];
+      const f = v => `${v >= 0 ? '+' : ''}${Math.round(v).toLocaleString('en-IN')}`, c = v => v >= 0 ? 'var(--bull)' : 'var(--bear)';
+      const sum = k => d.fiiDii.days.slice(0, 5).reduce((a, r) => a + (+r[k] || 0), 0);
+      if (el) { el.innerHTML = `<div style="font-weight:700;color:${c(x.fii)}">FII ${f(x.fii)}</div><div style="font-size:.75rem;color:${c(x.dii)}">DII ${f(x.dii)}</div>`;
+        el.title = `5 sessions: FII ${f(sum('fii'))} · DII ${f(sum('dii'))} Cr (${d.fiiDii.source})`; }
+      if (lab) lab.textContent = `Cash ₹ Cr · ${new Date(x.date + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'})}`;
+    }
     return GLOBAL_DATA;
 
   } catch(e) { console.warn('Global data load failed:', e.message); return GLOBAL_DATA; }
@@ -978,6 +987,27 @@ function tabTrend(){
     </div>`;
 }
 
+/* The last 3 daily candles drawn (21 Nov 2026), each with a short reading - easier to read than O / H / L / C boxes. */
+function candles3Html(d, confirmedIdx){
+  const n = d?.C?.length || 0; if(n < 3) return '';
+  const idx = [n - 3, n - 2, n - 1], hi = Math.max(...idx.map(i => +d.H[i])), lo = Math.min(...idx.map(i => +d.L[i])), span = hi - lo || 1;
+  const y = v => 8 + (hi - v) / span * 104;
+  const read = i => {
+    const o = +d.O[i], h = +d.H[i], l = +d.L[i], c = +d.C[i], rg = h - l || 1, body = Math.abs(c - o), up = h - Math.max(o, c), dn = Math.min(o, c) - l;
+    if(body / rg < 0.1) return 'Doji - indecision';
+    if(body / rg > 0.8) return c > o ? 'Strong green - buyers in control' : 'Strong red - sellers in control';
+    if(dn > 2 * body && up < body) return 'Long lower wick - buyers stepped in';
+    if(up > 2 * body && dn < body) return 'Long upper wick - sellers above';
+    return `${c > o ? 'Green' : 'Red'}, body ${Math.round(body / rg * 100)}% of the range`;
+  };
+  const day = i => { const t = d.T?.[i]; const k = t ? marketDateKeyFromTs(t) : ''; return k ? new Date(k + 'T00:00:00').toLocaleDateString('en-IN', {day:'2-digit', month:'short'}) : ''; };
+  const svg = idx.map((i, k) => { const o = +d.O[i], c = +d.C[i], col = c >= o ? 'var(--bull)' : 'var(--bear)', x = 50 + k * 100, top = y(Math.max(o, c)), bot = y(Math.min(o, c));
+    return `<line x1="${x}" x2="${x}" y1="${y(+d.H[i]).toFixed(1)}" y2="${y(+d.L[i]).toFixed(1)}" stroke="${col}" stroke-width="2"/><rect x="${x - 16}" y="${top.toFixed(1)}" width="32" height="${Math.max(1.5, bot - top).toFixed(1)}" rx="2" fill="${col}"${i > confirmedIdx ? ' fill-opacity=".45" stroke-dasharray="3 2"' : ''} stroke="${col}"/>`; }).join('');
+  return `<div class="c3">
+    <svg viewBox="0 0 300 120" role="img" aria-label="Last 3 daily candles">${svg}</svg>
+    <div class="c3-legend">${idx.map(i => `<div title="O ${fmt(d.O[i])} · H ${fmt(d.H[i])} · L ${fmt(d.L[i])} · C ${fmt(d.C[i])}"><b>${escHtml(day(i))}${i > confirmedIdx ? ' · forming' : ''}</b><span>${escHtml(read(i))}</span><em>${fmt(d.C[i])} (${+d.C[i] >= +d.C[i - 1] ? '+' : ''}${((+d.C[i] / +d.C[i - 1] - 1) * 100).toFixed(1)}%)</em></div>`).join('')}</div>
+  </div>`;
+}
 function tabPatterns(){
   const{C,O,H,L}=CUR_DATA.daily,n=C.length;
   const todayO=O[n-1],todayH=H[n-1],todayL=L[n-1],todayC=C[n-1],prevC=C[n-2],prevO=O[n-2],prevH=H[n-2],prevL=L[n-2];
@@ -989,16 +1019,10 @@ function tabPatterns(){
   const confirmedIdx=getConfirmedDailyIndex(CUR_DATA.daily);
   const pats=detectPatterns(CUR_DATA.daily, confirmedIdx);
   return`<div class="candle-card">
-    <div class="candle-header"><div><div class="candle-title">Latest Daily Candle — Live / Forming</div><div style="font-size:.72rem;color:var(--tx3);margin-top:2px">${isBull?'Bullish (Green)':isBear?'Bearish (Red)':'Doji'} · Body ${bodyPct}% of range</div></div>${bdg({l:isBull?'Bullish':isBear?'Bearish':'Neutral',c:isBull?'bull':isBear?'bear':'neutral'})}</div>
+    <div class="candle-header"><div><div class="candle-title">Last 3 daily candles</div><div style="font-size:.72rem;color:var(--tx3);margin-top:2px">${isBull?'Bullish (Green)':isBear?'Bearish (Red)':'Doji'} · Body ${bodyPct}% of range</div></div>${bdg({l:isBull?'Bullish':isBear?'Bearish':'Neutral',c:isBull?'bull':isBear?'bear':'neutral'})}</div>
     <div style="margin-bottom:12px"><span class="gap-badge ${isGapUp?'gap-up':isGapDown?'gap-down':'gap-flat'}">${isGapUp?'▲':isGapDown?'▼':'→'} ${isGapUp?`Gap Up ${fmt(Math.abs(gapAbs))} (${Math.abs(gapPct).toFixed(2)}%)`:isGapDown?`Gap Down ${fmt(Math.abs(gapAbs))} (${Math.abs(gapPct).toFixed(2)}%)`:`Flat Open (${gapPct.toFixed(2)}%)`}</span>
     <div style="font-size:.75rem;color:var(--tx3)">Open <strong style="color:var(--tx)">${fmt(todayO)}</strong> vs Previous Close <strong style="color:var(--tx)">${fmt(prevC)}</strong></div></div>
-    <div class="candle-prices">
-      <div class="cp-item"><div class="cp-label">Open</div><div class="cp-val">${fmt(todayO)}</div></div>
-      <div class="cp-item"><div class="cp-label">High</div><div class="cp-val" style="color:var(--bull)">${fmt(todayH)}</div></div>
-      <div class="cp-item"><div class="cp-label">Low</div><div class="cp-val" style="color:var(--bear)">${fmt(todayL)}</div></div>
-      <div class="cp-item"><div class="cp-label">Close</div><div class="cp-val" style="color:${isBull?'var(--bull)':isBear?'var(--bear)':'var(--neu)'}">${fmt(todayC)}</div></div>
-    </div>
-    <div style="font-size:.75rem;color:var(--tx3);padding:8px 0;border-top:1px solid var(--brd)">Previous Session — Close: <strong>${fmt(prevC)}</strong> · H: <strong style="color:var(--bear)">${fmt(prevH)}</strong> · L: <strong style="color:var(--bull)">${fmt(prevL)}</strong></div>
+    ${candles3Html(CUR_DATA.daily, confirmedIdx)}
   </div>`+(pats.length?secT(`Confirmed Candle Patterns — completed session ${(()=>{const t=CUR_DATA.daily?.T?.[confirmedIdx];return t?marketDateKeyFromTs(t):'';})()} (not today's forming candle)`)+`<div class="pat-list">${pats.map(p=>`<div class="pat-item"><div><div class="pat-name">${p.name}</div><div class="pat-note">${p.note}</div></div>${bdg({l:p.s==='neutral'?'Neutral':p.s.includes('bull')?'Bullish':'Bearish',c:p.s})}</div>`).join('')}</div>`:`<div style="padding:12px 0;font-size:.82rem;color:var(--tx3);text-align:center">No strong confirmed pattern on the completed candle</div>`);
 }
 
@@ -2014,7 +2038,7 @@ async function buildIndexOptionsIdea(sym){
     weekly = SwingPlan.niftyWeeklySells(ruleChain, { spot: +ruleChain.spot || spot, trendUp, trendDown, daysToExpiry: ideaDaysTo(ruleChain.expiry), step: cfg.step });
     if(weekly) weekly.entry = SwingPlan.weeklySellEntry(istDateKey(), nearest, d => NSE_HOL_CLIENT.has(d), chain?.expiries);
   }
-  return (LAST_IDX_IDEA = { sym, cfg, spot, e20, e50, rule, weekly, ruleExpiry: ruleChain?.expiry || null });
+  return (LAST_IDX_IDEA = { sym, cfg, spot, e20, e50, rule, weekly, ruleExpiry: ruleChain?.expiry || null, estimated: !!ruleChain?.estimated, chainSource: ruleChain?.source || '' });
 }
 /* NSE option chain via the server (cached there 3 min); client keeps it 3 min too. Null when NSE is unreachable. */
 const IDEA_CHAIN_CACHE = {};
@@ -2066,6 +2090,7 @@ function creditRuleHtml(x){
   return `<div class="idea-card" data-idx-rule style="border-color:${r.ok ? 'var(--bull)' : 'var(--brd)'}">
     <div class="idea-head"><div><div class="idea-kicker">Your credit-spread rule · Nifty · expiry ${escHtml(ideaDate(x.ruleExpiry || ''))} (${r.daysToExpiry} days)</div><div class="idea-title">${escHtml(r.verdict)}</div></div>
       <div class="idea-view ${r.ok && x.weekly?.entry?.isEntryDay ? 'bull' : 'neutral'}">${!r.ok ? 'NO TRADE' : x.weekly?.entry?.isEntryDay ? 'ENTRY TODAY' : 'PASS · WAIT'}</div></div>
+    ${x.estimated ? `<div class="idea-foot" style="margin:4px 0 6px;color:var(--neu)"><b>Estimated premiums</b> - ${escHtml(x.chainSource)}. Strikes and credit are Black-Scholes estimates; check the real credit in your broker before selling (connect Zerodha for live premiums).</div>` : ''}
     ${x.weekly?.entry ? `<div class="idea-foot" style="margin:4px 0 6px">${x.weekly.entry.isEntryDay ? '<b style="color:var(--bull)">Entry day today</b> - sell the spread near the close (after 15:00).' : `Entered only at the close of the first trading day after an expiry - next: <b>${escHtml(ideaDate(x.weekly.entry.entryDay))}</b>. Levels below are today's, for reference.`}</div>` : ''}
     <div class="rule-grid">${sideHtml(r.put)}${sideHtml(r.call)}</div>
     ${r.ok ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'option', sym:'NSE:NIFTY', name:'Nifty', setup: r.pick.type, optType: r.pick.ty, shortStrike: r.pick.sell, longStrike: r.pick.buy, credit: r.pick.credit, wing: Math.abs(r.pick.sell - r.pick.buy), lotQty: x.cfg.lot, expiry: x.ruleExpiry})})">📒 I took this trade</button>` : ''}
@@ -2076,8 +2101,8 @@ function creditRuleHtml(x){
 function weeklySellHtml(x){
   const w = x?.weekly; if(!x || x.sym !== 'NSE:NIFTY' || !w) return '';
   const lot = x.cfg.lot, e = w.entry, t = w.trend, g = w.strangle;
-  const when = !e ? '' : e.isEntryDay ? `<b style="color:var(--bull)">Entry day today</b> - sell near the close (after 15:00) for the ${escHtml(ideaDate(x.ruleExpiry || ''))} expiry`
-    : `Next entry: <b>${escHtml(ideaDate(e.entryDay))}</b> at the close (the first trading day after an expiry). Levels below are today's, for reference.`;
+  const when = (!e ? '' : e.isEntryDay ? `<b style="color:var(--bull)">Entry day today</b> - sell near the close (after 15:00) for the ${escHtml(ideaDate(x.ruleExpiry || ''))} expiry`
+    : `Next entry: <b>${escHtml(ideaDate(e.entryDay))}</b> at the close (the first trading day after an expiry). Levels below are today's, for reference.`) + (x.estimated ? ' <b style="color:var(--neu)">Premiums are Black-Scholes estimates (Zerodha not connected).</b>' : '');
   const side = (title, ok, body, stats) => `<div class="rule-side${ok ? ' picked' : ''}"><b>${title}</b>${body}<div class="idea-foot">${stats}</div></div>`;
   const tBody = t.ok ? `<div class="rule-legs">Sell <b>${t.strike} ${t.ty === 'P' ? 'PE' : 'CE'}</b> ₹${fmt(t.premium)} (₹${fmt(t.premium * lot, 0)} a lot) · ${fmt(t.away)}% away · delta ${fmt(Math.abs(t.delta))}</div>
       <div class="rule-legs">Exit if it <b>closes at ₹${fmt(t.exitAt)}</b> or more (loss ≈ ₹${fmt(t.premium * lot, 0)} a lot), else hold to expiry</div>`
@@ -3992,13 +4017,13 @@ async function tabForwardTest() {
       <td>${ftMoney(r.current)}<br><span style="color:${retCol};font-weight:800">${ftPct(r.retNow)}</span></td>
       <td style="color:${statusCol};font-weight:800">${escHtml(r.status||'Open')}</td>
       <td style="color:${resCol};font-weight:900">${ftRText(r.resultR)}</td>
-      <td>${escHtml(r.final||r.score10||'--')}%</td>
+      <td>${r.fresh != null ? escHtml(String(r.fresh)) : '--'}</td>
     </tr>`;
   }).join('') : `<tr><td colspan="10">No records yet. Each READY pick in Screener Match is saved here automatically and tracked to its stop or target.</td></tr>`;
   if(!live()) return;
   tc.innerHTML = `${typeof traceSubTabs === 'function' ? traceSubTabs('stock') : ''}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">Track Record — how past screener picks played out</div><button onclick="localStorage.removeItem(FORWARD_TEST_KEY);tabForwardTest()" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear Records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Every READY pick is recorded at the price when it turned READY (the server records the 11:00 / 15:00 scan picks even when the app is closed) and checked on each day's candle. Picks from 19 Nov 2026 follow the tested exit: all at 2R or the stop, else the close of day 15; older ones keep their T1 / T2 plan. The signal day's candle is not judged because its high/low may have come before the signal.</div></div>
   <div class="scr-summary"><div class="scr-sum-card"><div class="scr-sum-label">Records</div><div class="scr-sum-val">${rows.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Open / Trail</div><div class="scr-sum-val" style="color:var(--acc)">${openCount}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Closed R Samples</div><div class="scr-sum-val">${finished.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Win Rate</div><div class="scr-sum-val" style="color:var(--bull)">${winRate}${winRate==='--'?'':'%'}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Avg R</div><div class="scr-sum-val" style="color:${(+avgR||0)>=0?'var(--bull)':'var(--bear)'}">${avgR}${avgR==='--'?'':'R'}</div></div></div>
-  <div class="ft-wrap"><table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th>Decision</th></tr></thead><tbody>${body}</tbody></table></div>
+  <div class="ft-wrap"><table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th title="Fresh entry score when the signal was recorded (from 21 Nov 2026)">Fresh</th></tr></thead><tbody>${body}</tbody></table></div>
   ${tagTable}
   <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R); from 19 Nov 2026 the whole position at 2R (+2R) or at the close of day 15. Older records: half booked at T1, the rest at T2 / trail stop / a close through EMA20, at the latest at the close of day 10. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
 }
@@ -4506,11 +4531,14 @@ function renderMomentum(d){
   const rows = d.holdings.map(h => { const qty = h.price > 0 ? Math.floor(per / h.price) : 0; return `<tr class="mom-row" ${open(h.sym)} title="Open ${escHtml(h.sym)}">
       <td>${h.rank}</td><td><b>${escHtml(h.sym)}</b>${h.isNew ? ' <span class="pl-tag ready">New</span>' : ''}<div class="mom-sub">${escHtml(h.sector || '')}</div></td>
       <td>${h.score.toFixed(2)}</td><td>${pct(h.r6)}</td><td>${pct(h.r12)}</td><td>${h.vol.toFixed(0)}%</td>
-      <td>₹${fmt(h.price)}</td><td><b>${qty.toLocaleString('en-IN')}</b><div class="mom-sub">${formatINR(qty * h.price)}</div></td>
+      <td>₹${fmt(h.price)}</td><td>${qty > 0 ? `<b>${qty.toLocaleString('en-IN')}</b><div class="mom-sub">${formatINR(qty * h.price)}</div>` : `<b style="color:var(--neu)">0</b><div class="mom-sub">1 share costs more than ${formatINR(per)}</div>`}</td>
       <td>${h.liveRank ? '#' + h.liveRank : '--'}</td></tr>`; }).join('');
   tc.innerHTML = `${screenerModeSwitch('momentum')}
     <div class="aib mom-head"><b>List for ${escHtml(d.month)}</b> · ranked on the ${dt(d.listDate)} close · buy / sell on <b>${dt(d.rebalanceDay)}</b> · next rebalance <b>${dt(d.nextRebalance)}</b> · ${d.universe.ranked} largest stocks ranked</div>
     ${filter}
+    ${d.perf ? (() => { const P = d.perf, N = P.nifty || {}, cell = (lbl, v, n) => `<div class="tq-cell"><span>${lbl}</span><b style="color:${v == null ? 'var(--tx)' : v >= 0 ? 'var(--bull)' : 'var(--bear)'}">${v == null ? '--' : (v >= 0 ? '+' : '') + v.toFixed(1) + '%'}</b><em>Nifty ${n == null ? '--' : (n >= 0 ? '+' : '') + n.toFixed(1) + '%'}</em></div>`;
+      return `<div class="tq-strip mom-perf">${cell('This month', P.mtd, N.mtd)}${cell('6 months', P.r6, N.r6)}${cell('12 months', P.r12, N.r12)}</div>
+      <div class="idea-foot" style="margin:-6px 0 10px">Equal-weight average of these ${d.holdings.length} stocks: this month from the ${dt(d.listDate)} close to now; 6 / 12 months up to that close (how they got into the list - not past returns of the strategy).</div>`; })() : ''}
     <div class="mom-changes">
       <div><span class="mom-lbl">Sell (left the top 20)</span>${d.sells.length ? d.sells.map(x => `<span class="mom-chip sell" ${open(x.sym)}>${escHtml(x.sym)}${x.nowRank ? ` #${x.nowRank}` : ''}</span>`).join('') : '<span class="mom-none">none</span>'}</div>
       <div><span class="mom-lbl">Buy (new in the top 20)</span>${d.buys.length ? d.buys.map(s => `<span class="mom-chip buy" ${open(s)}>${escHtml(s)}</span>`).join('') : '<span class="mom-none">none</span>'}</div>
@@ -4595,7 +4623,7 @@ function screenerUniverseHtml(data) {
   if (!u) return '';
   if (u.mode !== 'live') return `<div class="scr-universe"><b>Universe:</b> ${escHtml(u.source || '')} — ${escHtml(u.note || '')}</div>`;
   const d = v => v ? new Date(v).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}) : '--';
-  return `<div class="scr-universe"><b>Universe:</b> ${u.eligible} NSE stocks with live market cap &gt; ₹35,000 Cr · ${escHtml(u.source)} · built ${d(u.generatedAt)} · next rebuild ${d(u.nextRebuildAt)}</div>`;
+  return `<div class="scr-universe"><b>Universe:</b> ${u.eligible} NSE stocks with live market cap &gt; ₹35,000 Cr · ${escHtml(u.source)} · company list built ${d(u.generatedAt)}, rebuilt weekly (next ${d(u.nextRebuildAt)}) - prices and market cap are live at every scan</div>`;
 }
 
 /* Results-date chip on a screener card (blocking window in red, just-reported in grey). */

@@ -1155,7 +1155,7 @@ async function getRate(force=false) {
 /* One USD/INR basis fetch serves every MCX request for FX_BASIS_TTL ms, concurrent callers share the
    in-flight fetch, and the whole thing is time-boxed. Previously every MCX quote ran getRate(true)
    plus getPriceAndChange('USDINR=X') (up to 7 Yahoo calls) outside any timeout. */
-const FX_BASIS_TTL = 10 * 1000;
+const FX_BASIS_TTL = 2 * 60 * 1000;   /* USD/INR moves little: one fetch per 2 min serves every MCX quote (was 10 s) */
 let fxBasisCache = null, fxBasisTs = 0, fxBasisInflight = null;
 async function getRateBasis(force=false) {
   if (!force && fxBasisCache && Date.now() - fxBasisTs < FX_BASIS_TTL) return fxBasisCache;
@@ -1399,12 +1399,14 @@ function newsRelevance(item, ctx) {
   const text = newsNorm(`${item.title || ''} ${item.desc || ''}`);
   if (!text) return 0;
   let score = 0;
+  /* Whole words only (22 Nov 2026): "itc" used to match inside "bitcoin", so ITC's news showed crypto stories. The
+     joined form ("hdfcbank" for "HDFC Bank") still counts, but only for names of 6+ letters. */
+  const padded = ` ${text} `, compactT = text.replace(/ /g,'');
   for (const a of ctx.aliases) {
     if (!a || a.length < 3) continue;
     const compactA = a.replace(/ /g,'');
-    const compactT = text.replace(/ /g,'');
-    if (text.includes(a)) score += a.split(' ').length >= 2 ? 35 : 18;
-    else if (compactA.length >= 4 && compactT.includes(compactA)) score += 14;
+    if (padded.includes(` ${a} `)) score += a.split(' ').length >= 2 ? 35 : 18;
+    else if (compactA.length >= 6 && compactT.includes(compactA)) score += 14;
   }
   if (ctx.isIndex && /\b(nifty|sensex|nse|bse|bank nifty|indian stock market)\b/.test(text)) score += 25;
   if (ctx.isGold && /\b(gold|bullion|comex|mcx|dxy|dollar|rupee|usd inr|federal reserve|treasury yields|inflation)\b/.test(text)) score += 30;
@@ -1544,6 +1546,8 @@ function finalizeNews(rawItems, ctx, opts = {}) {
   for (const raw of rawItems || []) {
     const title = newsClean(raw.title || '');
     if (title.length < 10) continue;
+    /* Quote pages ("ITC Share Price Today - Live NSE/BSE", "ITC Share Price - Upstox") are not news (22 Nov 2026). */
+    if (/(share|stock) price/i.test(title) && !/(jump|fall|rise|gain|drop|slump|surge|soar|tank|target|top|hit|crash|rall|slip|climb|plunge|up|down)\w*/i.test(title)) continue;
     const item = classifyAndScoreNews({ ...raw, title, desc: newsClean(raw.desc || raw.description || '') }, ctx);
     if (maxAgeHrs > 0) {
       const ageHrs = Math.max(0, (Date.now() - (item.publishedAt || Date.now())) / 3600000);
@@ -1768,26 +1772,33 @@ async function gatherAllNews(ctx) {
   const health = [];
   let sourceUsed = 'none';
 
-  /* Layer 1: RSS/Google RSS/Pulse in parallel. Fast and free. */
-  const rss = await withTimeoutFallback(fetchNewsRSSLayer(ctx), 5000, { items:[], health:[{source:'RSS layer', ok:false, error:'timeout'}] });
+  /* The key-based APIs (Marketaux tags articles by company - the most accurate for one stock; NewsData.io; Finnhub
+     for gold / indices / global) now run alongside the free feeds on every fetch, when their key is set (22 Nov 2026:
+     they used to run only when the feeds found under 4 headlines, which was almost never - so the keys sat unused).
+     A symbol's news is cached 15 minutes, which keeps a personal app far inside their free daily limits.
+     GDELT stays a backup for when everything else is thin. */
+  const keyed = !!(MARKETAUX_KEY || NEWSDATA_KEY || (FINNHUB_KEY && (ctx.isMacro || ctx.isIndex)));
+  const [rss, marketaux, newsdata, finnhub] = await Promise.all([
+    withTimeoutFallback(fetchNewsRSSLayer(ctx), 5000, { items:[], health:[{source:'RSS layer', ok:false, error:'timeout'}] }),
+    MARKETAUX_KEY ? withTimeoutFallback(fetchNewsMarketauxLayer(ctx), 6000, []) : Promise.resolve([]),
+    NEWSDATA_KEY ? withTimeoutFallback(fetchNewsDataLayer(ctx), 6000, []) : Promise.resolve([]),
+    FINNHUB_KEY && (ctx.isMacro || ctx.isIndex) ? withTimeoutFallback(fetchFinnhubLayer(ctx), 6000, []) : Promise.resolve([]),
+  ]);
   health.push(...(rss.health || []));
-  let items = finalizeNews(rss.items || [], ctx);
-  if (items.length >= 4) sourceUsed = 'rss';
+  if (MARKETAUX_KEY) health.push({source:'Marketaux', ok:true, found:marketaux.length});
+  if (NEWSDATA_KEY) health.push({source:'NewsData.io', ok:true, found:newsdata.length});
+  if (FINNHUB_KEY && (ctx.isMacro || ctx.isIndex)) health.push({source:'Finnhub', ok:true, found:finnhub.length});
+  let items = finalizeNews([...(rss.items || []), ...marketaux, ...newsdata, ...finnhub], ctx);
+  const fromApi = items.some(i => ['marketaux', 'newsdata', 'finnhub'].includes(i.layer)), fromRss = items.some(i => i.layer === 'rss' || i.layer === 'google-rss');
+  if (items.length) sourceUsed = fromApi && fromRss ? 'mixed' : fromApi ? 'api' : 'rss';
+  if (!keyed && items.length) sourceUsed = 'rss';
 
-  /* Layer 2: only if RSS is weak. Run all backups in parallel so one slow API cannot freeze the tab. */
+  /* Backup: GDELT only when the above is thin. */
   if (items.length < 4) {
-    const [gdelt, marketaux, newsdata, finnhub] = await Promise.all([
-      withTimeoutFallback(fetchNewsGdelt(ctx), 5000, []),
-      withTimeoutFallback(fetchNewsMarketauxLayer(ctx), 5000, []),
-      withTimeoutFallback(fetchNewsDataLayer(ctx), 5000, []),
-      (ctx.isMacro || ctx.isIndex) ? withTimeoutFallback(fetchFinnhubLayer(ctx), 5000, []) : Promise.resolve([]),
-    ]);
+    const gdelt = await withTimeoutFallback(fetchNewsGdelt(ctx), 5000, []);
     health.push({source:'GDELT', ok:true, found:gdelt.length});
-    health.push({source:'Marketaux', ok:true, found:marketaux.length});
-    health.push({source:'NewsData.io', ok:true, found:newsdata.length});
-    if (ctx.isMacro || ctx.isIndex) health.push({source:'Finnhub', ok:true, found:finnhub.length});
-    items = finalizeNews([...items, ...gdelt, ...marketaux, ...newsdata, ...finnhub], ctx);
-    if (items.length) sourceUsed = items.some(i=>i.layer==='rss'||i.layer==='google-rss') ? 'mixed' : 'api-backup';
+    items = finalizeNews([...items, ...gdelt], ctx);
+    if (items.length && sourceUsed === 'none') sourceUsed = 'api-backup';
   }
 
   if (sourceUsed === 'none' && items.length) sourceUsed = 'mixed';
@@ -1800,7 +1811,7 @@ async function apiNews(req, res, p) {
   const raw  = String(p.get('name') || sym).slice(0, 80);
   const name = raw.replace(/MCX:|NSE:|CRYPTO:/g,'').replace(/[()]/g,'').trim();
   const ctx  = buildNewsContext(name, sym);
-  const key  = `news_v13_${sym}_${newsHash(name)}`;
+  const key  = `news_v14_${sym}_${newsHash(name)}`;
 
   const hit = NEWS_CACHE[key];
   if (hit && Date.now() - hit.ts < (hit.ttl || NEWS_TTL)) {
@@ -2692,7 +2703,7 @@ async function apiStrategy(req, res, p) {
        Black-Scholes estimates). */
     const wantChain = kiteReady();   /* option builder: live premiums from Zerodha Kite when connected; else Black-Scholes only - no NSE call */
     const chainP = wantChain
-      ? withTimeout(getOptionChain(sym, new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10)), 11000, 'option chain').catch(() => null)
+      ? withTimeout(getOptionChain(sym, new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10), { estimate: false }), 11000, 'option chain').catch(() => null)
       : Promise.resolve(null);
     /* Fetch live spot if not provided */
     let spot = spotParam;
@@ -3176,7 +3187,7 @@ let SHARES_CACHE = {};             /* ticker -> {shares, asOf, ts} */
 let UNIVERSE_INFLIGHT = null;
 const UNIVERSE_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000;   /* rebuilt weekly */
 const UNIVERSE_KEEP_MCAP_CR = 30000;                      /* stored with a buffer below the ₹35,000 Cr rule */
-const SHARES_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+const SHARES_TTL_MS = 45 * 24 * 60 * 60 * 1000;   /* share counts change at most quarterly (was 7 days: every weekly rebuild re-fetched all ~1,200) */
 function universeFile() { return require('path').join(__dirname, 'data', 'universe.json'); }
 function loadUniverseFromDisk() {
   try {
@@ -3189,6 +3200,9 @@ function loadUniverseFromDisk() {
   } catch {}
 }
 function saveUniverseToDisk() {
+  /* Never write before the saved universe is loaded (22 Nov 2026): a results-calendar save at that moment wrote
+     "universe: null" over the file, losing the list and ~1,200 share counts. */
+  if (!LIVE_UNIVERSE?.rows?.length) return;
   try {
     const fsm = require('fs'), dir = require('path').dirname(universeFile());
     fsm.mkdirSync(dir, { recursive: true });
@@ -3291,7 +3305,16 @@ async function buildUniverse() {
   const started = Date.now();
   let listed = [], source = '';
   try { listed = await fetchNseIndexList('ind_niftytotalmarket_list.csv'); source = 'NSE Nifty Total Market'; }
-  catch (er) { listed = await fetchNseIndexList('ind_nifty500list.csv'); source = 'NSE Nifty 500'; }
+  catch (er) {
+    try { listed = await fetchNseIndexList('ind_nifty500list.csv'); source = 'NSE Nifty 500'; }
+    catch (er2) {
+      /* NSE refused (it does on Render): re-price the stocks already known - the saved list plus the small ones. */
+      const prev = [...(LIVE_UNIVERSE?.rows || []).map(r => ({ sym: r.sym, name: r.name, industry: r.industry || '' })),
+        ...Object.keys(LIVE_UNIVERSE?.small || {}).map(t => ({ sym: t.replace(/\.NS$/, ''), name: t.replace(/\.NS$/, ''), industry: LIVE_UNIVERSE?.industry?.[t.replace(/\.NS$/, '')]?.industry || '' }))];
+      if (prev.length < 100) throw er2;
+      listed = prev; source = 'saved list (NSE unreachable)';
+    }
+  }
   /* New listings (IPOs) are not in the index lists yet; without them a ₹50,000 Cr IPO would be missed. */
   let recent = [];
   try { recent = await fetchNseRecentListings(730); } catch (er) { console.warn('NSE recent listings:', er.message); }
@@ -3303,8 +3326,14 @@ async function buildUniverse() {
   /* A recent listing keeps the industry it had in the previous universe (if any). */
   newOnes.forEach(x => { const old = LIVE_UNIVERSE?.industry?.[x.sym]; if (old) industry[x.sym] = old; });
   const tickers = uniqueTickersS([...listed, ...newOnes].map(x => x.sym + '.NS'));
+  /* Lighter weekly rebuild (22 Nov 2026): a stock last seen under ₹15,000 Cr would have to double in a week to reach
+     the ₹35,000 Cr rule, so it is re-priced only in the full check every 4 weeks - about 1,000 fewer Yahoo calls a week. */
+  const prevSmall = LIVE_UNIVERSE?.small || {};
+  const fullDue = !LIVE_UNIVERSE?.lastFullAt || Date.now() - Date.parse(LIVE_UNIVERSE.lastFullAt) > 28 * 86400e3;
+  const skipped = fullDue ? [] : tickers.filter(t => prevSmall[t] > 0 && prevSmall[t] < 15000);
+  const skipSet = new Set(skipped), toCheck = tickers.filter(t => !skipSet.has(t));
   const rows = [], failed = [];
-  await mapLimit(tickers, 8, async t => {
+  await mapLimit(toCheck, 8, async t => {
     try {
       const [shares, chart] = await Promise.all([
         fetchSharesOutstanding(t).catch(() => null),
@@ -3323,10 +3352,13 @@ async function buildUniverse() {
   const eligibleCount = kept.filter(r => r.mcapCr > MIN_SCREENER_MCAP_CR).length;
   /* Sanity guard: a data outage must not shrink the universe to a handful of stocks. */
   if (eligibleCount < 100) throw new Error(`only ${eligibleCount} eligible stocks - keeping previous universe`);
+  const small = {}; skipped.forEach(t => { small[t] = prevSmall[t]; });
+  rows.forEach(r => { if (r.mcapCr > 0 && r.mcapCr < UNIVERSE_KEEP_MCAP_CR) small[r.ticker] = r.mcapCr; });
   LIVE_UNIVERSE = {
     generatedAt: new Date().toISOString(), source,
-    rows: kept, industry,
-    stats: { listed: listed.length, recentListings: newOnes.length, checked: tickers.length, priced: rows.length, failed: failed.length,
+    rows: kept, industry, small,
+    lastFullAt: fullDue ? new Date().toISOString() : LIVE_UNIVERSE.lastFullAt,
+    stats: { listed: listed.length, recentListings: newOnes.length, checked: toCheck.length, skippedSmall: skipped.length, priced: rows.length, failed: failed.length,
       eligible: eligibleCount, buffer: kept.length - eligibleCount, seconds: Math.round((Date.now() - started) / 1000) }
   };
   saveUniverseToDisk();
@@ -4172,6 +4204,17 @@ async function computeMomentumS() {
   const prevSet = new Set(prevTop.map(r => r.sym)), curSet = new Set(top.map(r => r.sym));
   const liveRank = new Map(live.map(r => [r.sym, r.rank])), liveClose = new Map(live.map(r => [r.sym, r.close]));
   const nifty = await getNiftyRegime();
+  /* Portfolio read-out (21 Nov 2026): equal-weight average of the 20 - this month from the list's close to now, and their
+     6 / 12-month returns as of the list date - with Nifty over the same windows. */
+  const avg = a => a.length ? +(a.reduce((s, v) => s + v, 0) / a.length).toFixed(1) : null;
+  const perf = { mtd: avg(top.map(r => { const now = liveClose.get(r.sym); return now > 0 && r.close > 0 ? (now / r.close - 1) * 100 : null; }).filter(v => v != null)),
+    r6: avg(top.map(r => r.r6)), r12: avg(top.map(r => r.r12)), nifty: null };
+  try {
+    const nb = parseBars(await withTimeout(safeFetch(() => yfChart('^NSEI', '1d', '2y'), 1), 15000, 'Nifty history'));
+    let iL = nb.T.length - 1; while (iL >= 0 && istDateKeyS(nb.T[iL]) > (top[0]?.date || today)) iL--;
+    const nLast = nb.C.length - 1, ret = (a, b) => a >= 0 && b >= 0 && nb.C[b] > 0 ? +((nb.C[a] / nb.C[b] - 1) * 100).toFixed(1) : null;
+    perf.nifty = { mtd: ret(nLast, iL), r6: ret(iL, iL - 126), r12: ret(iL, iL - 252) };
+  } catch {}
   const nextMonth = monthStartKey(new Date(Date.parse(thisMonth) + 40 * 864e5).toISOString().slice(0, 10));
   const out = {
     month: thisMonth.slice(0, 7), listDate: top[0]?.date || null, rebalanceDay: firstTradingDayOfMonth(thisMonth), nextRebalance: firstTradingDayOfMonth(nextMonth),
@@ -4182,7 +4225,7 @@ async function computeMomentumS() {
     buys: top.filter(r => !prevSet.has(r.sym)).map(r => r.sym),
     livePreview: live.slice(0, MOM_TOP).map(r => ({ sym: r.sym, rank: r.rank, inList: curSet.has(r.sym) })),
     niftyFilter: { aboveSma200: nifty.aboveSma200 ?? null, nifty: nifty.nifty ?? null, sma200: nifty.sma200 ?? null },
-    universe: { stocks: data.length, ranked: cur.length },
+    universe: { stocks: data.length, ranked: cur.length }, perf,
     generatedAt: new Date().toISOString(),
   };
   MOMENTUM_CACHE = { ts: Date.now(), value: out };
@@ -4291,6 +4334,100 @@ function tradingDaysUntil(fromKey, toKey) {
   if (step > 0 && (endDow === 0 || endDow === 6)) count += 1;
   return count;
 }
+/* ── Free fallbacks when NSE refuses (22 Nov 2026) ──
+   NSE refuses Render's address, so results dates, bonus / split dates and FII / DII never arrived there.
+   - Results + dividend ex-dates: Yahoo's calendar per stock (quoteSummary calendarEvents, needs Yahoo's cookie +
+     crumb). Only the screener universe, each stock at most every 3 days, 40 a run - spread through the day.
+     A date Yahoo marks as an estimate is a note, not a block.
+   - Bonus / split: Yahoo's market-wide split calendar (a bonus shows as a split there), 30 days ahead, NSE rows only.
+   - FII / DII: Moneycontrol's FII / DII page (cash market, last 10 sessions), once every 3 hours.
+   Each is used only while NSE's own list is missing, and saved in data/free-cal.json. */
+const FREE_CAL_FILE = require('path').join(__dirname, 'data', 'free-cal.json');
+let FREE_CAL = { earn: {}, splits: {}, splitsTs: 0, fiiDii: null, fiiTs: 0 };
+try { const j = JSON.parse(require('fs').readFileSync(FREE_CAL_FILE, 'utf8')); if (j && typeof j === 'object') FREE_CAL = { ...FREE_CAL, ...j }; } catch {}
+function saveFreeCal() { try { const fs = require('fs'); fs.mkdirSync(require('path').dirname(FREE_CAL_FILE), { recursive: true }); fs.writeFileSync(FREE_CAL_FILE, JSON.stringify(FREE_CAL)); } catch {} }
+let YF_CRUMB = { crumb: null, cookie: '', ts: 0 };
+async function yahooCrumb(force = false) {
+  if (!force && YF_CRUMB.crumb && Date.now() - YF_CRUMB.ts < 12 * 3600e3) return YF_CRUMB;
+  const r0 = await withTimeout(getWithHeaders('https://fc.yahoo.com/', { Accept: 'text/html' }), 10000, 'Yahoo cookie');
+  const cookie = (r0.headers?.['set-cookie'] || []).map(c => String(c).split(';')[0]).join('; ');
+  if (!cookie) throw new Error('no Yahoo cookie');
+  const r = await withTimeout(get('https://query1.finance.yahoo.com/v1/test/getcrumb', { Cookie: cookie, Accept: 'text/plain' }), 10000, 'Yahoo crumb');
+  const crumb = String(r.body || '').trim();
+  if (r.status !== 200 || !crumb || crumb.length > 40 || /[<{]/.test(crumb)) throw new Error('no Yahoo crumb (HTTP ' + r.status + ')');
+  return (YF_CRUMB = { crumb, cookie, ts: Date.now() });
+}
+async function yahooCalendarOne(ticker) {
+  let c = await yahooCrumb();
+  const go = () => get(`https://query2.finance.yahoo.com/v10/finance/quoteSummary/${encodeURIComponent(ticker)}?modules=calendarEvents&crumb=${encodeURIComponent(c.crumb)}`, { Cookie: c.cookie, Accept: 'application/json' });
+  let r = await withTimeout(go(), 10000, ticker + ' calendar');
+  if (r.status === 401) { c = await yahooCrumb(true); r = await withTimeout(go(), 10000, ticker + ' calendar'); }
+  if (r.status !== 200) throw new Error('calendar HTTP ' + r.status);
+  const ce = JSON.parse(r.body)?.quoteSummary?.result?.[0]?.calendarEvents || {};
+  const day = v => v > 0 ? istDateKeyS(v) : null;
+  return { earn: day(ce.earnings?.earningsDate?.[0]?.raw), est: !!ce.earnings?.isEarningsDateEstimate, exDiv: day(ce.exDividendDate?.raw), ts: Date.now() };
+}
+let FREE_CAL_RUNNING = false;
+async function freeCalendarTick() {
+  if (FREE_CAL_RUNNING) return;
+  FREE_CAL_RUNNING = true;
+  try {
+    const nseResults = RESULTS_CAL_CACHE?.source === 'NSE event calendar' && !RESULTS_CAL_CACHE.error;
+    const nseCorp = NSE_CAL.ts.corp && Date.now() - NSE_CAL.ts.corp < 2 * 86400e3;
+    let changed = false;
+    if (!nseResults || !nseCorp) {
+      const tickers = (LIVE_UNIVERSE?.rows || []).filter(r => r.mcapCr > MIN_SCREENER_MCAP_CR).map(r => r.ticker);
+      const due = tickers.filter(t => !(FREE_CAL.earn[t]?.ts > Date.now() - 3 * 86400e3)).slice(0, 50);
+      for (const t of due) {
+        try { FREE_CAL.earn[t] = await yahooCalendarOne(t); changed = true; }
+        catch (e) { if (/crumb|cookie|429|paused/i.test(e.message)) { console.warn('Yahoo calendar:', e.message); break; } FREE_CAL.earn[t] = { ts: Date.now(), error: true }; }
+      }
+    }
+    if (!nseCorp && Date.now() - (FREE_CAL.splitsTs || 0) > 20 * 3600e3) {
+      try {
+        const c = await yahooCrumb(), from = istDateKey(), to = istDateKeyS(Date.now() / 1000 + 30 * 86400), splits = {};
+        for (let off = 0; off < 1000; off += 250) {
+          const body = JSON.stringify({ sortType: 'ASC', entityIdType: 'splits', sortField: 'startdatetime', includeFields: ['ticker', 'companyshortname', 'startdatetime', 'old_share_worth', 'share_worth'],
+            query: { operator: 'and', operands: [{ operator: 'gte', operands: ['startdatetime', from] }, { operator: 'lte', operands: ['startdatetime', to] }] }, offset: off, size: 250 });
+          const r = await withTimeout(get(`https://query1.finance.yahoo.com/v1/finance/visualization?lang=en-US&region=US&crumb=${encodeURIComponent(c.crumb)}`, { Cookie: c.cookie, 'Content-Type': 'application/json', Accept: 'application/json' }, body, 'POST'), 15000, 'Yahoo splits');
+          if (r.status !== 200) throw new Error('splits HTTP ' + r.status);
+          const rows = JSON.parse(r.body)?.finance?.result?.[0]?.documents?.[0]?.rows || [];
+          for (const [tk, name, at, oldW, newW] of rows) {
+            if (!/\.NS$/.test(String(tk))) continue;
+            const sym = String(tk).replace(/\.NS$/, '').toUpperCase(), date = String(at || '').slice(0, 10);
+            if (/^\d{4}-\d{2}-\d{2}$/.test(date)) (splits[sym] = splits[sym] || []).push({ date, subject: `Split / bonus ${+newW || '?'}:${+oldW || '?'} (Yahoo)`, kind: 'split' });
+          }
+          if (rows.length < 250) break;
+        }
+        FREE_CAL.splits = splits; FREE_CAL.splitsTs = Date.now(); changed = true;
+      } catch (e) { FREE_CAL.splitsTs = Date.now() - 14 * 3600e3; console.warn('Yahoo splits:', e.message); }   /* retry in ~6 h */
+    }
+    if (changed) { saveFreeCal(); if (!nseResults) RESULTS_CAL_TS = 0; }
+  } finally { FREE_CAL_RUNNING = false; }
+}
+setTimeout(() => freeCalendarTick().catch(() => {}), 3 * 60e3);
+setInterval(() => freeCalendarTick().catch(() => {}), 60 * 60e3);
+/* FII / DII cash-market net (Rs Cr) from Moneycontrol, last 10 sessions; the saved copy when it fails. */
+let FII_INFLIGHT = null;
+async function getFiiDii() {
+  if (FREE_CAL.fiiDii && Date.now() - FREE_CAL.fiiTs < 3 * 3600e3) return FREE_CAL.fiiDii;
+  if (FII_INFLIGHT) return FII_INFLIGHT;
+  FII_INFLIGHT = (async () => {
+    try {
+      const r = await withTimeout(get('https://www.moneycontrol.com/markets/fii-dii-data/', { Accept: 'text/html' }), 15000, 'FII / DII');
+      if (r.status !== 200) throw new Error('HTTP ' + r.status);
+      const m = String(r.body).match(/<script id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/);
+      const rows = m ? JSON.parse(m[1])?.props?.pageProps?.FiiDiiData?.fiiDiiData : null;
+      const num = v => { const n = +String(v ?? '').replace(/,/g, ''); return Number.isFinite(n) ? n : null; };
+      const days = (Array.isArray(rows) ? rows : []).map(x => ({ date: String(x.date || '').slice(0, 10), fii: num(x.fiiCM), dii: num(x.diiCM), fiiIdxFut: num(x.fiiIdxFut) }))
+        .filter(x => /^\d{4}-\d{2}-\d{2}$/.test(x.date) && x.fii != null && x.dii != null).slice(0, 10);
+      if (!days.length) throw new Error('no FII / DII rows');
+      FREE_CAL.fiiDii = { days, source: 'Moneycontrol (NSE provisional data)', fetchedAt: new Date().toISOString() }; FREE_CAL.fiiTs = Date.now(); saveFreeCal();
+    } catch (e) { console.warn('FII / DII:', e.message); FREE_CAL.fiiTs = Date.now() - 2 * 3600e3; }   /* try again in an hour */
+    return FREE_CAL.fiiDii;
+  })().finally(() => { FII_INFLIGHT = null; });
+  return FII_INFLIGHT;
+}
 let RESULTS_CAL_INFLIGHT = null;
 async function getResultsCalendar() {
   if (RESULTS_CAL_CACHE && Date.now() - RESULTS_CAL_TS < 60 * 60 * 1000) return RESULTS_CAL_CACHE;
@@ -4335,6 +4472,11 @@ async function loadResultsCalendar() {
       ok = true; source = `NSE event calendar (saved ${new Date(RESULTS_CAL_LAST_GOOD.ts).toLocaleString('en-IN', { timeZone:'Asia/Kolkata', day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' })} - live fetch failed)`;
     }
   }
+  if (source !== 'NSE event calendar') {
+    let n = 0;
+    for (const [t, e] of Object.entries(FREE_CAL.earn || {})) if (e?.earn && !e.error) { const sym = t.replace(/\.NS$/, ''); if (!bySym.has(sym.toUpperCase()) || !bySym.get(sym.toUpperCase()).some(x => x.date === e.earn)) { add(sym, e.earn, e.est ? 'Results (Yahoo estimate)' : 'Financial Results (Yahoo)'); const l = bySym.get(sym.toUpperCase()); l[l.length - 1].estimate = !!e.est; n++; } }
+    if (n) { ok = true; source = (source === 'manual list only' ? '' : source + ' + ') + `Yahoo calendar (${n} stocks)`; }
+  }
   EARNINGS_DATES.forEach(x => add(String(x.sym).replace('NSE:',''), x.date, 'Results (manual list)'));
   RESULTS_CAL_CACHE = { bySym, ok, source, error, fetchedAt: new Date().toISOString() };
   /* Retry a failed fetch after ~10 minutes instead of an hour. */
@@ -4347,7 +4489,8 @@ function resultsCheckFor(sym, cal, todayKey) {
   const upcoming = list.filter(x => x.date >= todayKey).sort((a,b) => a.date.localeCompare(b.date))[0];
   const pick = upcoming || list.sort((a,b) => b.date.localeCompare(a.date))[0];
   const tradingDays = tradingDaysUntil(todayKey, pick.date);
-  return { date: pick.date, purpose: pick.purpose, tradingDays, block: tradingDays >= 0 && tradingDays <= RESULTS_BLOCK_TRADING_DAYS, recent: tradingDays < 0 && tradingDays >= -2 };
+  /* A date Yahoo marks as an estimate is shown, but does not block. */
+  return { date: pick.date, purpose: pick.purpose, tradingDays, estimate: !!pick.estimate, block: !pick.estimate && tradingDays >= 0 && tradingDays <= RESULTS_BLOCK_TRADING_DAYS, recent: tradingDays < 0 && tradingDays >= -2 };
 }
 
 async function apiMyTradeScreener(req, res) {
@@ -4448,6 +4591,9 @@ async function runMyTradeScreenerScan() {
            now); today's forming bar counts from 15:00 (near the close) - before that it waits on the Watchlist. The old
            pullback / breakout READY (44% wins, 6 of 10 years) is no longer a READY rule. */
         const rs = SwingPlan.relStrength(C, niftyCloses);
+        const freshOf = (signal, stop) => { try { return SwingPlan.stockScores({ H, L, C }, { signal, stop, niftyUp: niftyTrend ? niftyTrend.trendUp !== false : null, rs3m: rs.rs3m })?.fresh ?? null; } catch { return null; } };
+        { const pc = patternCands[patternCands.length - 1]; if (pc && pc.sym === sym0 && pc.fresh == null) pc.fresh = freshOf('pattern', pc.stop); }
+        { const qc = quickCands[quickCands.length - 1]; if (qc && qc.ticker === ticker && qc.fresh == null) qc.fresh = freshOf('quick', qc.qb?.stop); }
         const nB = C.length, liveBar = completedLenS(daily.T) < nB, nearClose = istNowParts().m >= 15 * 60;
         const vToday = null;   /* enrichDailyForLiveScreenerS already projected today's volume to a full day - do not do it twice */
         const D = { O: daily.O, H, L, C, V, rs3m: rs.rs3m, entry: m.price };
@@ -4458,7 +4604,7 @@ async function runMyTradeScreenerScan() {
         { const bPrev = liveBar ? SwingPlan.breakout20({ H, L, C, V, i: nB - 2, rs3m: rs.rs3m, entry: m.price }) : null;
           const bNow = SwingPlan.breakout20({ H, L, C, V, rs3m: rs.rs3m, vToday, entry: m.price });
           const bo = bPrev?.ok ? bPrev : bNow?.ok ? bNow : null;
-          if (bo) bo20Cands.push({ sym: sym0, ticker, ...bo, price: +m.price.toFixed(2), signalDay: bPrev?.ok ? 'yesterday' : 'today', signalDate: istDateKeyS(daily.T[bPrev?.ok ? nB - 2 : nB - 1]),
+          if (bo) bo20Cands.push({ sym: sym0, ticker, ...bo, fresh: freshOf('breakout', bo.stop), price: +m.price.toFixed(2), signalDay: bPrev?.ok ? 'yesterday' : 'today', signalDate: istDateKeyS(daily.T[bPrev?.ok ? nB - 2 : nB - 1]),
             forming: !bPrev?.ok && liveBar && !nearClose, tags }); }
         if (!g) return null;
         const signalDay = gPrev?.ok ? 'yesterday' : 'today', forming = g.ok && signalDay === 'today' && liveBar && !nearClose;
@@ -4478,7 +4624,7 @@ async function runMyTradeScreenerScan() {
         const extra = {
           resultsDate: resultsInfo?.date || null, resultsTradingDays: resultsInfo ? resultsInfo.tradingDays : null, resultsBlock, resultsRecent: !!resultsInfo?.recent,
           eventBlock, eventReasons: evChk.reasons, eventNotes: evChk.notes, surveillance: evChk.surveillance, regimeBlock: false,
-          gateV2: true, signalDay, signalDate, forming, gateInfo: g.info || null,
+          gateV2: true, signalDay, signalDate, forming, gateInfo: g.info || null, fresh: g.ok ? freshOf('ready', g.stop) : null,
           pickedSetup: g.ok ? g.setup : null, selectedStrategy: g.ok ? g.setup : 'Watch',
           plan: g.ok ? { entry: g.entry, stop: g.stop, target: g.target } : null, exit2R: g.ok ? g.target : null, rr: g.ok ? 2 : null, riskPct: g.ok ? g.riskPct : null,
           rs3m: rs.rs3m, rs6m: rs.rs6m, stock3m: rs.stock3m, nifty3m: rs.nifty3m, rsOk: Number.isFinite(rs.rs3m) && rs.rs3m > 0, tags,
@@ -4551,7 +4697,7 @@ async function runMyTradeScreenerScan() {
     .map(q => {
       const sym = q.ticker.replace(/\.(NS|BO)$/, ''), ri = resultsCheckFor(sym, resultsCal, todayKey), ev = stockEventCheckS(sym, todayKey);
       const sec = sectorInfoFor(sym)?.sector || null;
-      return { sym, ticker: q.ticker, price: q.price, ...q.qb, sector: sec, resultsDate: ri?.date || null, resultsBlock: !!ri?.block,
+      return { sym, ticker: q.ticker, price: q.price, ...q.qb, fresh: q.fresh ?? null, sector: sec, resultsDate: ri?.date || null, resultsBlock: !!ri?.block,
         resultsTradingDays: ri ? ri.tradingDays : null, resultsRecent: !!ri?.recent, eventBlock: ev.block, eventNotes: ev.notes };
     })
     .filter(q => !q.resultsBlock && !q.eventBlock)
@@ -4753,7 +4899,11 @@ function stockEventCheckS(code, todayKey = istDateKey()) {
   const reasons = [], notes = [], items = [];
   const surv = NSE_CAL.surv[sym];
   if (surv) reasons.push(`On the NSE surveillance list (${surv}) - higher margins and trade limits, no fresh swing entry`);
-  for (const a of NSE_CAL.corp[sym] || []) {
+  const nseCorpFresh = NSE_CAL.ts.corp && Date.now() - NSE_CAL.ts.corp < 2 * 86400e3;
+  const free = nseCorpFresh ? [] : [...(FREE_CAL.splits?.[sym] || []),
+    ...(FREE_CAL.earn?.[sym + '.NS']?.exDiv ? [{ date: FREE_CAL.earn[sym + '.NS'].exDiv, subject: 'Dividend (Yahoo)', kind: 'dividend' }] : [])];
+  const nseList = NSE_CAL.corp[sym] || [];
+  for (const a of [...nseList, ...free.filter(f => !nseList.some(n => n.date === f.date && (n.kind === f.kind || (f.kind === 'split' && n.kind === 'bonus'))))]) {
     if (a.date < todayKey) continue;
     const td = tradingDaysUntil(todayKey, a.date);
     if (td > STOCK_EVENT_BLOCK_DAYS) continue;
@@ -5152,6 +5302,31 @@ function ocBuild(sym, name, j, pick, exps) {
   };
 }
 const OC_INFLIGHT = new Map();
+/* Option chain estimated with Black-Scholes when Zerodha is not connected: spot from Yahoo, one volatility for every
+   strike = India VIX (Yahoo), expiries computed from NSE's weekday rule. Real out-of-the-money puts usually trade at a
+   higher volatility than VIX, so estimated credits tend to be on the low side. No open interest. Kept 5 minutes. */
+async function estimatedOptionChain(sym, name, want) {
+  return (await cacheWrap(`ocest:${sym}|${want || ''}`, 5 * 60e3, async () => {
+    const exps = ocOpenExpiries(await ocExpiryList(name));
+    const dd0 = (a, b) => Math.abs(Date.parse(a) - Date.parse(b));
+    const pick = exps.find(e => e.key === want) || (want ? exps.slice().sort((a, b) => dd0(a.key, want) - dd0(b.key, want))[0] : exps[0]);
+    if (!pick) throw new Error('no open expiry');
+    const spot = +(await quickPriceFor(sym, 60e3))?.price;
+    if (!(spot > 0)) throw new Error('no spot price');
+    const vx = (await cacheWrap('vix:est', 10 * 60e3, async () => +(await withTimeout(getPriceAndChange('^INDIAVIX'), 8000, 'India VIX')).liveRaw)).value;
+    if (!(vx > 5 && vx < 90)) throw new Error('no India VIX');
+    const T = Math.max(0.25 / 365, (Date.parse(pick.key + 'T15:30:00+05:30') - Date.now()) / (365 * 86400e3)), sig = vx / 100, r = 0.065;
+    const step = name === 'BANKNIFTY' ? 100 : 50, data = [];
+    for (let k = Math.ceil(spot * 0.88 / step) * step; k <= spot * 1.12; k += step) {
+      const leg = ty => { const v = Math.round(bsPrice(spot, k, T, r, sig, ty) * 20) / 20;
+        return { lastPrice: v, buyPrice1: v, sellPrice1: v, openInterest: 0, changeinOpenInterest: 0, impliedVolatility: vx, totalTradedVolume: v > 0 ? 1 : 0 }; };
+      data.push({ strikePrice: k, CE: leg('C'), PE: leg('P') });
+    }
+    const ist = new Date(Date.now() + 5.5 * 3600e3), ts = `${kiteKeyToNse(ist.toISOString().slice(0, 10))} ${ist.toISOString().slice(11, 19)}`;
+    return { ...ocBuild(sym, name, { records: { underlyingValue: spot, timestamp: ts, data } }, pick, exps), pcr: null, maxPain: null, callWalls: [], putWalls: [],
+      estimated: true, vix: +vx.toFixed(2), source: `Black-Scholes estimate (India VIX ${vx.toFixed(1)}) - Zerodha not connected` };
+  })).value;
+}
 /* Option chain of one expiry. opts.fresh (ms): the scheduled jobs pass it - NSE is asked when the saved chain is
    older than that. Without it (pages, trade ideas) only the saved chain is served: premiums of the 10:00 / 15:05
    fetch, marked with their time. Nothing saved from today -> one catch-up call a day (Nifty), else an error and the
@@ -5169,6 +5344,8 @@ async function getOptionChain(sym, want = '', opts = {}) {
     const h = k && NSE_SNAP.chains[k];
     if (h && Date.now() - h.ts < 4 * 86400e3) return { ...h.value, saved: true, stale: true, staleAgeSec: Math.round((Date.now() - h.ts) / 1000) };
   }
+  /* Zerodha not connected and nothing saved: Black-Scholes premiums from India VIX (22 Nov 2026), marked estimated. */
+  if (opts.estimate !== false) { try { return await estimatedOptionChain(sym, name, want); } catch (e) { console.warn('Estimated chain:', e.message); } }
   throw new Error('live premiums need Zerodha connected (Screener -> My trades -> Connect Zerodha)');
 }
 /* The Nifty rule's expiry: the first one at least 3 days away (same as the page). */
@@ -5353,7 +5530,10 @@ async function apiQuote(req,res,p){
 /* ── /api/quickprice ── */
 function quickTtlFor(sym){ return isMCX(sym) ? TTL.mcx : (/^NSE:/.test(sym) && nseSessionShare() >= 1 ? 5 * 60 * 1000 : TTL.quick); }
 /* Same cached quick price the sidebar uses (one shared cache entry per symbol). */
-async function quickPriceFor(sym){ return (await cacheWrap(`quick:${sym}`, quickTtlFor(sym), () => quickProducer(sym))).value; }
+/* Background checks (price alerts, open-trade stops, MCX buy levels - every minute) accept a price up to 90 s old:
+   about half the Yahoo calls of fetching each minute, and an alert is at most ~1.5 min late (22 Nov 2026). */
+const BG_QUOTE_MAX_AGE = 90 * 1000;
+async function quickPriceFor(sym, maxAge = 0){ return (await cacheWrap(`quick:${sym}`, Math.max(quickTtlFor(sym), maxAge), () => quickProducer(sym))).value; }
 async function apiQuick(req,res,p){
   const sym=p.get('sym')||'NSE:NIFTY';
   const key=`quick:${sym}`;
@@ -5505,7 +5685,7 @@ const NIFTY50_STOCKS = [
 ];
 
 const GLOBAL_LAST_GOOD = {};
-/* FII / DII removed 18 Nov 2026: NSE refuses Render's address and Kite has no FII / DII data. */
+/* FII / DII: back on 22 Nov 2026 from Moneycontrol (NSE refuses Render's address; Kite has no FII / DII data). */
 async function apiGlobal(req,res){
   try {
     const { value: payload, cached } = await cacheWrap('global:all', TTL.global, async () => {
@@ -5633,6 +5813,7 @@ async function apiGlobal(req,res){
     data.ivRank = ivRankData;
 
     data.breadth = await breadthP;
+    try { data.fiiDii = await withTimeout(getFiiDii(), 16000, 'FII / DII'); } catch { data.fiiDii = FREE_CAL.fiiDii || null; }
 
     /* A ticker that still failed shows its last good value (up to 30 min old, marked stale) instead of
        nothing; whatever is missing or stale is listed in partial and the result is cached for 30 s only,
@@ -6097,7 +6278,7 @@ async function serverAlertTick() {
   try {
     const hits = new Map();
     for (const sym of [...new Set(active.map(a => String(a.sym).toUpperCase()))]) {
-      let q; try { q = await quickPriceFor(sym); } catch { continue; }
+      let q; try { q = await quickPriceFor(sym, BG_QUOTE_MAX_AGE); } catch { continue; }
       const p = +q?.price, pct = +q?.pct;
       if (!(p > 0)) continue;
       for (const a of active.filter(x => String(x.sym).toUpperCase() === sym)) {
@@ -6169,11 +6350,11 @@ async function scheduledScanTick() {
   /* Pattern breakouts are judged on the day's close: recorded at the last scan with their own stop and 2R target. */
   if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) try {
     traceStockRecord((data?.patternBreakouts || []).slice(0, 5).map(x => ({ sym: x.sym, price: x.price, plan: { stop: x.stop, target: x.target },
-      pickedSetup: x.name, exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true })), key);
+      pickedSetup: x.name, exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true, fresh: x.fresh })), key);
   } catch (e) { console.warn('Pattern trace:', e.message); }
   if (slot === SCAN_TIMES_IST[SCAN_TIMES_IST.length - 1]) try {
     traceStockRecord((data?.breakouts20 || []).filter(x => !x.forming).slice(0, 5).map(x => ({ sym: x.sym, price: x.price, plan: { stop: x.stop, target: x.target },
-      pickedSetup: '20-day breakout', exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true, signalDate: x.signalDate })), key);
+      pickedSetup: '20-day breakout', exit2R: x.target, sector: x.sector, tags: x.tags || {}, pattern: true, signalDate: x.signalDate, fresh: x.fresh })), key);
   } catch (e) { console.warn('20-day breakout trace:', e.message); }
   if (sig.length) {
     await pushAll({ title: `🟢 ${sig.length} stock${sig.length > 1 ? 's' : ''} ready · ${hhmm} scan`, body: sig.map(x => x.text).join('\n'), tag: 'td-scan', url: '/?view=screener' });
@@ -6275,7 +6456,7 @@ async function openTradeWatchTick() {
       if (t.kind === 'option') {
         /* Credit spread: alert when Nifty closes through the short strike, and on the expiry morning. */
         if (!symMarketOpenS('NSE:NIFTY')) continue;
-        let q; try { q = await quickPriceFor('NSE:NIFTY'); } catch { continue; }
+        let q; try { q = await quickPriceFor('NSE:NIFTY', BG_QUOTE_MAX_AGE); } catch { continue; }
         const p = +q?.price, k = +t.shortStrike;
         const ck = +t.callStrike, putHit = p > 0 && k > 0 && (t.optType === 'P' ? p < k : p > k), callHit = p > 0 && ck > 0 && p > ck;
         if ((putHit || callHit) && flagOnce(`j|${t.id}|tested|${today}`)) {
@@ -6286,7 +6467,7 @@ async function openTradeWatchTick() {
         continue;
       }
       if (!symMarketOpenS(sym)) continue;
-      let q; try { q = await quickPriceFor(sym); } catch { continue; }
+      let q; try { q = await quickPriceFor(sym, BG_QUOTE_MAX_AGE); } catch { continue; }
       let p = +q?.price;
       if (!(p > 0)) continue;
       if (sym.startsWith('MCX:') && +t.calK > 0) p *= +t.calK;   /* levels were saved in calibrated MCX terms */
@@ -6356,7 +6537,7 @@ async function globalCueS() {
 /* Market-moving headlines for the brief: the Nifty news list (the News tab's cache when under an hour old),
    last 18 hours, only headlines with a clear up / down impact, strongest first. */
 async function marketHeadlinesS() {
-  const sym = 'NSE:NIFTY', name = 'NIFTY', ctx = buildNewsContext(name, sym), c = NEWS_CACHE[`news_v13_${sym}_${newsHash(name)}`];
+  const sym = 'NSE:NIFTY', name = 'NIFTY', ctx = buildNewsContext(name, sym), c = NEWS_CACHE[`news_v14_${sym}_${newsHash(name)}`];
   let items = c && Date.now() - c.ts < 60 * 60e3 ? c.payload?.items || [] : null;
   if (!items) { const all = await withTimeout(gatherAllNews(ctx), 15000, 'news'); items = finalizeNews(all.items || [], ctx); }
   /* Market recaps ("Sensex jumps 500 points", "Stock market LIVE") and broker pick lists ("Stocks to buy") describe
@@ -6473,12 +6654,20 @@ async function assistantTick() {
     const niftyRetry = nseDay && m >= 15 * 60 + 6 && m < 15 * 60 + 26 && NIFTY_STATUS?.day === key && NIFTY_STATUS.failed && kiteReady() && flagOnce(`job|nifty-retry|${key}|${m}`);
     if (nseDay && (at(15 * 60 + 5, 'nse-evening') || niftyRetry)) {
       let chain15 = null;
-      try { chain15 = await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: niftyRetry ? 60e3 : 30 * 60e3 }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
+      try { chain15 = await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: niftyRetry ? 60e3 : 30 * 60e3, estimate: false }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
       const exps = chain15?.expiries?.length ? chain15.expiries : genExp, en = SwingPlan.weeklySellEntry(key, exps.find(e => e >= key), isNseHoliday, exps);
       if (en?.isEntryDay && !chain15?.strikes?.length) {
         const first = NIFTY_STATUS?.day !== key || !NIFTY_STATUS.failed;
         NIFTY_STATUS = { day: key, failed: true, text: 'entry day, but option premiums were not available' };
-        if (first) await pushAll({ title: 'Nifty options: entry day, premiums missing', body: `${kiteReady() ? 'Option premiums were not available.' : 'Zerodha is not connected (its login ends at 06:00 daily).'} Connect Zerodha before 15:25 - the check runs again - or open Markets -> Nifty.`, tag: 'td-nifty-opt', url: '/?view=trades' });
+        /* an estimate of the bull put from Black-Scholes, so the alert still names strikes (not recorded in the Track record) */
+        let est = '';
+        if (first) try {
+          const ec = await withTimeout(estimatedOptionChain('NSE:NIFTY', 'NIFTY', await niftyRuleExpiry(true).catch(() => '')), 20000, 'estimated chain');
+          const reg = await getNiftyRegime(), days = Math.max(1, Math.round((Date.parse(ec.expiry + 'T15:30:00+05:30') - Date.now()) / 86400e3));
+          const er = SwingPlan.creditSpreadRule(ec, { spot: +ec.spot, trendUp: reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown: reg.nifty < reg.ema20 && reg.ema20 < reg.ema50, daysToExpiry: days, step: 50, wing: 200, monthly: SwingPlan.isMonthlyExpiry(ec.expiry, ec.expiries) });
+          est = er?.pick && !er.pick.none ? ` Estimate (Black-Scholes, India VIX ${ec.vix}): sell ${er.pick.sell} PE / buy ${er.pick.buy} PE, about ${er.pick.credit} pts - ${er.ok ? 'passes' : 'does not pass'} on the estimate; check the real credit in your broker.` : ` Estimate: ${String(er?.verdict || 'no strike').slice(0, 120)}.`;
+        } catch (e) { console.warn('Estimated Nifty rule:', e.message); }
+        if (first) await pushAll({ title: 'Nifty options: entry day, premiums missing', body: `${kiteReady() ? 'Option premiums were not available.' : 'Zerodha is not connected (its login ends at 06:00 daily).'}${est} Connect Zerodha before 15:25 - the check runs again - or open Markets -> Nifty.`, tag: 'td-nifty-opt', url: '/?view=trades' });
       } else if (en?.isEntryDay && flagOnce(`job|nifty-entry|${key}`)) {
         try {
           const reg = await getNiftyRegime(), spot = +chain15.spot || +reg.nifty;
@@ -6515,7 +6704,7 @@ async function assistantTick() {
       const lv = GOLD_BUY_LEVEL[sym];
       if (lv && lv.day === key) {
         const sell = lv.side === 'SELL';
-        let q; try { q = await quickPriceFor(sym); } catch {}
+        let q; try { q = await quickPriceFor(sym, BG_QUOTE_MAX_AGE); } catch {}
         const p = q?.price ? q.price * (lv.calK || 1) : null;   /* the plan's levels are in calibrated MCX terms */
         if (p && (sell ? p >= lv.entry && p < lv.sl : p <= lv.entry && p > lv.sl) && flagOnce(`${sym === 'MCX:GOLDPETAL' ? 'gold' : sym}-${sell ? 'sellzone' : 'buyzone'}|${key}`)) {
           traceGoldLevel(lv, p, key);
@@ -6577,7 +6766,7 @@ function traceStockRecord(picks, key) {
       exitMode: '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
       tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, pcrOk: tg.pcrOk ?? null },
       bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null, pattern: !!x.pattern,
-      signalDate: x.signalDate || null, planLocked: !!(x.pattern || x.gateV2) });
+      signalDate: x.signalDate || null, planLocked: !!(x.pattern || x.gateV2), fresh: Number.isFinite(+x.fresh) ? +x.fresh : null });
     added++;
   }
   if (added) traceSave(t);
@@ -6725,7 +6914,7 @@ async function traceNiftyCheck(key, m, mode = 'morning') {
     if (mode === 'settle') continue;   /* 'mark' (15:05): update open rows; the bull put is held to expiry (older rows: 80% / stop) */
     const due = mode === 'week' ? rows.filter(r => r.date < key) : rows;
     if (!due.length) continue;
-    let chain; try { chain = await withTimeout(getOptionChain('NSE:NIFTY', exp, { fresh: 30 * 60e3 }), 25000, 'Nifty chain'); } catch { continue; }
+    let chain; try { chain = await withTimeout(getOptionChain('NSE:NIFTY', exp, { fresh: 30 * 60e3, estimate: false }), 25000, 'Nifty chain'); } catch { continue; }
     if (chain.expiry !== exp) continue;
     const spot = +chain.spot;
     for (const r of due) {
