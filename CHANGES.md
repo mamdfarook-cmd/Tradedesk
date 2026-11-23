@@ -1,3 +1,25 @@
+# 4 ATR trailing stop, Gold Petal contract month, FII / DII evening refresh, screener clean-up (23 Nov 2026 · page version 23 Nov 2026 · 3)
+
+- READY stocks: the trailing stop is 4 ATR under the highest close (was 3 ATR). 10-year backtest, same entries, 5 open:
+  +0.57R a trade, 45% wins, 9 of 10 years, worst drop -10% (3 ATR: +0.53R, 44%). Every width from 3.75 to 5 ATR tested
+  about the same, so it is not a lucky number; 2017-21 improved (+0.24R to +0.40R), 2022-26 slightly lower (+0.85R to
+  +0.76R). In practice the exit is now mostly the close below EMA20 after day 5. Open trades: a stop already raised stays.
+- Gold Petal: the card and the BUY alert say which contract to buy - the current month while 15+ trading days are left
+  (the trade lasts up to 10 days, plus ~5 days before the delivery period), otherwise next month (add the price gap
+  between the two to the entry, stop and target).
+- FII / DII: Moneycontrol posts the day's row late (23 Nov: not there at 21:07 IST, there by 22:55). The 3-hour saved
+  copy kept the previous day until about midnight. From 18:00 IST on a trading day, while the latest row is not
+  today's, it is checked every 30 minutes.
+- Backtest figures on the page (Ready list, stock decision box, Track record "Results by strategy", gate rules) now show
+  the trailing-exit results; the stock decision box still described "sell all at 2R or day 15".
+- Track record: the "Trail ..." line under the stop shows only on old T1 / T2 records (it was misleading on 2R rows);
+  the Option PCR and "Delivery 50%+ (older records)" tags were removed from Results by tag.
+- Index Technicals: the VWAP and Volume rows are gone (Yahoo has no real index volume, so both were always N/A); the
+  indicator count is out of 6 for indices. Stocks keep them.
+- Screener: Quick bounce was removed (it lost money in the 10-year test: 59% wins but -0.03R a trade), on the stock
+  page too. The Watchlist stays as before (page version · 2 removed it for a short time; · 3 brings it back, so a READY
+  card that its Overview does not confirm moves to the Watchlist again).
+
 # Trailing exit, one trade per stock, Natural Gas alert and roll fixes (23 Nov 2026 · page version 23 Nov 2026 · 1)
 
 - READY stocks: the exit is now a trailing stop (10-year backtest of the same entries, 5 open: +0.53R a trade, ~20% a year,

@@ -909,7 +909,8 @@ function tabIndicators(){
   const as=sigADX(adxR?.adx,adxR?.pdi,adxR?.ndi),es=sigEMA(price,e20,e50,e200);
   const vs=indexInstrument ? {l:'Index Volume N/A',c:'na',note:'Index is not directly traded; use breadth/sector data instead.'} : sigVolume(todayVol,avgVol20,priceChg),vwapS=sigVWAP(price,vwap),stS=sigST(stResult);
   const rec=CUR_DATA.daily.rec;
-  const allSigs=[rs,ms,bs,as,es,vs,vwapS,stS];
+  /* Indices: no VWAP or volume (Yahoo has no real index volume, so both were always N/A) - removed 23 Nov 2026 */
+  const allSigs=indexInstrument?[rs,ms,bs,as,es,stS]:[rs,ms,bs,as,es,vs,vwapS,stS];
   const bullCount=allSigs.filter(s=>s.c==='bull'||s.c==='strong-bull').length;
   const bearCount=allSigs.filter(s=>s.c==='bear'||s.c==='strong-bear').length;
   const overallC=bullCount>bearCount?'bull':bearCount>bullCount?'bear':'neutral';
@@ -924,27 +925,26 @@ function tabIndicators(){
       <div class="ov-item"><span class="ov-label">RSI (14)</span><span class="ov-val" style="color:${rs.c==='bull'||rs.c==='strong-bull'?'var(--bull)':rs.c==='bear'||rs.c==='strong-bear'?'var(--bear)':'var(--neu)'}">${rsi!=null?fmt(rsi,1):'--'}</span><span style="font-size:.68rem;color:var(--tx3)">${rs.l}</span></div>
       <div class="ov-item"><span class="ov-label">MACD Hist</span><span class="ov-val" style="color:${macdD?.hist>=0?'var(--bull)':'var(--bear)'}">${macdD?fmt(macdD.hist):'--'}</span><span style="font-size:.68rem;color:var(--tx3)">${ms.l}</span></div>
       <div class="ov-item"><span class="ov-label">ADX</span><span class="ov-val" style="color:${as.c==='bull'?'var(--bull)':as.c==='bear'?'var(--bear)':'var(--neu)'}">${adxR?fmt(adxR.adx,1):'--'}</span><span style="font-size:.68rem;color:var(--tx3)">${as.l}</span></div>
-      <div class="ov-item"><span class="ov-label">VWAP</span><span class="ov-val" style="color:${vwapS.c==='bull'?'var(--bull)':vwapS.c==='bear'?'var(--bear)':'var(--neu)'}">${fmt(vwap)}</span><span style="font-size:.68rem;color:var(--tx3)">${vwapS.l}</span></div>
+      ${indexInstrument?'':`<div class="ov-item"><span class="ov-label">VWAP</span><span class="ov-val" style="color:${vwapS.c==='bull'?'var(--bull)':vwapS.c==='bear'?'var(--bear)':'var(--neu)'}">${fmt(vwap)}</span><span style="font-size:.68rem;color:var(--tx3)">${vwapS.l}</span></div>`}
       <div class="ov-item"><span class="ov-label">SuperTrend (7,3)</span><span class="ov-val" style="color:${stS.c==='bull'?'var(--bull)':'var(--bear)'}">${stResult?fmt(stResult.value):'--'}</span><span style="font-size:.68rem;color:var(--tx3)">${stResult?.label||'--'}</span></div>
       <div class="ov-item"><span class="ov-label">EMAs 20/50/200</span><span class="ov-val" style="color:${es.c==='bull'||es.c==='strong-bull'?'var(--bull)':es.c==='bear'||es.c==='strong-bear'?'var(--bear)':'var(--neu)'}">${[e20,e50,e200].filter(v=>v!=null&&price>v).length}/3 Above</span><span style="font-size:.68rem;color:var(--tx3)">${es.l}</span></div>
       <div class="ov-item"><span class="ov-label">Bollinger</span><span class="ov-val" style="color:${bs.c==='bull'||bs.c==='strong-bull'?'var(--bull)':bs.c==='bear'||bs.c==='strong-bear'?'var(--bear)':'var(--neu)'}; font-size:.78rem">${bs.l}</span><span style="font-size:.68rem;color:var(--tx3)">${bs.note}</span></div>
-      <div class="ov-item"><span class="ov-label">Volume</span><span class="ov-val" style="color:${vs.c==='bull'?'var(--bull)':vs.c==='bear'?'var(--bear)':'var(--neu)'}">${indexInstrument?'N/A':(volRatio*100).toFixed(0)+'% avg'}</span><span style="font-size:.68rem;color:var(--tx3)">${vs.l}</span></div>
+      ${indexInstrument?'':`<div class="ov-item"><span class="ov-label">Volume</span><span class="ov-val" style="color:${vs.c==='bull'?'var(--bull)':vs.c==='bear'?'var(--bear)':'var(--neu)'}">${indexInstrument?'N/A':(volRatio*100).toFixed(0)+'% avg'}</span><span style="font-size:.68rem;color:var(--tx3)">${vs.l}</span></div>`}
     </div>
   </div>
-  <details class="tp-more ind-more"><summary>Indicator details: RSI, MACD, VWAP, SuperTrend, ADX, EMAs, Bollinger, volume</summary>`+
+  <details class="tp-more ind-more"><summary>Indicator details: RSI, MACD, ${indexInstrument?'':'VWAP, '}SuperTrend, ADX, EMAs, Bollinger${indexInstrument?'':', volume'}</summary>`+
   secT('Momentum / Oscillators')+
   sRow('RSI (14)',rs,`Value: ${rsi!=null?fmt(rsi,1):'--'}`)+
   sRow('MACD (12,26,9)',ms,`MACD: ${macdD?fmt(macdD.macd):'-'} · Signal: ${macdD?fmt(macdD.signal):'-'}`)+
-  secT('VWAP & SuperTrend (Live)')+
-  sRow('VWAP (Current Session)',vwapS,'Resets to the latest intraday session using intraday timestamps.')+sRow('SuperTrend (7, 3)',stS)+
+  secT(indexInstrument?'SuperTrend':'VWAP & SuperTrend (Live)')+
+  (indexInstrument?'':sRow('VWAP (Current Session)',vwapS,'Resets to the latest intraday session using intraday timestamps.'))+sRow('SuperTrend (7, 3)',stS)+
   secT('Trend Strength')+
   sRow('ADX (14)',as)+sRow('EMA 20 / 50 / 200',es,`EMA20: ${fmt(e20)} · EMA50: ${fmt(e50)} · EMA200: ${fmt(e200)}`)+
   secT('Volatility')+
   sRow('Bollinger Bands (20,2)',bs,`Upper: ${bb?fmt(bb.upper):'-'} · Mid: ${bb?fmt(bb.basis):'-'} · Lower: ${bb?fmt(bb.lower):'-'}`)+
-  secT(indexInstrument?'Volume (Not applicable for indices)':'Volume (Live)')+
   (indexInstrument
-    ? sRow('Index Volume',vs,'Nifty/BankNifty index volume from Yahoo is not reliable tradable volume. Use A/D breadth, sector trend and futures/options data instead.')
-    : sRow('Today Volume',vs,`Vol: ${volShown} · Avg20: ${fmtVol(Math.round(avgVol20))} · Chg: ${volChg>=0?'+':''}${volChg.toFixed(1)}%`)+
+    ? ''
+    : secT('Volume (Live)')+sRow('Today Volume',vs,`Vol: ${volShown} · Avg20: ${fmtVol(Math.round(avgVol20))} · Chg: ${volChg>=0?'+':''}${volChg.toFixed(1)}%`)+
       sRow('Volume vs Avg',{l:volRatio>1.5?'Very High':volRatio>1.2?'Above Average':volRatio<0.7?'Below Average':'Normal',c:volRatio>1.2?(priceChg>=0?'bull':'bear'):'neutral'},`${(volRatio*100).toFixed(0)}% of 20-day average`))+
   `</details>`;
 }
@@ -2317,9 +2317,11 @@ function mcxDriversHtml(d, side){
 function goldExpiryHtml(sym){
   if(sym !== 'MCX:GOLDPETAL') return '';
   const e = goldPetalExpiryNow(), d = new Date(e.date + 'T00:00:00Z').toLocaleDateString('en-IN', { weekday:'short', day:'2-digit', month:'short', timeZone:'UTC' });
-  return e.tradingDaysLeft <= 5
+  const c = SwingPlan.goldPetalContract(istDateKey(), k => NSE_HOL_CLIENT.has(k));
+  const buy = `<div class="drv-row"><span class="drv-ic neutral">•</span><b>Contract ${escHtml(c.month)}</b><span>${escHtml(c.text)}</span></div>`;
+  return (e.tradingDaysLeft <= 5
     ? `<div class="idea-hedge" style="border-color:var(--bear)"><b>⚠ Gold Petal expiry ${escHtml(d)} - ${e.tradingDaysLeft === 0 ? 'today' : `${e.tradingDaysLeft} trading day${e.tradingDaysLeft === 1 ? '' : 's'} left`}.</b> Roll to next month or exit before then: in the last days MCX delivery rules apply. Check the exact date with your broker.</div>`
-    : `<div class="drv-row"><span class="drv-ic neutral">•</span><b>Expiry ${escHtml(d)}</b><span>${e.tradingDaysLeft} trading days left on the current contract (last day of the month; check with your broker)</span></div>`;
+    : `<div class="drv-row"><span class="drv-ic neutral">•</span><b>Expiry ${escHtml(d)}</b><span>${e.tradingDaysLeft} trading days left on the current contract (last day of the month; check with your broker)</span></div>`) + buy;
 }
 function mcxEventsHtml(sym, cal){
   const cats = MCX_EVENT_CATS[sym] || [], t = istDateKey(), dayKey = ms => new Date(ms + 330*60000).toISOString().slice(0, 10);
@@ -2367,7 +2369,7 @@ function mcxFillAsync(sym){
     const exp = sym === 'MCX:GOLDPETAL' ? goldPetalExpiryNow() : null;
     const parts = [];
     if(soon.length) parts.push(`⚠ ${escHtml(soon.map(e => `${e.event} ${evDay(e.date).toLowerCase()}${e.time ? ' ' + e.time : ''}`).join('; '))} - no fresh entry in the hour before; keep the stop order in place.`);
-    if(exp && exp.tradingDaysLeft <= 5) parts.push(`⚠ Contract expires ${escHtml(exp.date)} (${exp.tradingDaysLeft} trading day${exp.tradingDaysLeft === 1 ? '' : 's'}) - roll or exit before then.`);
+    if(exp && exp.tradingDaysLeft <= 5) parts.push(`⚠ Contract expires ${escHtml(exp.date)} (${exp.tradingDaysLeft} trading day${exp.tradingDaysLeft === 1 ? '' : 's'}) - roll or exit before then. New buys: ${escHtml(SwingPlan.goldPetalContract(istDateKey(), k => NSE_HOL_CLIENT.has(k)).month)} contract.`);
     put('[data-mcx-alert]', parts.length ? `<div class="idea-hedge" style="border-color:var(--bear)">${parts.join('<br>')}</div>` : '');
   });
   const key = `news_${sym}`, st = sym.replace(/NSE:|MCX:|CRYPTO:/g, '');
@@ -3890,7 +3892,7 @@ function ftApplyBar(row, bar, risk, barComplete=true){
   /* Every completed day after the signal counts, before and after T1: the trade is closed at the close of day 10
      at the latest (swing trades of 1-10 days; a trade still trailing after T1 used to run on without limit). */
   if(barComplete) row.sessions = (+row.sessions || 0) + 1;
-  /* READY-gate records from 23 Nov 2026: the trailing exit (SwingPlan.TRAIL) - the stop, then a stop 3 ATR under the
+  /* READY-gate records from 23 Nov 2026: the trailing exit (SwingPlan.TRAIL) - the stop, then a stop 4 ATR under the
      highest close; a close below EMA20 after day 5; day 60. Judged like trailWalk on the server. */
   if(row.exitMode === 'trail' && !short){
     const TR = SwingPlan.TRAIL, st = Math.max(sl, +row.trailSl || 0);
@@ -4025,14 +4027,14 @@ async function tabForwardTest() {
   const winRate = finished.length ? Math.round(wins/finished.length*100) : '--';
   const openCount = rows.filter(r=>!r.closed).length;
   /* Results by tag: do the backtested tags hold up on real picks? */
-  const tagDefs = [['hhhl','Higher highs & lows'],['near52','Near 52-week high'],['dbAbove','Double bottom'],['pcrOk','Option PCR 0.5+'],['dpOk','Delivery 50%+ (older records)']];
+  const tagDefs = [['hhhl','Higher highs & lows'],['near52','Near 52-week high'],['dbAbove','Double bottom']];   /* Option PCR and Delivery 50%+ removed 23 Nov 2026 (PCR needs Zerodha; delivery only on old records) */
   const tagStat = arr => { const n = arr.length, w = arr.filter(r=>+r.resultR>0).length; return n ? `${n} · ${Math.round(w/n*100)}% · ${(arr.reduce((a,r)=>a+(+r.resultR||0),0)/n).toFixed(2)}R` : '—'; };
   const tagged = finished.filter(r=>r.tags);
   /* Results by strategy: swing READY picks vs the two pattern breakouts (recorded from 20 Nov 2026). */
   const isPat = (r, n) => r.pattern === true && new RegExp(n, 'i').test(String(r.setup || ''));
   const isGateR = r => !r.pattern && ['EMA20/50 cross', 'Gap-up near 52-week high'].includes(String(r.setup || ''));
-  const stratDefs = [['READY: EMA20/50 cross (tested gate)', r => isGateR(r) && r.setup === 'EMA20/50 cross', 'Backtest: 54% win, +0.21R (max 5 open)'],
-    ['READY: gap-up near 52-week high', r => isGateR(r) && r.setup !== 'EMA20/50 cross', 'Backtest: 48% win, +0.20R (max 5 open)'],
+  const stratDefs = [['READY: EMA20/50 cross (tested gate)', r => isGateR(r) && r.setup === 'EMA20/50 cross', 'Backtest (trailing exit): 48% win, +0.42R (max 5 open)'],
+    ['READY: gap-up near 52-week high', r => isGateR(r) && r.setup !== 'EMA20/50 cross', 'Backtest (trailing exit): 42% win, +0.75R (max 5 open)'],
     ['Old READY / buy limit (before 21 Nov 2026)', r => !r.pattern && !isGateR(r), 'Backtest: 44% win, +0.08R (max 5 open)'],
     ['Flat base breakout', r => isPat(r, 'flat base'), 'Backtest: 53% win, +0.13R (max 5 open)'],
     ['Double bottom breakout', r => isPat(r, 'double bottom'), 'Backtest: 49% win, +0.07R'],
@@ -4048,7 +4050,7 @@ async function tabForwardTest() {
       <td><strong>${escHtml(r.sym)}</strong><br><span style="color:var(--tx3)">#${escHtml(r.rank||'-')} · ${escHtml(r.setup||r.source||'qualified')}</span></td>
       <td><span style="color:${r.side==='Short'?'var(--bear)':'var(--bull)'};font-weight:800">${escHtml(r.side||'Long')}</span></td>
       <td>${ftMoney(r.entry)}</td>
-      <td>${ftMoney(r.sl)}<br><span style="color:var(--tx3)">Trail ${ftMoney(r.trailSl)}</span></td>
+      <td>${ftMoney(r.sl)}${!r.exitMode && +r.trailSl > 0 ? `<br><span style="color:var(--tx3)" title="Old T1 / T2 records: the stop moved here after T1">Trail ${ftMoney(r.trailSl)}</span>` : ''}</td>
       <td>${r.exitMode === 'trail' ? `Trailing<br><span style="color:var(--tx3)">${+r.trailSl > +r.sl ? 'stop now ' + ftMoney(r.trailSl) : 'stop ' + ftMoney(r.sl)}</span>` : r.exitMode === '2R' ? `${ftMoney(r.t2r)}<br><span style="color:var(--tx3)">2R · T1 ${ftMoney(r.t1)}</span>` : `${ftMoney(r.t1)}<br><span style="color:var(--tx3)">T2 ${ftMoney(r.t2)}</span>`}</td>
       <td>${ftMoney(r.current)}<br><span style="color:${retCol};font-weight:800">${ftPct(r.retNow)}</span></td>
       <td style="color:${statusCol};font-weight:800">${escHtml(r.status||'Open')}</td>
@@ -4061,7 +4063,7 @@ async function tabForwardTest() {
   <div class="scr-summary"><div class="scr-sum-card"><div class="scr-sum-label">Records</div><div class="scr-sum-val">${rows.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Open / Trail</div><div class="scr-sum-val" style="color:var(--acc)">${openCount}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Closed R Samples</div><div class="scr-sum-val">${finished.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Win Rate</div><div class="scr-sum-val" style="color:var(--bull)">${winRate}${winRate==='--'?'':'%'}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Avg R</div><div class="scr-sum-val" style="color:${(+avgR||0)>=0?'var(--bull)':'var(--bear)'}">${avgR}${avgR==='--'?'':'R'}</div></div></div>
   <div class="ft-wrap"><table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th title="Fresh entry score when the signal was recorded (from 21 Nov 2026)">Fresh</th></tr></thead><tbody>${body}</tbody></table></div>
   ${tagTable}
-  <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R); READY trades from 23 Nov 2026: a stop trailing 3 ATR under the highest close, a close below EMA20 after day 5, or day 60; 19-22 Nov 2026: the whole position at 2R (+2R) or at the close of day 15. Older records: half booked at T1, the rest at T2 / trail stop / a close through EMA20, at the latest at the close of day 10. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
+  <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R); READY trades from 23 Nov 2026: a stop trailing 4 ATR under the highest close, a close below EMA20 after day 5, or day 60; 19-22 Nov 2026: the whole position at 2R (+2R) or at the close of day 15. Older records: half booked at T1, the rest at T2 / trail stop / a close through EMA20, at the latest at the close of day 10. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -4204,24 +4206,25 @@ function renderMyTradeScreener(data, source='server') {
       ${p.stop ? `<div class="pl-levels">
         <div><span>Entry</span><b>${f(p.entry)}</b></div>
         <div><span>SL</span><b style="color:var(--bear)">${f(p.stop)}</b></div>
-        <div title="Tested exit: a stop trailing 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days"><span>Exit</span><b style="color:var(--bull)">Trailing</b></div>
+        <div title="Tested exit: a stop trailing 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days"><span>Exit</span><b style="color:var(--bull)">Trailing</b></div>
         <div title="Risk from the price to the stop"><span>Risk</span><b>${Number.isFinite(+s.riskPct) ? (+s.riskPct).toFixed(1) + '%' : '--'}</b></div>
       </div>` : ''}
     </div>`;
   };
   const groups = [
-    {g:1, title:'Ready to trade', sub:'Tested READY gate (10-year backtest: 49% wins, 8 of 10 years): EMA20 crosses above EMA50 while the stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high. Signal on a close - buy at the price, stop under the setup, then a trailing exit (stop 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days: 44% wins but +0.53R a trade, 8 of 10 years). The Overview confirms each one below.', cls:'bull', id:'scrMatchGrid'},
+    {g:1, title:'Ready to trade', sub:'Tested READY gate (10-year backtest with the trailing exit: 45% wins, +0.57R a trade, 9 of 10 years): EMA20 crosses above EMA50 while the stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high. Signal on a close - buy at the price, stop under the setup, then a trailing exit (stop 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days; avg win +13%, avg loss -4%). The Overview confirms each one below.', cls:'bull', id:'scrMatchGrid'},
     {g:2, title:'Watchlist', sub:'A tested signal forming today (READY if it holds at the close, from 15:00), held by results / the market filter, or EMA20 about to cross EMA50.', cls:'bull', id:'scrDemoted'},
+    /* Quick bounce was removed 23 Nov 2026 (it lost money in the 10-year test). */
   ];
   /* One stock, one list. Order: READY (the server leaves it out of the other lists) -> Pattern breakout -> 20-day
-     breakout -> Quick bounce -> Watchlist. A pattern / breakout row shows what the swing check said instead. */
+     breakout -> Watchlist. A pattern / breakout row shows what the swing check said instead. */
   const symU = s => String(s?.sym || '').toUpperCase();
   const readySet = new Set(all.filter(s => screenerRowGroup(s) === 1).map(symU));
   const pb = (data.patternBreakouts || []).filter(q => !readySet.has(symU(q)));
   const pbSet = new Set(pb.map(symU));
   const bo = (data.breakouts20 || []).filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)));
   const boSet = new Set(bo.map(symU));
-  const qb = (data.quickBounce || []).filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)) && !boSet.has(symU(q)));
+  const qb = [].filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)) && !boSet.has(symU(q)));
   const swingNote = {};
   all.forEach(s => { const g = screenerRowGroup(s); if((pbSet.has(symU(s)) || boSet.has(symU(s))) && g === 2) swingNote[symU(s)] = screenerRowTag(s, g).t; });
   const shownElsewhere = s => !readySet.has(symU(s)) && (pbSet.has(symU(s)) || boSet.has(symU(s)) || qb.some(q => symU(q) === symU(s)));
@@ -4291,7 +4294,7 @@ function renderMyTradeScreener(data, source='server') {
       <div class="pl-head"><div><div class="pl-title">${G.title}</div><div class="pl-sub">${G.sub}</div></div><div class="pl-count">${list.length}</div></div>
       ${G.g === 2 ? '<div id="scrDemotedGrid"></div>' : ''}
       ${list.length ? list.map(s => row(s, G.g)).join('') : `<div class="pl-empty">${empty}</div>`}
-    </div>${G.g === 1 ? pbGroup + boGroup + qbGroup : ''}`;
+    </div>${G.g === 1 ? pbGroup + boGroup : ''}`;
   }).join('');
   const ts = data.generatedAt ? new Date(data.generatedAt) : null;
   const when = ts ? ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : '--';
@@ -4306,7 +4309,7 @@ function renderMyTradeScreener(data, source='server') {
   /* One check at a time: an Overview probe swaps the page's current stock while it runs. */
   const live = tcGuard();
   SCR_VERIFY = verifyScreenerPicksWithOverview(all.filter(s => s._ready), data, tc, live)
-    .then(() => verifyQuickWithOverview(qb, tc, live)).then(() => verifyPatternWithOverview(pb.concat(bo), tc, live)).catch(() => {});
+    .then(() => verifyPatternWithOverview(pb.concat(bo), tc, live)).catch(() => {});
 }
 let SCR_VERIFY = Promise.resolve();
 async function verifyQuickWithOverview(list, tc, live){
@@ -4622,7 +4625,7 @@ async function checkAllVsOverview(){
     }
     if(why.length) bad.push(`<b>${escHtml(s.sym)}</b>: ${escHtml(why.join(', '))}`); else ok++;
   }
-  for(const q of (data.quickBounce || [])){
+  for(const q of []){   /* Quick bounce removed 23 Nov 2026 */
     if(!live()) return;
     box.innerHTML = `Checking quick bounce ${q.sym} against its Overview…`;
     const sym = 'NSE:' + q.sym; delete OVERVIEW_VERDICT[sym];
@@ -6086,8 +6089,8 @@ async function tabOverview(sym) {
   const finalSetupPill = buildFinalSetupPill(setupInfoForDecision, simpleDecision);
   let {decisionClass, decisionMain, actionBadge, actionBadgeSub, actionLine} = simpleDecision;
   /* Swing READY = the tested gate only (SwingPlan.swingGate, the screener's rule): EMA20 crosses above EMA50 while the
-     stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high (10-year test: 49% wins, 8 of
-     10 years). The setup engine above still explains the chart; its old pullback / breakout READY is not a buy. */
+     stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high (10-year test with the trailing exit: 45% wins,
+     +0.57R a trade, 9 of 10 years). The setup engine above still explains the chart; its old pullback / breakout READY is not a buy. */
   const sgPlan = (() => {
     if(isMCXSymbol(sym) || isIndexSymbol(sym)) return null;
     const d = CUR_DATA.daily, nD = d.C?.length || 0; if(nD < 262 || !d.O || !d.V) return null;
@@ -6135,7 +6138,9 @@ async function tabOverview(sym) {
      under 70 (re-scored at the limit's R:R). */
   const limitPlan = null;   /* the old buy-limit plan belonged to the untested READY (removed 20 Nov 2026) */
   /* Quick Bounce (RSI-2) on completed bars - the same function and filters as the screener's list. */
+  /* Removed from the app 23 Nov 2026 (it lost money in the 10-year test): the card no longer shows. */
   const qbPlan = (() => {
+    return null;
     if(isMCXSymbol(sym) || isIndexSymbol(sym)) return null;
     const d = CUR_DATA.daily, e = getConfirmedDailyIndex(d, sym);
     const q = SwingPlan.quickBounce({ C: d.C.slice(0, e + 1), H: d.H.slice(0, e + 1), L: d.L.slice(0, e + 1) });
@@ -6194,7 +6199,7 @@ async function tabOverview(sym) {
       ${isStockOv ? `<div class="tp-detail ${stockTrend === 'Uptrend' ? 'bull' : stockTrend === 'Downtrend' ? 'bear' : 'neutral'}"><div class="tp-detail-label">Trend</div><div class="tp-detail-value">${stockTrend}</div><div class="tp-detail-sub">${stockTrendSub}</div></div>`
         : `<div class="tp-detail ${biasDetailClass}"><div class="tp-detail-label">Bias</div><div class="tp-detail-value">${bias}</div><div class="tp-detail-sub">Trend / momentum direction.</div></div>`}
       <div class="tp-detail ${setupInfoForDecision?.cls || 'neutral'}"><div class="tp-detail-label">${isStockOv ? 'Tested signal' : 'Selected Setup'}</div><div class="tp-detail-value">${sgPlan?.g?.ok ? escHtml(sgPlan.g.setup) : isStockOv ? 'None today' : setupCleanLabel}</div><div class="tp-detail-sub">${sgPlan?.g?.ok ? escHtml(sgPlan.g.why) : isStockOv ? escHtml(sgPlan?.near || 'Watching for an EMA20/50 cross with relative strength, or a 2%+ gap-up on 2x volume near the 52-week high') : `${setupInfo?.simple || setupInfo?.note || 'Setup is not clean yet.'}${readyGate.passed ? '' : ' · not active until the Ready Gate passes'}`}</div></div>
-      <div class="tp-detail tp-decision-box ${entryDetailClass}"><div class="tp-detail-label">Decision · ${isMCXSymbol(sym) ? `Ready Gate ${readyGate.label}` : 'tested READY gate'}</div><div class="tp-detail-value">${actionBadge} · ${isMCXSymbol(sym) ? finalActionValue : sgPlan?.active ? escHtml(sgPlan.g.setup) : escHtml(sgWhy)}</div><div class="tp-detail-sub">${isStockOv ? `<span class="tp-conf">${sgPlan?.active ? 'Buy at the price · stop under the setup · sell all at 2R or the close of day 15 (10-year test: 49% wins, 8 of 10 years)' : 'READY = EMA20/50 cross with the stock beating Nifty, or a 2%+ gap-up on 2x volume near the 52-week high, with Nifty in its uptrend'}</span>` : readyGate.passed ? `All Ready Gate checks passed · score ${qScore}/100 · confidence ${confidence}/100 · recheck before next-day entry.${readyGate.notes?.length ? ' ' + escHtml(readyGate.notes.join(' · ')) + '.' : ''}${bias==='Bearish' ? ' Short setup: the Screener lists long setups only.' : ''}` : `<span class="tp-missing">What is missing (${readyGate.reasons.length}):</span><ul class="tp-reasons">${readyGate.reasons.map(r=>`<li>${escHtml(r)}</li>`).join('')}</ul><span class="tp-conf">Score ${qScore}/100 · confidence ${confidence}/100 (information only)</span>`}</div></div>
+      <div class="tp-detail tp-decision-box ${entryDetailClass}"><div class="tp-detail-label">Decision · ${isMCXSymbol(sym) ? `Ready Gate ${readyGate.label}` : 'tested READY gate'}</div><div class="tp-detail-value">${actionBadge} · ${isMCXSymbol(sym) ? finalActionValue : sgPlan?.active ? escHtml(sgPlan.g.setup) : escHtml(sgWhy)}</div><div class="tp-detail-sub">${isStockOv ? `<span class="tp-conf">${sgPlan?.active ? 'Buy at the price · stop under the setup, then trail it 4 ATR under the highest close · sell on a close below EMA20 after day 5 · at most 60 days (10-year test: 45% wins, +0.57R a trade, 9 of 10 years)' : 'READY = EMA20/50 cross with the stock beating Nifty, or a 2%+ gap-up on 2x volume near the 52-week high, with Nifty in its uptrend'}</span>` : readyGate.passed ? `All Ready Gate checks passed · score ${qScore}/100 · confidence ${confidence}/100 · recheck before next-day entry.${readyGate.notes?.length ? ' ' + escHtml(readyGate.notes.join(' · ')) + '.' : ''}${bias==='Bearish' ? ' Short setup: the Screener lists long setups only.' : ''}` : `<span class="tp-missing">What is missing (${readyGate.reasons.length}):</span><ul class="tp-reasons">${readyGate.reasons.map(r=>`<li>${escHtml(r)}</li>`).join('')}</ul><span class="tp-conf">Score ${qScore}/100 · confidence ${confidence}/100 (information only)</span>`}</div></div>
     </div>`;
 
   const topRisk = warnings.length ? warnings.slice(0,3).map(w=>`${w.t}: ${w.d}`).join(' · ') : 'No major warning from loaded technical data. Still verify earnings, calendar events and fresh news manually.';
@@ -6343,7 +6348,7 @@ async function tabOverview(sym) {
             ? `<span class="tp-planned">Planned ${escHtml(strategyPlan.setupName || 'setup')}: buy ${fmt(rrFromPrice)}${Math.abs(rrFromPrice - (+strategyPlan.entryPrice || rrFromPrice)) > 0.005 && !/breakout/i.test(strategyPlan.setupName || '') ? ` (zone ${fmt(strategyPlan.entryPrice)})` : ''} · SL ${fmt(strategyPlan.stopLoss)} · T1 ${fmt(strategyPlan.target1)}${rrNum ? ` · R:R ${rr}` : ''}</span>`
             : 'No entry, stop or target until a setup is confirmed', 'Levels become active only when the decision is READY.', 'is-wait tp-wide')}
         ${planItem('Daily + Weekly Trend', trendCombo, trendSub, trendClass)}`}
-        ${sgPlan?.active ? planItem('Exit Plan', `Stop-loss ${fmt(sgPlan.g.stop)}, then trail it 3 ATR under the highest close · sell on a close below EMA20 after day 5 · at most 60 days`, 'Tested exit (10-year backtest: +0.53R a trade vs +0.18R at 2R) - the 09:20 alert tells you each new stop', 'plan-exit') : activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
+        ${sgPlan?.active ? planItem('Exit Plan', `Stop-loss ${fmt(sgPlan.g.stop)}, then trail it 4 ATR under the highest close · sell on a close below EMA20 after day 5 · at most 60 days`, 'Tested exit (10-year backtest: +0.57R a trade vs +0.18R at 2R) - the 09:20 alert tells you each new stop', 'plan-exit') : activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
       </div>
       ${activeTradeAllowed || limitPlan || plannedOk ? positionCalc : `<details class="tp-more"><summary>Position size calculator (fills in when a trade is ready)</summary>${positionCalc}</details>`}
       <details class="tp-more"><summary>More details: ${isStockOv ? 'price and volume status' : 'Fresh Entry / Hold score, price and volume status'}</summary>

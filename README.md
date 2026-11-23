@@ -88,9 +88,9 @@ browser alerts). Schedule (IST, NSE trading days unless noted):
   both 2%+ away, exit on a close at 2x the premium / credit) with today's strikes and premiums from Zerodha.
 - 11:00 and 15:00 stock scans: READY stocks of the tested gate (from 20 Nov 2026: EMA20 crosses above EMA50 while the
   stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high; signal on a close; from 23 Nov 2026 a trailing
-  exit: stop 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days - 09:20 tells you
+  exit: stop 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days - 09:20 tells you
   each new stop for trades in My trades). 11:00 alerts yesterday's-close signals, 15:00 today's; pattern breakouts at 15:00. Quick
-  Bounce is watch-only (no alert). At 15:00, when nothing was ready, one quiet line with the day's MCX and Nifty
+  Bounce was removed (23 Nov 2026). At 15:00, when nothing was ready, one quiet line with the day's MCX and Nifty
   status (so a silent day is not mistaken for a broken app).
 
 Track record (Screener → Track record) has three sub-tabs, all checked once a day:
@@ -111,7 +111,8 @@ the last error, if any; nseCookie: how often NSE's cookie page was fetched (abou
 answers to this server (status, time, cookies, start of the body when not 200 - "Access Denied" / 403 means NSE
 refuses this server's address); nseRefused: how often that happened (no NSE live call for 5 minutes after each).
 
-FII / DII (22 Nov 2026): from Moneycontrol's FII / DII page, every 3 hours; NSDL (FPI only, settled figure) when
+FII / DII (22 Nov 2026): from Moneycontrol's FII / DII page, every 3 hours (every 30 minutes after 18:00 IST
+  until the day's row is there); NSDL (FPI only, settled figure) when
 Moneycontrol refuses. NSE refuses Render's address; Kite has none. /api/health -> freeSources shows the source or the error.
 When NSE refuses: results dates and dividend ex-dates from Yahoo's calendar (estimates are notes, not blocks), bonus /
 split ex-dates from Yahoo's split calendar, the universe re-priced from the saved list. ASM / GSM: NSE only. Saved in
@@ -145,7 +146,7 @@ Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
 - Missed checks catch up: an MCX check missed at 09:45 / 17:00 (deploy or restart) runs at the next minute between
   10:05 and 23:00; the Nifty entry-day check retries until 15:25 when the premiums were missing. The Track record's MCX /
   Nifty tabs show today's server check, i.e. why a signal was or was not recorded.
-- Quick Bounce is watch-only; candle patterns no longer vote in the Overview bias.
+- Quick Bounce was removed (23 Nov 2026); candle patterns no longer vote in the Overview bias.
 - Nifty options: bull puts only (bear calls lost money); minimum credit by days to expiry (6+ up to 10 days, 20+
   beyond). The generic "Today's options idea" card was removed.
 - MCX: Gold Petal, Crude Oil and Natural Gas are buy-only, sold at T1 or day 10 (Natural Gas Mini, 250 mmBtu).

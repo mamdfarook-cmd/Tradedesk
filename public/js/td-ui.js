@@ -5,7 +5,7 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '23 Nov 2026 · 1';
+const TD_UI_VERSION = '23 Nov 2026 · 3';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
 
 
@@ -135,7 +135,6 @@ function refreshListChips(){
   if(scan){
     (scan.picks || []).forEach(x => st['NSE:' + x.sym] = { t: 'READY', c: 'ready' });
     (scan.watchlist || []).filter(x => x.limitReady && x.limitEntry).forEach(x => st['NSE:' + x.sym] = st['NSE:' + x.sym] || { t: 'LIMIT', c: 'ready' });
-    (scan.quickBounce || []).forEach(x => st['NSE:' + x.sym] = st['NSE:' + x.sym] || { t: 'QUICK', c: 'watch' });
   }
   for(const [sym, lv] of Object.entries(typeof PLAN_LEVELS === 'object' ? PLAN_LEVELS : {})) if(sym.startsWith('MCX:') && lv) st[sym] = { t: lv.label === 'Sell' ? 'SELL' : 'BUY', c: lv.label === 'Sell' ? 'low' : 'ready' };
   if(typeof LAST_IDX_IDEA !== 'undefined' && LAST_IDX_IDEA?.rule) st['NSE:NIFTY'] = LAST_IDX_IDEA.rule.ok ? { t: 'RULE ✓', c: 'ready' } : { t: 'NO TRADE', c: 'low' };

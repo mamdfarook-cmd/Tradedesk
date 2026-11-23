@@ -4343,7 +4343,8 @@ function tradingDaysUntil(fromKey, toKey) {
      crumb). Only the screener universe, each stock at most every 3 days, 40 a run - spread through the day.
      A date Yahoo marks as an estimate is a note, not a block.
    - Bonus / split: Yahoo's market-wide split calendar (a bonus shows as a split there), 30 days ahead, NSE rows only.
-   - FII / DII: Moneycontrol's FII / DII page (cash market, last 10 sessions), once every 3 hours.
+   - FII / DII: Moneycontrol's FII / DII page (cash market, last 10 sessions), once every 3 hours (every 30 minutes
+     after 18:00 IST until the day's row is there).
    Each is used only while NSE's own list is missing, and saved in data/free-cal.json. */
 const FREE_CAL_FILE = require('path').join(__dirname, 'data', 'free-cal.json');
 let FREE_CAL = { earn: {}, splits: {}, splitsTs: 0, fiiDii: null, fiiTs: 0 };
@@ -4413,9 +4414,17 @@ setInterval(() => freeCalendarTick().catch(() => {}), 60 * 60e3);
 /* FII / DII cash-market net (Rs Cr) from Moneycontrol, last 10 sessions; the saved copy when it fails. */
 let FII_INFLIGHT = null;
 setTimeout(() => getFiiDii().catch(() => {}), 60e3);
-setInterval(() => getFiiDii().catch(() => {}), 60 * 60e3);
+setInterval(() => getFiiDii().catch(() => {}), 30 * 60e3);
+/* How long a saved copy is good for. Moneycontrol posts the day's row late in the evening (23 Nov 2026: not there at
+   21:07 IST, there by 22:55), and a flat 3 hours kept the previous day until about midnight. From 18:00 IST on an NSE
+   trading day, while the latest row is not today's, check every 30 minutes (one request each); otherwise 3 hours. */
+function fiiMaxAge() {
+  const t = new Date(Date.now() + 330 * 60000), key = t.toISOString().slice(0, 10), m = t.getUTCHours() * 60 + t.getUTCMinutes(), wd = t.getUTCDay();
+  const tradingDay = wd !== 0 && wd !== 6 && !isNseHoliday(key);
+  return tradingDay && m >= 18 * 60 && FREE_CAL.fiiDii?.days?.[0]?.date !== key ? 30 * 60e3 : 3 * 3600e3;
+}
 async function getFiiDii() {
-  if (FREE_CAL.fiiDii && Date.now() - FREE_CAL.fiiTs < 3 * 3600e3) return FREE_CAL.fiiDii;
+  if (FREE_CAL.fiiDii && Date.now() - FREE_CAL.fiiTs < fiiMaxAge()) return FREE_CAL.fiiDii;
   if (FII_INFLIGHT) return FII_INFLIGHT;
   FII_INFLIGHT = (async () => {
     try {
@@ -4750,8 +4759,8 @@ async function runMyTradeScreenerScan() {
   const result = {
     picks,
     watchlist,
-    quickBounce,
-    quickBounceNote,
+    quickBounce: [],   /* Quick bounce removed from the app 23 Nov 2026 (lost money in the 10-year test) */
+    quickBounceNote: '',
     patternBreakouts,
     patternNote,
     breakouts20,
@@ -4791,8 +4800,8 @@ async function runMyTradeScreenerScan() {
       {step:'READY gate', rule:'Tested 20 Nov 2026 (17 swing entries, 10 years): A. EMA20 crosses above EMA50, close above EMA200, stock beats Nifty over 3 months; or B. a 2%+ gap-up on 2x the 20-day volume that closes above its open, close > EMA50 > EMA200, within 10% of the 52-week high'},
       {step:'Signal', rule:"On a close: during the session yesterday's completed candle is the signal (buy now); today's forming candle counts from 15:00 (before that it waits on the Watchlist)"},
       {step:'Market', rule:'READY only while Nifty is above its EMA50 with EMA20 above EMA50 (as tested)'},
-      {step:'Stop / exit', rule:'Stop 0.25 ATR under the setup low (10-day low for A, the gap day low for B), kept 0.75-3 ATR from the price; then a stop trailing 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days (from 23 Nov 2026; before: all at 2R or the close of day 15); at most 5 open'},
-      {step:'Backtest', rule:'A and B in one 5-slot book: 49% wins, +0.18R a trade, profit in 8 of 10 years (9-10 with 3 or 8 open), worst fall -13%. The old pullback / breakout READY: 44%, 6 of 10 years'},
+      {step:'Stop / exit', rule:'Stop 0.25 ATR under the setup low (10-day low for A, the gap day low for B), kept 0.75-3 ATR from the price; then a stop trailing 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days (from 23 Nov 2026; before: all at 2R or the close of day 15); at most 5 open'},
+      {step:'Backtest', rule:'A and B in one 5-slot book with the trailing exit: 45% wins, +0.57R a trade (avg win +13%, avg loss -4%), profit in 9 of 10 years, worst fall -10% (with the old 2R / day-15 exit: 49% wins, +0.18R, 8 of 10 years). The old pullback / breakout READY: 44%, 6 of 10 years'},
       {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days, or a corporate event close`},
       {step:'Pattern breakouts', rule:'Separate list (unchanged): double bottom or flat base breakouts, own stop and 2R exit'},
       {step:'20-day breakouts', rule:'Separate list: first close above the 20-day high on 1.5x volume, close > EMA50 > EMA200, higher highs & lows, within 10% of the 52-week high, beating Nifty over 3 months; stop under the 5-day low, 2R or day 15 (51% wins, 8 of 10 years)'},
@@ -6348,7 +6357,7 @@ function scanSignals(data, slot) {
   for (const x of data.picks || []) {
     const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
     const t2 = +x.exit2R > 0 ? +x.exit2R : +pl.stop > 0 && fill > pl.stop ? fill + 2 * (fill - pl.stop) : null;   /* the screener's own 2R, so list, alert and record agree */
-    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)}${x.gateV2 ? ' · exit: trailing stop 3 ATR under the highest close, or a close below EMA20 after day 5 (the 09:20 alert gives each new stop)' : ` · exit 2R ${t2 ? inr(t2) : '--'} or day 15`}${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)}${x.gateV2 ? ' · exit: trailing stop 4 ATR under the highest close, or a close below EMA20 after day 5 (the 09:20 alert gives each new stop)' : ` · exit 2R ${t2 ? inr(t2) : '--'} or day 15`}${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
   }
   /* Quick Bounce is watch-only (2 in 3 win, but no profit with 5 positions open over 10 years): no alert. Pattern
      breakouts are judged on the day's close, so they are alerted at the 15:00 scan only. */
@@ -6455,14 +6464,16 @@ async function goldPlanS(sym = 'MCX:GOLDPETAL') {
   const sr = SwingPlan.srLevels({ H, L, C, i: C.length - 2, price });
   let drivers = null; if (SwingPlan.GOLD_MCX.has(sym)) { try { drivers = (await mcxDriversFor(sym)).goldRule; } catch {} }
   const plan = SwingPlan.commodityPlan(sym, { C, H, L, price, sr }, { minRR: 1.25, drivers });
-  return { ...plan, calibrated: k !== 1, calK: k, drivers, expiry: sym === 'MCX:GOLDPETAL' ? SwingPlan.goldPetalExpiry(istDateKey(), isNseHoliday) : null };
+  return { ...plan, calibrated: k !== 1, calK: k, drivers, expiry: sym === 'MCX:GOLDPETAL' ? SwingPlan.goldPetalExpiry(istDateKey(), isNseHoliday) : null,
+    contract: sym === 'MCX:GOLDPETAL' ? SwingPlan.goldPetalContract(istDateKey(), isNseHoliday) : null };
 }
 function goldPlanText(p) {
   const head = p.side === 'BUY' && !p.driverBlock ? `BUY · ${p.action}` : p.side === 'BUY' ? `WAIT · ${p.action}` : p.side === 'SELL' ? `SELL (small size - all 3 drivers point down) · ${p.action}` : p.side === 'AVOID' ? `AVOID · ${p.action}` : `WAIT · ${p.why}`;
   const lv = p.side === 'BUY' || p.side === 'SELL' ? `\nEntry ${inr(p.entry)} · Stop ${inr(p.sl)} · Target ${inr(p.exitTarget || p.t1)} (${p.exitRule || 'T1'}) · R:R to T1 ${p.rr ? p.rr.toFixed(2) : '--'}` : '';
   const drv = p.drivers?.known ? `\nDrivers (information only) ${p.drivers.count}/3: ${p.drivers.text}` : '';
   const exp = p.expiry && p.expiry.tradingDaysLeft <= 5 ? `\n⚠ Contract expires ${p.expiry.date} (${p.expiry.tradingDaysLeft} trading days) - roll or exit` : '';
-  return `${head}${lv}${drv}${exp}\nNow ${inr(p.price)}${p.calibrated ? ' (your MCX calibration)' : ' (proxy - calibrate in the app for exact MCX levels)'}`;
+  const ctr = p.contract && (p.side === 'BUY' || p.side === 'SELL') ? `\n${p.contract.text}` : '';
+  return `${head}${lv}${drv}${exp}${ctr}\nNow ${inr(p.price)}${p.calibrated ? ' (your MCX calibration)' : ' (proxy - calibrate in the app for exact MCX levels)'}`;
 }
 function niftyRuleText({ rule, chain }) {
   const p = rule.pick;
@@ -6534,7 +6545,7 @@ async function openTradeDailyChecks() {
         if (w.exit === 'ema' && flagOnce(`j|${t.id}|trail-ema`)) msgs.push(`${name}: closed below EMA20 (${inr(w.level)} vs ${inr(w.e20)}) - the trailing exit sells at today's open`);
         else if (w.exit === 'time' && flagOnce(`j|${t.id}|trail-time`)) msgs.push(`${name}: day ${w.days} - the trailing exit's time limit; sell today`);
         else if (w.exit === 'stop' && flagOnce(`j|${t.id}|trail-stop`)) msgs.push(`${name}: the stop ${inr(w.level)} was reached - exit and mark it closed in My trades`);
-        else if (!w.exit && w.trail > Math.max(+t.stop, +lv[t.id] || 0) + 0.005) { lv[t.id] = w.trail; saveStore(); msgs.push(`${name}: raise your stop-loss to ${inr(w.trail)} (3 ATR under the highest close ${inr(w.hc)})`); }
+        else if (!w.exit && w.trail > Math.max(+t.stop, +lv[t.id] || 0) + 0.005) { lv[t.id] = w.trail; saveStore(); msgs.push(`${name}: raise your stop-loss to ${inr(w.trail)} (4 ATR under the highest close ${inr(w.hc)})`); }
       }
     } catch (e) { console.warn(`trail ${sym}:`, e.message); }
     if (t.kind === 'stock') {

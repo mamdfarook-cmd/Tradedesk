@@ -418,6 +418,21 @@
     return { date: e.toISOString().slice(0, 10), tradingDaysLeft: left };
   }
 
+  /* Which Gold Petal contract to buy (23 Nov 2026): the current month while 15+ trading days are left (the trade
+     lasts up to 10 trading days, plus ~5 days' buffer before the delivery period), otherwise next month. Next month
+     usually trades a little above the current one: shift the plan's entry / stop / target by that gap. */
+  const GOLD_CONTRACT_MIN_DAYS = 15;
+  function goldPetalContract(todayKey, isHoliday) {
+    const cur = goldPetalExpiry(todayKey, isHoliday);
+    const after = new Date(cur.date + 'T00:00:00Z'); after.setUTCDate(after.getUTCDate() + 1);
+    const nxt = goldPetalExpiry(after.toISOString().slice(0, 10), isHoliday);
+    const useNext = cur.tradingDaysLeft < GOLD_CONTRACT_MIN_DAYS, pick = useNext ? nxt : cur;
+    const mon = k => new Date(k + 'T00:00:00Z').toLocaleDateString('en-US', { month: 'short', timeZone: 'UTC' }).toUpperCase();
+    return { useNext, month: mon(pick.date), expiry: pick.date, current: cur, next: nxt, minDays: GOLD_CONTRACT_MIN_DAYS,
+      text: useNext ? `Buy the ${mon(nxt.date)} contract (expires ${nxt.date}): the current ${mon(cur.date)} contract has only ${cur.tradingDaysLeft} trading days left (under ${GOLD_CONTRACT_MIN_DAYS}). Next month trades slightly higher - add the gap to the entry, stop and target.`
+        : `Buy the ${mon(cur.date)} contract (expires ${cur.date}, ${cur.tradingDaysLeft} trading days left).` };
+  }
+
   /* ── The user's credit-spread rule on the live NSE option chain (Option builder card AND the 09:30 alert) ──
      Sell strike: at least 2% from spot and |delta| < 0.20; buy the strike `wing` points further. Bull put only in a
      Nifty uptrend, bear call only in a downtrend (real-data backtest 2019-2026: puts in an uptrend were the only
@@ -602,11 +617,12 @@
      the same rules: signal on the close, buy the next open, stop under the setup low (minus 0.25 ATR, kept 0.75-3 ATR
      from the entry), sell all at 2R or at the close of day 15, Nifty above its EMA50 with EMA20 above EMA50, at most 5
      open, 0.25% costs. The two that held up in every robustness test (other pick order, 3 / 8 open, 2017-21 vs 2022-26):
-       A. EMA20 crosses above EMA50, close above EMA200, stock beats Nifty over 3 months: 54% wins, +0.21R, 9-10 of 10 years;
+       A. EMA20 crosses above EMA50, close above EMA200, stock beats Nifty over 3 months: 54% wins, +0.21R, 9-10 of 10 years (2R / day-15 exit);
        B. gap-up 2%+ on 2x the 20-day volume that closes above its open, close > EMA50 > EMA200, within 10% of the
-          52-week high: 48% wins, +0.20R, 8 of 10 years.
-     Together in one 5-slot book: 49% wins, +0.18R a trade (avg win +8.1%, avg loss -5.3%), 8 of 10 years, worst fall
-     -13%, about 52 trades a year. The old READY (EMA pullbacks / breakout with volume): 44%, +0.08R, 6 of 10 years.
+          52-week high: 48% wins, +0.20R, 8 of 10 years (2R / day-15 exit).
+     Together in one 5-slot book with the trailing exit (TRAIL, 4 ATR, from 23 Nov 2026): 45% wins, +0.57R a trade
+     (avg win +13%, avg loss -4%), 9 of 10 years, worst fall -10%, about 37 trades a year (A 48% / +0.42R, B 42% / +0.75R).
+     With the old 2R / day-15 exit: 49% wins, +0.18R, 8 of 10 years, worst fall -13%. The old READY (EMA pullbacks / breakout with volume): 44%, +0.08R, 6 of 10 years.
      i = signal bar (default the last); entry = the price you buy at (default that bar's close). The caller checks the
      Nifty trend, results and corporate events. Returns { ok, setup, entry, stop, target, ... } or { ok:false, near }. */
   function swingGate({ O, H, L, C, V, i, rs3m, vToday, entry }) {
@@ -731,11 +747,11 @@
       why: `Closed above the 20-day high ${info.hi20} on ${info.volX}x volume, higher highs & lows, ${info.off52}% below the 52-week high, beating Nifty by ${info.rs3m}% over 3 months` };
   }
 
-  /* The READY gate's exit from 23 Nov 2026 (10-year backtest of the same entries, 5 open: +0.53R a trade, ~20% a year,
-     44% wins, 8 of 10 years - vs +0.18R, ~13.5%, 49% for "all at 2R or day 15"): the stop-loss order, then a stop that
-     trails 3 ATR under the highest close since the entry; sell on a daily close below EMA20 after day 5; at most 60
+  /* The READY gate's exit from 23 Nov 2026 (10-year backtest of the same entries, 5 open, 4 ATR: +0.57R a trade,
+     45% wins, 9 of 10 years; 3 ATR gave +0.53R, 44% - vs +0.18R, ~13.5%, 49% for "all at 2R or day 15"): the stop-loss order, then a stop that
+     trails 4 ATR under the highest close since the entry; sell on a daily close below EMA20 after day 5; at most 60
      trading days. b = daily bars {H, L, C}; bars from..to are the completed days after the entry (day 1 = from). */
-  const TRAIL = { atr: 3, emaAfter: 5, maxDays: 60 };
+  const TRAIL = { atr: 4, emaAfter: 5, maxDays: 60 };   /* 4 ATR from 23 Nov 2026 (3 ATR before): 3.75-5 ATR all tested about the same, +0.57R vs +0.53R */
   function trailWalk(b, from, to, entry, stop) {
     const C = b.C.map(Number), H = b.H.map(Number), L = b.L.map(Number), n = C.length;
     const atr = [], e20 = []; let a = 0, e = null;
@@ -756,5 +772,5 @@
   }
 
   return { R2, srLevels, atrWilder, TRAIL, trailWalk, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
-    commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry, stockScores, breakout20 };
+    commodityPlan, goldDriverRule, goldPetalExpiry, goldPetalContract, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry, stockScores, breakout20 };
 });
