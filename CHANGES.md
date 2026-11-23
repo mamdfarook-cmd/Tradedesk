@@ -1,3 +1,27 @@
+# Trailing exit, one trade per stock, Natural Gas alert and roll fixes (23 Nov 2026 · page version 23 Nov 2026 · 1)
+
+- READY stocks: the exit is now a trailing stop (10-year backtest of the same entries, 5 open: +0.53R a trade, ~20% a year,
+  44% wins, 8 of 10 years, worst drop -11% - vs +0.18R, ~13.5%, 49% for "all at 2R or day 15"; better in every trail
+  width tried, both halves of the period and with 3 or 8 open). Stop-loss order, then the stop trails 3 ATR under the
+  highest close since the entry; sell on a daily close below EMA20 after day 5; at most 60 trading days. Shared engine
+  SwingPlan.trailWalk (checked against the backtest: 1,259 of 1,259 trades identical). Overview, screener card, scan
+  alert, Track record and My trades use it; the 09:20 check tells you each new stop ("raise your stop-loss to ...") and
+  the price watcher alerts on the raised stop. Pattern breakouts and 20-day breakouts keep 2R / day 15 (not tested
+  with the trail). Records made before today keep their exit.
+- Track record, stocks: one trade per stock. A stock that stayed READY for days (or a screener opened on Saturday)
+  made a new record every day. A stock is recorded again only after its last record closed, never on a weekend or NSE
+  holiday; the server skips a stock it recorded in the last 14 days. Existing duplicates are removed once (the first
+  record is kept).
+- Natural Gas (and Crude / Gold Petal) 09:45 alert: at 09:45 IST (23:15 New York) Yahoo's last bar of a US future already
+  carries the next date; the server took that for a missing candle and added a copy, so its EMAs, ATR and levels
+  differed from the app's. It now uses the app's rule (append only when the last bar is older).
+- MCX card: "Alerted <time>: buy at ... stop ... target ..." - the trade the server alerted and tracks; the card's own
+  plan is recalculated at the live price, so its entry moves after the alert.
+- MCX Track record: a futures roll (Natural Gas on 20 Nov: next contract 12.6% higher) rescales old bars to the new
+  contract; open records kept old-contract levels and were judged against new-contract prices. Their levels now move
+  by the roll ratio, once ("levels moved 12.6% for the futures roll").
+- Index pages: the sub-tab is "Technicals" again.
+
 # Nifty Midcap 150 works as an index; "Analysis" tab name (22 Nov 2026 · page version 22 Nov 2026 · 4)
 
 - Nifty Midcap 150 opened like a stock (Overview, stock checks): the page's own list of index codes was missing it,

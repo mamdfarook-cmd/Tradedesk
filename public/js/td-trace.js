@@ -42,7 +42,7 @@ function importStockTrace(){
   const rows = readForwardTests(), have = new Set(rows.map(r => `${r.date}_${r.sym}`));
   let n = 0;
   for (const r of recs) {
-    if (have.has(`${r.date}_${r.sym}`)) continue;
+    if (have.has(`${r.date}_${r.sym}`) || (typeof ftTradingDay === 'function' && (!ftTradingDay(r.date) || ftHasTrade(rows, r.sym, r.date)))) continue;   /* one trade per stock */
     rows.push({ date: r.date, source: 'server scan', rank: '-', sym: r.sym, side: 'Long', bias: r.bias || 'Bullish', entry: ftR(r.entry), current: ftR(r.entry),
       sl: ftR(r.sl), t1: ftR(r.t1), t2: null, trailSl: null, atr: null, rr1: null, rr2: null, score10: r.score10 || null, final: r.final || null, setup: r.setup || null,
       exitMode: r.exitMode || null, t2r: r.t2r ? ftR(r.t2r) : null, tags: r.tags || null, sector: r.sector || null,
@@ -77,7 +77,7 @@ function traceGoldRows(rows){
     <td>${escHtml(r.date)}<br><b>${escHtml(MCX_TR_NAME[r.sym || 'MCX:GOLDPETAL'] || r.sym)}</b> <span style="color:var(--tx3)">${escHtml(r.via || '')}</span></td>
     <td><span style="color:${r.side === 'SELL' ? 'var(--bear)' : 'var(--bull)'};font-weight:800">${r.side === 'SELL' ? 'SELL' : 'BUY'}</span>${r.small ? '<br><span style="color:var(--tx3)">small size</span>' : ''}</td>
     <td style="color:${trCol(r.resultR)};font-weight:900">${trR(r.resultR)}</td>
-    <td style="font-weight:800;white-space:normal;min-width:130px">${escHtml(r.status || 'Open')}</td>
+    <td style="font-weight:800;white-space:normal;min-width:130px">${escHtml(r.status || 'Open')}${r.rollNote ? `<br><span style="color:var(--tx3);font-weight:600">${escHtml(r.rollNote)}</span>` : ''}</td>
     <td>${trMoney(r.entry)}</td>
     <td>${trMoney(r.sl)}</td>
     <td>${r.exitMode === 'full' ? `${trMoney(r.target)}<br><span style="color:var(--tx3)">${escHtml(r.exitRule || 'all at target')}</span>` : `${trMoney(r.t1)}<br><span style="color:var(--tx3)">T2 ${trMoney(r.t2)}</span>`}</td>

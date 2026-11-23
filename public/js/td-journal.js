@@ -175,7 +175,7 @@ function jFromForm(p){
   if(kind === 'option') Object.assign(t, { optType: p.optType || 'P', shortStrike: jNum('j-short'), longStrike: jNum('j-long'), credit: jNum('j-credit'), expiry: document.getElementById('j-exp')?.value || p.expiry || '',
     wing: jNum('j-long') > 0 ? Math.abs(jNum('j-short') - jNum('j-long')) : 0, callStrike: +p.callStrike || null,
     label: jNum('j-long') > 0 ? `${p.setup || 'Credit spread'} ${jNum('j-short')}/${jNum('j-long')}` : `${p.setup || 'Naked sell'} ${jNum('j-short')}${p.callStrike ? ' PE + ' + p.callStrike + ' CE' : ''} (naked)` });
-  else Object.assign(t, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1'), t2: +p.t2 || null, calK: +p.calK || 1, exitDays: +p.exitDays || null });
+  else Object.assign(t, { entry: jNum('j-entry'), stop: jNum('j-stop'), t1: jNum('j-t1'), t2: +p.t2 || null, calK: +p.calK || 1, exitDays: +p.exitDays || null, ...(p.exitMode ? { exitMode: p.exitMode } : {}) });
   return t;
 }
 async function jSaveTrade(){

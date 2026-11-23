@@ -731,6 +731,30 @@
       why: `Closed above the 20-day high ${info.hi20} on ${info.volX}x volume, higher highs & lows, ${info.off52}% below the 52-week high, beating Nifty by ${info.rs3m}% over 3 months` };
   }
 
-  return { R2, srLevels, atrWilder, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
+  /* The READY gate's exit from 23 Nov 2026 (10-year backtest of the same entries, 5 open: +0.53R a trade, ~20% a year,
+     44% wins, 8 of 10 years - vs +0.18R, ~13.5%, 49% for "all at 2R or day 15"): the stop-loss order, then a stop that
+     trails 3 ATR under the highest close since the entry; sell on a daily close below EMA20 after day 5; at most 60
+     trading days. b = daily bars {H, L, C}; bars from..to are the completed days after the entry (day 1 = from). */
+  const TRAIL = { atr: 3, emaAfter: 5, maxDays: 60 };
+  function trailWalk(b, from, to, entry, stop) {
+    const C = b.C.map(Number), H = b.H.map(Number), L = b.L.map(Number), n = C.length;
+    const atr = [], e20 = []; let a = 0, e = null;
+    for (let i = 0; i < n; i++) {
+      const tr = i ? Math.max(H[i] - L[i], Math.abs(H[i] - C[i - 1]), Math.abs(L[i] - C[i - 1])) : H[i] - L[i];
+      a = i < 14 ? (a * i + tr) / (i + 1) : (a * 13 + tr) / 14; atr.push(a);
+      e = e == null ? C[i] : C[i] * (2 / 21) + e * (19 / 21); e20.push(e);
+    }
+    let st = +stop, hc = +entry, d = 0;
+    for (let i = Math.max(0, from); i <= Math.min(to, n - 1); i++) {
+      d++;
+      if (L[i] <= st) return { exit: 'stop', idx: i, level: R2(st), trail: R2(st), hc: R2(hc), days: d };
+      hc = Math.max(hc, C[i]); st = Math.max(st, hc - TRAIL.atr * atr[i]);
+      if (d > TRAIL.emaAfter && C[i] < e20[i]) return { exit: 'ema', idx: i, level: R2(C[i]), trail: R2(st), hc: R2(hc), days: d, e20: R2(e20[i]) };
+      if (d >= TRAIL.maxDays) return { exit: 'time', idx: i, level: R2(C[i]), trail: R2(st), hc: R2(hc), days: d };
+    }
+    return { exit: null, trail: R2(st), hc: R2(hc), days: d, e20: n ? R2(e20[Math.min(to, n - 1)]) : null };
+  }
+
+  return { R2, srLevels, atrWilder, TRAIL, trailWalk, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
     commodityPlan, goldDriverRule, goldPetalExpiry, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry, stockScores, breakout20 };
 });

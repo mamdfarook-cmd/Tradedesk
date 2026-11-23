@@ -2399,6 +2399,15 @@ function buildCommodityIdea(sym, D){
   PLAN_LEVELS[sym] = entry != null && !driverBlock ? { entry, stop: sl, t1: exitTarget || t1, label: side === 'BUY' ? 'Buy' : 'Sell', k: D.k || 1 } : null;
   return { sym, cfg, k:D.k, price, e20, e50, rsi, atr, side, entry, sl, t1, t2, risk, rr, action, why, hedge, lossPerLot, driverBlock, smallSize, buyOnly: p.buyOnly, isGold, exitTarget, exitDays, exitRule, driversKnown: !!MCX_DRIVERS_SEEN[sym]?.goldRule };
 }
+/* 23 Nov 2026: the trade the server alerted (09:45 / 17:00 / price reached the level) and is tracking, shown on the card -
+   the card's own plan is recalculated at the live price, so its entry moves after the alert. */
+function mcxAlertedHtml(sym){
+  if(typeof traceLoadC !== 'function') return '';
+  const r = traceLoadC().rows.filter(x => (x.kind === 'mcx' || x.kind === 'gold') && (x.sym || 'MCX:GOLDPETAL') === sym && (!x.closed || x.date === istDateKey())).pop();
+  if(!r) return '';
+  const when = r.createdAt ? new Date(+r.createdAt).toLocaleString('en-IN', { day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit' }) : r.date;
+  return `<div class="idea-hedge" style="border-color:var(--acc)"><b>Alerted ${escHtml(when)}${r.via ? ' (' + escHtml(r.via) + ')' : ''}:</b> ${r.side === 'SELL' ? 'sell' : 'buy'} at ${fmt(r.entry)} · stop ${fmt(r.sl)} · target ${fmt(r.target || r.t1)} - ${escHtml(r.status || 'Open')}. This is the trade in the Track record; the plan below is recalculated at the live price.${r.rollNote ? ' ' + escHtml(r.rollNote) + '.' : ''}</div>`;
+}
 function commodityIdeaHtml(sym, x){
   x = x || buildCommodityIdea(sym);
   if(!x) return '';
@@ -2414,12 +2423,13 @@ function commodityIdeaHtml(sym, x){
   const head = `<div class="idea-head"><div><div class="idea-kicker">Today's futures idea · ${escHtml(cfg.name)}${x.isGold ? ' · buy only' : x.buyOnly ? ' · buy only' : ''}${tested ? '' : ' · <b style="color:var(--neu)">not backtested</b>'}</div><div class="idea-title">${title}</div></div>
     <div class="idea-view ${verdict === 'BUY' ? 'bull' : verdict === 'SELL' || verdict === 'AVOID' ? 'bear' : 'neutral'}">${verdict}</div></div>`;
   const drvLine = x.isGold && (x.side === 'BUY' || x.side === 'SELL') ? `<div class="idea-comment" style="margin-top:6px"><b>Drivers (information only):</b> ${x.driversKnown ? escHtml(MCX_DRIVERS_SEEN[sym].goldRule.text) : 'loading…'}</div>` : '';
-  if(x.side === 'WAIT' || x.side === 'AVOID') return `<div class="idea-card" data-cidea>${head}<div class="idea-comment">${escHtml(x.why)}${x.side === 'AVOID' ? ` → <b>${escHtml(x.action)}</b>` : ''}</div><div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)}</div></div>`;
+  const alerted = mcxAlertedHtml(sym);
+  if(x.side === 'WAIT' || x.side === 'AVOID') return `<div class="idea-card" data-cidea>${head}${alerted}<div class="idea-comment">${escHtml(x.why)}${x.side === 'AVOID' ? ` → <b>${escHtml(x.action)}</b>` : ''}</div><div class="idea-foot">${escHtml(cfg.lotNote)} ${escHtml(src)}</div></div>`;
   const h = x.hedge;
   const hedgeHtml = h ? `<div class="idea-hedge"><b>Hedge:</b> buy ${h.K} ${h.type === 'C' ? 'CE (call)' : 'PE (put)'} ≈ ₹${fmt(h.prem)} per ${u} (~3 weeks, volatility ${Math.round(h.hv*100)}% from recent price swings).
       With the hedge the loss is capped near ₹${fmt(h.worst)} per ${u} (₹${fmt(h.worst*q,0)} per Mini lot) even on a gap, and breakeven moves to ${fmt(h.be)}.
       MCX's main crude option is on the 100-barrel contract, so one option covers 10 Mini lots - for fewer Mini lots, check whether your broker offers Mini options or rely on the stop-loss.</div>` : '';
-  return `<div class="idea-card" data-cidea>${head}
+  return `<div class="idea-card" data-cidea>${head}${alerted}
     <div class="idea-comment">${escHtml(cfg.name)} ${fmt(x.price)} · ${escHtml(x.why)} → <b>${escHtml(x.action)}</b></div>${drvLine}
     <div class="idea-grid">
       <div><span>Entry</span><b>${fmt(x.entry)}</b></div>
@@ -3730,13 +3740,15 @@ function ftSignedRet(row, price){
 function ftDailyBars(q){
   /* Daily bars with close and EMA20 (needed for the time stop and the "daily close below EMA20" exit). */
   const d=q?.daily||{}, T=d.T||[], H=d.H||[], L=d.L||[], C=d.C||[];
-  const out=[]; const k=2/21; let ema=null, seed=[];
+  const out=[]; const k=2/21; let ema=null, seed=[], atr=null, nA=0, pc=null;
   for(let i=0;i<T.length;i++){
     const c=+C[i];
     if(Number.isFinite(c)){ if(ema==null){ seed.push(c); if(seed.length===20) ema=seed.reduce((a,b)=>a+b,0)/20; } else ema=c*k+ema*(1-k); }
+    if(Number.isFinite(+H[i]) && Number.isFinite(+L[i])){ const tr = pc==null ? +H[i]-+L[i] : Math.max(+H[i]-+L[i], Math.abs(+H[i]-pc), Math.abs(+L[i]-pc)); atr = nA<14 ? ((atr||0)*nA+tr)/(nA+1) : (atr*13+tr)/14; nA++; }
+    if(Number.isFinite(c)) pc=c;
     const date=marketDateKeyFromTs(T[i]);
     if(!date || !Number.isFinite(+H[i]) || !Number.isFinite(+L[i])) continue;
-    const bar={date,h:+H[i],l:+L[i],c:Number.isFinite(c)?c:null,e20:ema};
+    const bar={date,h:+H[i],l:+L[i],c:Number.isFinite(c)?c:null,e20:ema,atr};
     if(out.length && out[out.length-1].date===date) out[out.length-1]=bar; else out.push(bar);
   }
   return out;
@@ -3874,10 +3886,24 @@ function ftApplyBar(row, bar, risk, barComplete=true){
   const down = px => short ? bar.h >= px : bar.l <= px;    /* price reached a stop level */
   const closeThroughEma = barComplete && Number.isFinite(bar.c) && Number.isFinite(bar.e20) && (short ? bar.c > bar.e20 : bar.c < bar.e20);
   const rT1 = Number.isFinite(+row.rT1) ? +row.rT1 : R(t1);
-  const close = (status, r) => { row.status=status; row.closed=true; row.resultR = r==null ? null : +r.toFixed(2); };
+  const close = (status, r) => { row.status=status; row.closed=true; row.resultR = r==null ? null : +r.toFixed(2); row.exitDate = bar.date; };
   /* Every completed day after the signal counts, before and after T1: the trade is closed at the close of day 10
      at the latest (swing trades of 1-10 days; a trade still trailing after T1 used to run on without limit). */
   if(barComplete) row.sessions = (+row.sessions || 0) + 1;
+  /* READY-gate records from 23 Nov 2026: the trailing exit (SwingPlan.TRAIL) - the stop, then a stop 3 ATR under the
+     highest close; a close below EMA20 after day 5; day 60. Judged like trailWalk on the server. */
+  if(row.exitMode === 'trail' && !short){
+    const TR = SwingPlan.TRAIL, st = Math.max(sl, +row.trailSl || 0);
+    if(down(st)){ close(st > sl ? 'Trailing stop hit' : 'SL Hit', st > sl ? R(st) : -1); return row; }
+    if(barComplete && Number.isFinite(bar.c)){
+      row.hc = Math.max(+row.hc || entry, bar.c);
+      if(Number.isFinite(bar.atr)) row.trailSl = ftR(Math.max(st, row.hc - TR.atr * bar.atr));
+      if(row.sessions > TR.emaAfter && Number.isFinite(bar.e20) && bar.c < bar.e20){ close('Close below EMA20', R(bar.c)); return row; }
+      if(row.sessions >= TR.maxDays){ close(`Day ${TR.maxDays} exit`, R(bar.c)); return row; }
+    }
+    row.status = +row.trailSl > sl ? `Open · trailing stop ${fmt(row.trailSl)}` : 'Open';
+    return row;
+  }
   /* Records from 19 Nov 2026 follow the tested exit: all at 2R or the stop, else the close of day 15. */
   if(row.exitMode === '2R'){
     const tgt = +row.t2r, hitSL = ftValid(sl) && down(sl), hitT = ftValid(tgt) && up(tgt), day15 = barComplete && row.sessions >= 15 && Number.isFinite(bar.c);
@@ -3909,8 +3935,20 @@ function ftApplyBar(row, bar, risk, barComplete=true){
   else row.status='Open';
   return row;
 }
+/* 23 Nov 2026: one trade per stock - a stock that stays READY for days (or a screener opened on Saturday) made a new record
+   every day. A stock is recorded again only after its last record has closed; never on a weekend or NSE holiday. */
+function ftTradingDay(date){ const d = new Date(date + 'T00:00:00Z').getUTCDay(); return d > 0 && d < 6 && !NSE_HOL_CLIENT.has(date); }
+function ftHasTrade(rows, sym, date){ return rows.some(r => r.sym === sym && (r.date === date || !r.closed || String(r.exitDate || r.evalThrough || '') >= date)); }
+function ftDedupeOnce(){
+  try{ if(localStorage.getItem('td_ft_dedupe_v1')) return; }catch{ return; }
+  const rows = readForwardTests().sort((a, b) => String(a.date).localeCompare(String(b.date))), keep = [];
+  for(const r of rows){ if(!ftTradingDay(r.date) || ftHasTrade(keep, r.sym, r.date)) continue; keep.push(r); }
+  if(keep.length !== rows.length) saveForwardTests(keep);
+  try{ localStorage.setItem('td_ft_dedupe_v1', String(rows.length - keep.length)); }catch{}
+}
 function updateForwardTestsFromPicks(picks=[], source='qualified') {
   const today = localDateKey();
+  if(!ftTradingDay(today)) return;
   const rows = readForwardTests();
   const byKey = new Map(rows.map(r=>[`${r.date}_${r.sym}`, r]));
   picks.forEach((p,i)=>{
@@ -3918,7 +3956,7 @@ function updateForwardTestsFromPicks(picks=[], source='qualified') {
     const entry = +p.price;
     if(!sym || !entry) return;
     const key = `${today}_${sym}`;
-    if(!byKey.has(key)) {
+    if(!byKey.has(key) && !ftHasTrade(rows, sym, today)) {
       const bias = p.bias || 'Bullish';
       const side = bias === 'Bearish' ? 'Short' : 'Long';
       const rec = {
@@ -3927,7 +3965,8 @@ function updateForwardTestsFromPicks(picks=[], source='qualified') {
         rr1:p.rrBull||p.rr||null, rr2:null, score10:p.score10||null,
         final:p.finalQualification||p.decisionScore||null, setup:p.pickedSetup||p.setup||null,
         status:'Open', phase:'entry', resultR:null, retNow:0, d5:null, d10:null, d20:null, closed:false,
-        exitMode:'2R', t2r: ftValid(p.plan?.stop) && entry > +p.plan.stop ? ftR(entry + 2 * (entry - +p.plan.stop)) : null, sector: p.sector || null,
+        exitMode: p.gateV2 ? 'trail' : '2R', t2r: ftValid(p.plan?.stop) && entry > +p.plan.stop ? ftR(entry + 2 * (entry - +p.plan.stop)) : null, sector: p.sector || null,
+        ...(p.gateV2 ? { planLocked: true } : {}),
         tags: p.tags ? { hhhl: p.tags.hhhl ?? null, near52: p.tags.near52 ?? null, dbAbove: p.tags.dbAbove ?? null, pcrOk: p.tags.pcrOk ?? null } : null,
         createdAt:new Date().toISOString()
       };
@@ -3973,6 +4012,7 @@ async function tabForwardTest() {
     /* Use the live my-trade screener cache (SCREENER_CACHE_UI / qualified cache are never filled). */
     let d = MY_TRADE_CACHE_UI || readMyTradeScreenerCache();
     if(!d) d = await apiFetch('/api/my-trade-screener', 120000);
+    ftDedupeOnce();
     if(d?.picks?.length) updateForwardTestsFromPicks(d.picks,'mytrade');
     /* READY picks the server recorded at its 11:00 / 15:00 scans, also on days the app was not opened. */
     if(typeof importStockTrace === 'function'){ try { if(typeof syncNow === 'function') await syncNow(); } catch(e){} importStockTrace(); }
@@ -4009,7 +4049,7 @@ async function tabForwardTest() {
       <td><span style="color:${r.side==='Short'?'var(--bear)':'var(--bull)'};font-weight:800">${escHtml(r.side||'Long')}</span></td>
       <td>${ftMoney(r.entry)}</td>
       <td>${ftMoney(r.sl)}<br><span style="color:var(--tx3)">Trail ${ftMoney(r.trailSl)}</span></td>
-      <td>${r.exitMode === '2R' ? `${ftMoney(r.t2r)}<br><span style="color:var(--tx3)">2R · T1 ${ftMoney(r.t1)}</span>` : `${ftMoney(r.t1)}<br><span style="color:var(--tx3)">T2 ${ftMoney(r.t2)}</span>`}</td>
+      <td>${r.exitMode === 'trail' ? `Trailing<br><span style="color:var(--tx3)">${+r.trailSl > +r.sl ? 'stop now ' + ftMoney(r.trailSl) : 'stop ' + ftMoney(r.sl)}</span>` : r.exitMode === '2R' ? `${ftMoney(r.t2r)}<br><span style="color:var(--tx3)">2R · T1 ${ftMoney(r.t1)}</span>` : `${ftMoney(r.t1)}<br><span style="color:var(--tx3)">T2 ${ftMoney(r.t2)}</span>`}</td>
       <td>${ftMoney(r.current)}<br><span style="color:${retCol};font-weight:800">${ftPct(r.retNow)}</span></td>
       <td style="color:${statusCol};font-weight:800">${escHtml(r.status||'Open')}</td>
       <td style="color:${resCol};font-weight:900">${ftRText(r.resultR)}</td>
@@ -4021,7 +4061,7 @@ async function tabForwardTest() {
   <div class="scr-summary"><div class="scr-sum-card"><div class="scr-sum-label">Records</div><div class="scr-sum-val">${rows.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Open / Trail</div><div class="scr-sum-val" style="color:var(--acc)">${openCount}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Closed R Samples</div><div class="scr-sum-val">${finished.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Win Rate</div><div class="scr-sum-val" style="color:var(--bull)">${winRate}${winRate==='--'?'':'%'}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Avg R</div><div class="scr-sum-val" style="color:${(+avgR||0)>=0?'var(--bull)':'var(--bear)'}">${avgR}${avgR==='--'?'':'R'}</div></div></div>
   <div class="ft-wrap"><table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th title="Fresh entry score when the signal was recorded (from 21 Nov 2026)">Fresh</th></tr></thead><tbody>${body}</tbody></table></div>
   ${tagTable}
-  <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R); from 19 Nov 2026 the whole position at 2R (+2R) or at the close of day 15. Older records: half booked at T1, the rest at T2 / trail stop / a close through EMA20, at the latest at the close of day 10. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
+  <div class="aib" style="font-size:.72rem;margin-top:10px"><b>Reading the result:</b> each trade follows its exit plan: stop-loss order (-1R); READY trades from 23 Nov 2026: a stop trailing 3 ATR under the highest close, a close below EMA20 after day 5, or day 60; 19-22 Nov 2026: the whole position at 2R (+2R) or at the close of day 15. Older records: half booked at T1, the rest at T2 / trail stop / a close through EMA20, at the latest at the close of day 10. +1R means profit equal to one planned risk unit. -1R means stop-loss hit. Ambiguous means daily high/low touched both SL and target on the same day; without intraday order, the app refuses to guess.</div>`;
 }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -4164,13 +4204,13 @@ function renderMyTradeScreener(data, source='server') {
       ${p.stop ? `<div class="pl-levels">
         <div><span>Entry</span><b>${f(p.entry)}</b></div>
         <div><span>SL</span><b style="color:var(--bear)">${f(p.stop)}</b></div>
-        <div title="Tested exit: sell all at 2x the risk or at the close of day 15"><span>Exit 2R</span><b style="color:var(--bull)">${+s.exit2R > 0 ? f(s.exit2R) : '--'}</b></div>
+        <div title="Tested exit: a stop trailing 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days"><span>Exit</span><b style="color:var(--bull)">Trailing</b></div>
         <div title="Risk from the price to the stop"><span>Risk</span><b>${Number.isFinite(+s.riskPct) ? (+s.riskPct).toFixed(1) + '%' : '--'}</b></div>
       </div>` : ''}
     </div>`;
   };
   const groups = [
-    {g:1, title:'Ready to trade', sub:'Tested READY gate (10-year backtest: 49% wins, 8 of 10 years): EMA20 crosses above EMA50 while the stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high. Signal on a close - buy at the price, stop under the setup, sell all at 2R or the close of day 15. The Overview confirms each one below.', cls:'bull', id:'scrMatchGrid'},
+    {g:1, title:'Ready to trade', sub:'Tested READY gate (10-year backtest: 49% wins, 8 of 10 years): EMA20 crosses above EMA50 while the stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high. Signal on a close - buy at the price, stop under the setup, then a trailing exit (stop 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days: 44% wins but +0.53R a trade, 8 of 10 years). The Overview confirms each one below.', cls:'bull', id:'scrMatchGrid'},
     {g:2, title:'Watchlist', sub:'A tested signal forming today (READY if it holds at the close, from 15:00), held by results / the market filter, or EMA20 about to cross EMA50.', cls:'bull', id:'scrDemoted'},
   ];
   /* One stock, one list. Order: READY (the server leaves it out of the other lists) -> Pattern breakout -> 20-day
@@ -4313,7 +4353,7 @@ function stockScoresHtml(sc, ctx){
   </div>
   <details class="tp-more sc-more"><summary>Why these scores${ctx?.newsSent ? '' : ' (news loading…)'}</summary>
     <div class="sc-cols"><div><div class="sc-h">Fresh entry</div>${rows(sc.freshRows)}</div><div><div class="sc-h">Hold</div>${rows(sc.holdRows)}</div></div>
-    <div class="idea-foot">${freshNote} Selling on a low Hold score did not beat the plan's exit in the backtest, so the exit stays the stop, 2R or day 15 - the Hold score tells you when something changed (trend, news, results). Checklist scores; the total is not a backtested rule.</div>
+    <div class="idea-foot">${freshNote} Selling on a low Hold score did not beat the plan's exit in the backtest, so the exit stays the plan's (READY: the trailing exit) - the Hold score tells you when something changed (trend, news, results). Checklist scores; the total is not a backtested rule.</div>
   </details>`;
 }
 async function loadScoreNews(sym, name, ctx){
@@ -6197,7 +6237,7 @@ async function tabOverview(sym) {
   };
   const activeStopLoss = activeTradeAllowed ? (sgPlan?.active ? sgPlan.g.stop : (rrData.stop || stopLoss)) : null;
   const activeTarget = activeTradeAllowed ? (sgPlan?.active ? sgPlan.g.target : (rrData.target || target1)) : null;
-  const activeTargetLabel = sgPlan?.active ? '2R - sell all (or day 15)' : activeTradeAllowed && rrData.rrTargetLabel && rrData.rrTargetLabel !== 'Wait' ? rrData.rrTargetLabel : 'Target';
+  const activeTargetLabel = sgPlan?.active ? '2R (reference) - exit is trailing' : activeTradeAllowed && rrData.rrTargetLabel && rrData.rrTargetLabel !== 'Wait' ? rrData.rrTargetLabel : 'Target';
   /* Not READY yet but a setup is planned (gate CONFIRM, or held only by results / a trigger): size it from the
      plan's entry, stop and T1 so the quantity is known before the trigger. The card says it is a plan. */
   const plannedOk = isMCXSymbol(sym) && !activeTradeAllowed && strategyPlan?.isActive && ['Bullish','Bearish'].includes(bias)
@@ -6281,7 +6321,7 @@ async function tabOverview(sym) {
               <button type="button" class="tp-share-btn tp-alert-btn" onclick="openAlertPopup(${jsArg(sym)}, ${jsArg(isMCXSymbol(sym) ? {} : (isStockOv ? (sgPlan?.g?.ok ? {entry: sgPlan.g.entry, sl: sgPlan.g.stop, t1: sgPlan.g.target} : {}) : {limit:limitPlan ? limitPlan.price : null, entry:+strategyPlan?.entryPrice || null, sl:+stopLoss || null, t1:+target1 || null}))})" title="Price alert for ${escHtml(name)}" aria-label="Set a price alert">🔔${ALERTS.some(a => a.sym === sym && !a.triggered) ? '<i class="tp-alert-dot"></i>' : ''}</button>
               <a class="tp-share-btn" href="${shareUrl}" target="_blank" rel="noopener" title="Share trade plan on WhatsApp" aria-label="Share trade plan on WhatsApp">💬</a>
               ${!isMCXSymbol(sym) && (bias === 'Bullish' || sgPlan?.active) && (activeTradeAllowed || plannedOk || limitPlan) ? `<button type="button" class="tp-share-btn" onclick="openTradeForm(${jsArg((() => { const e = limitPlan ? limitPlan.price : activeTradeAllowed ? price : plannedEntry, st = limitPlan ? limitPlan.stop : activeTradeAllowed ? activeStopLoss : +strategyPlan.stopLoss;
-                return {kind:'stock', sym, name, setup: sgPlan?.active ? sgPlan.g.setup : strategyPlan?.setupName || '', entry: e, stop: st, t1: +e > +st ? R2(+e + 2 * (+e - +st)) : null, t2: limitPlan ? limitPlan.target : activeTradeAllowed ? activeTarget : +strategyPlan.target1, exitDays: 15}; })())})" title="I took this trade - add it to My trades (stop / target alerts)" aria-label="I took this trade">📒</button>` : ''}
+                return {kind:'stock', sym, name, setup: sgPlan?.active ? sgPlan.g.setup : strategyPlan?.setupName || '', entry: e, stop: st, t1: sgPlan?.active ? null : +e > +st ? R2(+e + 2 * (+e - +st)) : null, t2: limitPlan ? limitPlan.target : activeTradeAllowed ? activeTarget : +strategyPlan.target1, exitDays: sgPlan?.active ? SwingPlan.TRAIL.maxDays : 15, ...(sgPlan?.active ? { exitMode: 'trail' } : {})}; })())})" title="I took this trade - add it to My trades (stop / target alerts)" aria-label="I took this trade">📒</button>` : ''}
             </div>
           </div>
           <div class="tp-title">${escHtml(name)}</div>
@@ -6303,7 +6343,7 @@ async function tabOverview(sym) {
             ? `<span class="tp-planned">Planned ${escHtml(strategyPlan.setupName || 'setup')}: buy ${fmt(rrFromPrice)}${Math.abs(rrFromPrice - (+strategyPlan.entryPrice || rrFromPrice)) > 0.005 && !/breakout/i.test(strategyPlan.setupName || '') ? ` (zone ${fmt(strategyPlan.entryPrice)})` : ''} · SL ${fmt(strategyPlan.stopLoss)} · T1 ${fmt(strategyPlan.target1)}${rrNum ? ` · R:R ${rr}` : ''}</span>`
             : 'No entry, stop or target until a setup is confirmed', 'Levels become active only when the decision is READY.', 'is-wait tp-wide')}
         ${planItem('Daily + Weekly Trend', trendCombo, trendSub, trendClass)}`}
-        ${sgPlan?.active ? planItem('Exit Plan', `Sell all at 2R ${fmt(sgPlan.g.target)} or the close of day 15`, 'Tested exit (10-year backtest)', 'plan-exit') : activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
+        ${sgPlan?.active ? planItem('Exit Plan', `Stop-loss ${fmt(sgPlan.g.stop)}, then trail it 3 ATR under the highest close · sell on a close below EMA20 after day 5 · at most 60 days`, 'Tested exit (10-year backtest: +0.53R a trade vs +0.18R at 2R) - the 09:20 alert tells you each new stop', 'plan-exit') : activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
       </div>
       ${activeTradeAllowed || limitPlan || plannedOk ? positionCalc : `<details class="tp-more"><summary>Position size calculator (fills in when a trade is ready)</summary>${positionCalc}</details>`}
       <details class="tp-more"><summary>More details: ${isStockOv ? 'price and volume status' : 'Fresh Entry / Hold score, price and volume status'}</summary>
@@ -6337,10 +6377,10 @@ async function tabAnalysis(sym) {
   const hasOptions = isIndex && !!IDX_OPT[sym];
   const views = isIndex ? [
     {id:'pulse',      label:'Market Pulse'},
-    {id:'technicals', label:'Analysis'},
+    {id:'technicals', label:'Technicals'},
     ...(hasOptions ? [{id:'strategy', label:'Option Builder'}] : []),
   ] : [
-    {id:'technicals', label:'Analysis'},
+    {id:'technicals', label:'Technicals'},
   ];
 
   if(!views.some(v => v.id === ANALYSIS_VIEW)) ANALYSIS_VIEW = isIndex ? 'pulse' : 'technicals';

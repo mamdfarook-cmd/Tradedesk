@@ -87,18 +87,21 @@ browser alerts). Schedule (IST, NSE trading days unless noted):
   connected; 15:05 one alert with the bull-put rule (held to expiry) and the weekly sells (trend sell of one side, short strangle,
   both 2%+ away, exit on a close at 2x the premium / credit) with today's strikes and premiums from Zerodha.
 - 11:00 and 15:00 stock scans: READY stocks of the tested gate (from 20 Nov 2026: EMA20 crosses above EMA50 while the
-  stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high; signal on a close; exit 2R or
-  day 15). 11:00 alerts yesterday's-close signals, 15:00 today's; pattern breakouts at 15:00. Quick
+  stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high; signal on a close; from 23 Nov 2026 a trailing
+  exit: stop 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days - 09:20 tells you
+  each new stop for trades in My trades). 11:00 alerts yesterday's-close signals, 15:00 today's; pattern breakouts at 15:00. Quick
   Bounce is watch-only (no alert). At 15:00, when nothing was ready, one quiet line with the day's MCX and Nifty
   status (so a silent day is not mistaken for a broken app).
 
 Track record (Screener → Track record) has three sub-tabs, all checked once a day:
 - Stocks: every READY pick (the server records the 11:00 / 15:00 scan picks even when the app is closed), entry =
-  the price when it turned READY. From 19 Nov 2026: the whole position at 2R or the stop, else the close of day 15
+  the price when it turned READY; one record per stock until it closes, none on weekends / NSE holidays. READY records
+  from 23 Nov 2026 use the trailing exit; 19-22 Nov: the whole position at 2R or the stop, else the close of day 15
   (older records keep T1 / T2 / day 10). Results by tag (delivery, PCR, structure, 52-week high, double bottom).
 - MCX (Gold Petal, Crude Oil, Natural Gas): entry at the plan's defined price; checked each morning on the
   completed daily candles; the whole position at the target (T1; gold rows before 20 Nov 2026 3R) or the stop, else the close of day
-  20 (gold) / 10. A win rate per commodity.
+  20 (gold) / 10. A win rate per commodity. An open record's levels move with a futures roll (Yahoo's switch to the next
+  contract), and the MCX card shows the trade the server alerted.
 - Nifty options: entry at the 15:05 premiums on the first trading day after an expiry, held to expiry and settled from
   Nifty's close (rows before 21 Nov 2026: 80% of the premium, a 2x-credit stop or Friday's close).
 They sync like My trades, so a Render restart does not lose them.

@@ -4791,7 +4791,7 @@ async function runMyTradeScreenerScan() {
       {step:'READY gate', rule:'Tested 20 Nov 2026 (17 swing entries, 10 years): A. EMA20 crosses above EMA50, close above EMA200, stock beats Nifty over 3 months; or B. a 2%+ gap-up on 2x the 20-day volume that closes above its open, close > EMA50 > EMA200, within 10% of the 52-week high'},
       {step:'Signal', rule:"On a close: during the session yesterday's completed candle is the signal (buy now); today's forming candle counts from 15:00 (before that it waits on the Watchlist)"},
       {step:'Market', rule:'READY only while Nifty is above its EMA50 with EMA20 above EMA50 (as tested)'},
-      {step:'Stop / exit', rule:'Stop 0.25 ATR under the setup low (10-day low for A, the gap day low for B), kept 0.75-3 ATR from the price; sell all at 2R or at the close of day 15; at most 5 open'},
+      {step:'Stop / exit', rule:'Stop 0.25 ATR under the setup low (10-day low for A, the gap day low for B), kept 0.75-3 ATR from the price; then a stop trailing 3 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days (from 23 Nov 2026; before: all at 2R or the close of day 15); at most 5 open'},
       {step:'Backtest', rule:'A and B in one 5-slot book: 49% wins, +0.18R a trade, profit in 8 of 10 years (9-10 with 3 or 8 open), worst fall -13%. The old pullback / breakout READY: 44%, 6 of 10 years'},
       {step:'Results', rule:`No READY with results today or within ${RESULTS_BLOCK_TRADING_DAYS} trading days, or a corporate event close`},
       {step:'Pattern breakouts', rule:'Separate list (unchanged): double bottom or flat base breakouts, own stop and 2R exit'},
@@ -6348,7 +6348,7 @@ function scanSignals(data, slot) {
   for (const x of data.picks || []) {
     const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
     const t2 = +x.exit2R > 0 ? +x.exit2R : +pl.stop > 0 && fill > pl.stop ? fill + 2 * (fill - pl.stop) : null;   /* the screener's own 2R, so list, alert and record agree */
-    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)} · exit 2R ${t2 ? inr(t2) : '--'} or day 15${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)}${x.gateV2 ? ' · exit: trailing stop 3 ATR under the highest close, or a close below EMA20 after day 5 (the 09:20 alert gives each new stop)' : ` · exit 2R ${t2 ? inr(t2) : '--'} or day 15`}${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
   }
   /* Quick Bounce is watch-only (2 in 3 win, but no profit with 5 positions open over 10 years): no alert. Pattern
      breakouts are judged on the day's close, so they are alerted at the 15:00 scan only. */
@@ -6442,9 +6442,14 @@ async function goldPlanS(sym = 'MCX:GOLDPETAL') {
   const d = q.daily, n = d.C.length;
   if (n < 60 || !(q.price > 0)) throw new Error(`${MCX_NAME[sym] || sym} history too short`);
   const C = d.C.map(v => v * k), H = d.H.map(v => v * k), L = d.L.map(v => v * k), price = q.price * k;
-  /* Same live candle rule as the page: today's bar is replaced when Yahoo already has it, else appended. */
+  /* Same live candle rule as the page (enrichLiveData): a bar is appended only when Yahoo's last bar is from an EARLIER
+     date than the live trade. 23 Nov 2026: at 09:45 IST (23:15 New York) a US future's last bar is already stamped with
+     the next trading day, which the old "same date?" test took for a missing bar - the plan got a duplicate candle and
+     its EMAs, ATR and levels differed from the app's. */
   const tz = q.dataSource?.timezone || 'America/New_York';
-  const sameDay = sameMarketDate(d.T[n - 1], q.marketTime, tz);
+  const dk = ts => { try { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ts * 1000)); } catch { return ''; } };
+  const lastK = dk(d.T[n - 1]), liveK = dk(q.marketTime);
+  const sameDay = lastK && liveK ? lastK >= liveK : sameMarketDate(d.T[n - 1], q.marketTime, tz);
   if (sameDay) { C[n - 1] = price; H[n - 1] = Math.max(H[n - 1], price); L[n - 1] = Math.min(L[n - 1], price); }
   else { C.push(price); H.push(price); L.push(price); }
   const sr = SwingPlan.srLevels({ H, L, C, i: C.length - 2, price });
@@ -6499,9 +6504,9 @@ async function openTradeWatchTick() {
       let p = +q?.price;
       if (!(p > 0)) continue;
       if (sym.startsWith('MCX:') && +t.calK > 0) p *= +t.calK;   /* levels were saved in calibrated MCX terms */
-      const stop = +t.stop, t1 = +t.t1;
+      const tl = t.exitMode === 'trail' && long ? +USER_STORE.trailLv?.[t.id] || 0 : 0, stop = Math.max(+t.stop || 0, tl), t1 = +t.t1;
       if (stop > 0 && (long ? p <= stop : p >= stop) && flagOnce(`j|${t.id}|stop`))
-        await pushAll({ title: `🛑 ${name} hit your stop ${inr(stop)}`, body: `Now ${inr(p)}. Exit as planned and mark the trade closed in My trades.`, tag: `j-${t.id}`, url: '/?view=trades' });
+        await pushAll({ title: `🛑 ${name} hit your ${tl > +t.stop ? 'trailing ' : ''}stop ${inr(stop)}`, body: `Now ${inr(p)}. Exit as planned and mark the trade closed in My trades.`, tag: `j-${t.id}`, url: '/?view=trades' });
       else if (t1 > 0 && (long ? p >= t1 : p <= t1) && flagOnce(`j|${t.id}|t1`))
         /* Trades saved from 19 Nov 2026 carry the tested exit (exitDays): their target is the whole-position exit. */
         await pushAll({ title: `🎯 ${name} reached your target ${inr(t1)}`, body: t.exitDays ? `Now ${inr(p)}. The tested exit sells the whole position here - then mark it closed in My trades.` : `Now ${inr(p)}. Book half and move the stop to your entry ${inr(t.entry)}.`, tag: `j-${t.id}`, url: '/?view=trades' });
@@ -6519,6 +6524,19 @@ async function openTradeDailyChecks() {
       const held = t.openedAt ? tradingDaysUntil(t.openedAt, today) : 0;
       if (held >= +t.exitDays && flagOnce(`j|${t.id}|dayN|${today}`)) msgs.push(`${name}: day ${held} - the plan's time exit (${+t.exitDays} trading days) is due`);
     }
+    /* Trailing exit (23 Nov 2026): from the completed daily candles since the entry - one quote per open trade a day. */
+    if (t.kind === 'stock' && t.exitMode === 'trail' && t.openedAt && +t.entry > 0 && +t.stop > 0) try {
+      const q = (await cacheWrap(`quote:${sym}`, TTL.quote, () => buildQuotePayload(sym))).value, d = q?.daily;
+      const idx = (d?.T || []).map((ts, i) => [istDateKey(ts * 1000), i]).filter(([k]) => k > t.openedAt && k < today).map(([, i]) => i);
+      if (idx.length) {
+        const w = SwingPlan.trailWalk(d, idx[0], idx[idx.length - 1], +t.entry, +t.stop);
+        const lv = (USER_STORE.trailLv ||= {});
+        if (w.exit === 'ema' && flagOnce(`j|${t.id}|trail-ema`)) msgs.push(`${name}: closed below EMA20 (${inr(w.level)} vs ${inr(w.e20)}) - the trailing exit sells at today's open`);
+        else if (w.exit === 'time' && flagOnce(`j|${t.id}|trail-time`)) msgs.push(`${name}: day ${w.days} - the trailing exit's time limit; sell today`);
+        else if (w.exit === 'stop' && flagOnce(`j|${t.id}|trail-stop`)) msgs.push(`${name}: the stop ${inr(w.level)} was reached - exit and mark it closed in My trades`);
+        else if (!w.exit && w.trail > Math.max(+t.stop, +lv[t.id] || 0) + 0.005) { lv[t.id] = w.trail; saveStore(); msgs.push(`${name}: raise your stop-loss to ${inr(w.trail)} (3 ATR under the highest close ${inr(w.hc)})`); }
+      }
+    } catch (e) { console.warn(`trail ${sym}:`, e.message); }
     if (t.kind === 'stock') {
       const held = t.openedAt ? tradingDaysUntil(t.openedAt, today) : 0, lim = +t.exitDays > 0 ? +t.exitDays : 10;
       if (held >= lim && flagOnce(`j|${t.id}|day10|${today}`)) msgs.push(`${name}: day ${held} - the plan's time exit (${lim} trading days) is due`);
@@ -6787,11 +6805,13 @@ function traceStockRecord(picks, key) {
   let added = 0;
   for (const x of picks) {
     const sym = String(x.sym || '').toUpperCase(), price = +x.price, pl = x.plan || {};
-    if (!sym || !(price > 0) || t.rows.some(r => r.kind === 'stock' && r.sym === sym && (r.date === key || (x.signalDate && r.signalDate === x.signalDate)))) continue;
+    /* one trade per stock: not again while a record of it is younger than 14 days (the page closes records; it also
+       refuses a stock that still has an open one) */
+    if (!sym || !(price > 0) || t.rows.some(r => r.kind === 'stock' && r.sym === sym && (r.date === key || (x.signalDate && r.signalDate === x.signalDate) || now - (+r.createdAt || 0) < 14 * 86400e3))) continue;
     const tg = x.tags || {};
     t.rows.push({ id: `stock|${key}|${sym}`, kind: 'stock', sym, date: key, createdAt: now, upd: now, entry: r2(price),
       sl: +pl.stop > 0 ? r2(pl.stop) : null, t1: +pl.target > 0 ? r2(pl.target) : null, setup: x.pickedSetup || x.selectedStrategy || null,
-      exitMode: '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
+      exitMode: x.gateV2 ? 'trail' : '2R', t2r: +x.exit2R > 0 ? r2(x.exit2R) : +pl.stop > 0 && price > pl.stop ? r2(price + 2 * (price - pl.stop)) : null, sector: x.sector || null,
       tags: { hhhl: tg.hhhl ?? null, near52: tg.near52 ?? null, dbAbove: tg.dbAbove ?? null, pcrOk: tg.pcrOk ?? null },
       bias: x.bias || 'Bullish', score10: x.score10 || null, final: x.finalQualification || x.decisionScore || null, pattern: !!x.pattern,
       signalDate: x.signalDate || null, planLocked: !!(x.pattern || x.gateV2), fresh: Number.isFinite(+x.fresh) ? +x.fresh : null });
@@ -6880,6 +6900,17 @@ async function traceGoldDaily(key) {
   let q; try { q = (await cacheWrap(`quote:${sym}`, TTL.mcx, () => buildQuotePayload(sym))).value; } catch { continue; }
   const d = q?.daily;
   if (!d?.C?.length) continue;
+  /* 23 Nov 2026: a futures roll (Natural Gas on 20 Nov: the next contract 12.6% higher) rescales the old bars to the new
+     contract. A record made before the roll keeps old-contract levels, so it was judged against new-contract prices
+     (false target / stop). Its levels move by the same ratio, once per roll. */
+  const rolls = /=F$/.test(YF_MAP[sym] || '') ? futRollsFor(YF_MAP[sym]) : [];
+  for (const r of open) {
+    for (const ro of rolls) {
+      const tag = String(ro.at); if ((r.rollsApplied || []).includes(tag) || !(+r.createdAt < (+ro.seen || ro.at * 1000))) continue;
+      for (const k of ['entry', 'sl', 't1', 't2', 'target', 'mark']) if (+r[k] > 0) r[k] = r2(+r[k] * ro.ratio);
+      r.rollsApplied = [...(r.rollsApplied || []), tag]; r.rollNote = `levels moved ${((ro.ratio - 1) * 100).toFixed(1)}% for the futures roll`; r.upd = Date.now(); changed = true;
+    }
+  }
   for (const r of open) {
     if (r.phase === 'pending') {
       if (r.date < key) { r.closed = true; r.status = 'Not filled (entry not reached that day)'; r.resultR = null; r.closedAt = Date.now(); r.upd = Date.now(); changed = true; }
