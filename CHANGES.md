@@ -1,3 +1,49 @@
+# Midnight Pro theme, compact phone layout, unused CSS removed (24 Nov 2026 · page version 24 Nov 2026 · 3)
+
+- New look (td-theme.css, the last style layer; chosen from 3 previews): flat navy cards, emerald accent, Inter font
+  (Google Fonts; falls back to the system font offline), slim scrollbars, aligned numbers. A bullish / bearish card shows
+  a thin green / red edge instead of a coloured glow.
+- Frozen tabs: the Screener tabs (Swing / My trades / Monthly momentum / Track record) and an index's Market Pulse /
+  Technicals / Option Builder bar stay at the top while the page scrolls (the menu and instrument header already did).
+- Phone: one swipeable menu row and a lower header; Markets cards 3 to a row; tighter cards, smaller headings and
+  numbers on every page; long screener explanations show two lines - tap to read all; the start screen uses the line
+  icon instead of the emoji.
+- Removed 393 CSS selectors (about 20 KB) that matched nothing - styles of screens removed earlier (crypto coins,
+  heatmap, email, old screener cards, Quick bounce). Every element's computed style on Markets, Track record and a
+  stock page was compared before and after: identical.
+
+# Full code check: one exit everywhere, scores that match, unused code removed (24 Nov 2026 · page version 24 Nov 2026 · 2)
+
+- READY exit text: the screener card, the stock page's summary line and badge, the scan header and the Track record
+  header still said "sell all at 2R or day 15"; they now describe the trailing exit (4 ATR under the highest close,
+  a close below EMA20 after day 5, day 60) - the same as the alerts and the recorded trades. Pattern and 20-day
+  breakouts keep their 2R / day-15 exit, and the header says which is which.
+- Trailing stops survive a restart: the raised stop (USER_STORE.trailLv) was saved but not loaded back, so after a
+  Render deploy / sleep the intraday watcher went back to the original stop and "raise your stop" repeated.
+- Trailing trades no longer get the generic "day N time exit is due" line every morning from day 60 (they have
+  their own day-60 message).
+- Morning brief Global Bias now scores exactly like the Markets page card (cash S&P / Nasdaq when a future is
+  missing, Dow at half weight, DAX at half weight while it trades) - the two could disagree before.
+- Screener Fresh score: a READY signal held back by results / an event or still forming now scores as "near",
+  with the event check counted, like the stock page. The chip says "(no news)" - the stock page adds news.
+- Pattern breakout card on the stock page uses the screener's entry filter (Bullish bias, not choppy).
+- Screener: the stock count includes the pattern and 20-day lists ("0 stocks" showed with one listed); the Ready /
+  Watchlist counts update when the Overview check moves a card; the stock-list READY chip follows that check.
+- GIFT Nifty: at most one Moneycontrol request a minute while it fails, and a value over 30 minutes old is not shown.
+  FII / DII: the one-hour wait after a failed fetch also holds in the evening (it retried on every page load).
+- Indices start screen: sector indices are under an index's News & Sectors tab (it pointed to the Markets page).
+- Removed unused code (about 470 lines): Quick bounce (scan, engine, stock card, check loop), the stock-option PCR
+  fetch from Zerodha and its chip, the old Pick List / Stock-of-the-week screens, the old buy-limit plan, the
+  /api/strategy/list route, setupVolumeOk, and the Nifty / Bank Nifty quotes /api/global fetched but never showed.
+
+# GIFT Nifty on the Markets page (24 Nov 2026 · page version 24 Nov 2026 · 1)
+
+- Markets > India: a GIFT Nifty card (Nifty futures on NSE IX, trading about 21 hours a day - the pre-open cue for the
+  Nifty gap). Free source: Moneycontrol's live-index page, one request at most every 3 minutes; Live / Closed from its
+  last-update time.
+- Removed from the Markets page: Gold ₹/g (Gold Petal proxy), S&P 500 futures and Nasdaq futures cards. US VIX moved to
+  the US cash row. The S&P / Nasdaq futures are still fetched: the Global Bias score and the morning brief use them.
+
 # 4 ATR trailing stop, Gold Petal contract month, FII / DII evening refresh, screener clean-up (23 Nov 2026 · page version 23 Nov 2026 · 3)
 
 - READY stocks: the trailing stop is 4 ATR under the highest close (was 3 ATR). 10-year backtest, same entries, 5 open:

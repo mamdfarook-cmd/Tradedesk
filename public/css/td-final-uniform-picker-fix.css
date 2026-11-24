@@ -84,8 +84,6 @@
     white-space:nowrap!important;
     text-align:right!important;
   }
-
-  #view-crypto.selector-open .coin-icon-sm{display:none!important}
   #view-crypto.selector-open .ic > div[style*="flex:1"]{min-width:0!important}
 
   /* Keep stocks/search normal; only traded-category lists are forced into compact grid. */

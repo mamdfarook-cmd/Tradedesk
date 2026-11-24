@@ -68,7 +68,5 @@
   .td-mtab-name{font-size:.60rem;font-weight:950;color:#94a3b8;text-transform:uppercase;letter-spacing:.08em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .td-mtab-val{font-size:.82rem;font-weight:950;color:#f8fafc;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
   .td-mtab-chg{font-size:.62rem;font-weight:950;margin-top:2px;white-space:nowrap}
-  .td-market-actions{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:7px;margin-top:10px}
-  .td-market-actions .anl-btn{min-height:34px!important;padding:0 6px!important;font-size:.64rem!important;border-radius:12px!important;justify-content:center!important}
   .td-market-note{font-size:.66rem;color:#94a3b8;line-height:1.35;margin-top:8px}
-@media(min-width:821px){ .td-market-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))} .td-market-actions{grid-template-columns:repeat(5,minmax(0,1fr))} }
+@media(min-width:821px){ .td-market-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))} }

@@ -145,31 +145,6 @@
     return planRR(from, card.stop, card.target);
   }
 
-  /* Quick Bounce (RSI-2): a short dip inside an uptrend. Close above its 50- and 200-day averages and the 2-day
-     RSI (Wilder) under 10. Buy next open (or near the close), stop 2.5 ATR(14) below the close, sell at the first
-     close above the 5-day average or after 10 trading days. The caller also needs Nifty above its 200-day average.
-     Backtest 7 Nov 2026 (235 large caps, 1 year, after 0.25% costs): 64-67% winners, +0.30% per trade, 3-4 days.
-     Pass COMPLETED daily bars only (a forming bar makes the signal flicker during the day). */
-  function quickBounce({ C, H, L }) {
-    const n = (C || []).length;
-    if (n < 210) return null;
-    const sma = p => C.slice(n - p).reduce((a, b) => a + +b, 0) / p;
-    let ag = 0, al = 0;
-    for (let i = 1; i < n; i++) {
-      const d = C[i] - C[i - 1], g = Math.max(d, 0), l = Math.max(-d, 0);
-      if (i <= 2) { ag += g / 2; al += l / 2; } else { ag = (ag + g) / 2; al = (al + l) / 2; }
-    }
-    const rsi2 = al === 0 ? 100 : 100 - 100 / (1 + ag / al);
-    let atr = 0;
-    for (let i = 1; i < n; i++) {
-      const tr = Math.max(H[i] - L[i], Math.abs(H[i] - C[i - 1]), Math.abs(L[i] - C[i - 1]));
-      atr = i <= 14 ? atr + tr / 14 : (atr * 13 + tr) / 14;
-    }
-    const close = +C[n - 1], sma5 = sma(5), sma50 = sma(50), sma200 = sma(200);
-    const ok = close > sma200 && close > sma50 && rsi2 < 10;
-    return { ok, rsi2: +rsi2.toFixed(1), close: R2(close), sma5: R2(sma5), sma50: R2(sma50), sma200: R2(sma200), atr: R2(atr), stop: R2(close - 2.5 * atr) };
-  }
-
   /* Option leg price from an NSE chain row (server Option Builder and the options idea card): the bid/ask
      middle when the spread is tight (<= 15% of the middle); else the last traded price, but only if it traded
      today and sits inside the bid/ask; else null (the caller keeps its estimate). A stale last price on an
@@ -299,12 +274,6 @@
     return best ? best.name : null;
   }
 
-  /* Volume requirement per setup type. */
-  function setupVolumeOk(setupName, volBlend, pv) {
-    if (/pullback|bounce/i.test(setupName || '')) return !!pv?.bounceOk && !pv?.heavyPullback; /* no heavy selling into it, volume on the bounce day */
-    if (/breakout/i.test(setupName || '')) return Number(volBlend) >= 1.10;
-    return Number(volBlend) >= 0.8;
-  }
   function setupVolumeReason(setupName, volBlend, pv) {
     if (/pullback|bounce/i.test(setupName || '')) {
       if (!pv?.green) return 'Bounce not confirmed: needs a green close';
@@ -660,7 +629,7 @@
      Checklist scores: each item is a factor from the backtests (marked tested) or a plain check; a missing input
      (news not loaded, sector unknown) is left out and the rest is scaled to 100. The exit stays the plan's own
      (stop, 2R or day 15) - the scores are for confidence, not a new rule.
-     ctx: { signal: 'ready'|'pattern'|'quick'|'near'|null, stop, niftyUp, rs3m, tf: {bull, denom} (Analysis trend,
+     ctx: { signal: 'ready'|'pattern'|'breakout'|'near'|null, stop, niftyUp, rs3m, tf: {bull, denom} (Analysis trend,
      1 hour -> monthly; daily EMAs when absent), sectorUp, newsSent: 'bull'|'bear'|'neutral'|null, eventsClear,
      holdEventsClear }. i = bar to score (default the last). */
   function stockScores({ H, L, C }, ctx = {}, i) {
@@ -685,8 +654,8 @@
     const trendTxt = tfPct != null ? `${ctx.tf.bull}/${ctx.tf.denom} timeframes bullish (Analysis → Trend)` : `daily EMAs: price ${price > e20 ? '>' : '<'} EMA20, EMA20 ${e20 > e50 ? '>' : '<'} EMA50, EMA50 ${e50 > e200 ? '>' : '<'} EMA200`;
     const news = ctx.newsSent === 'bull' ? 1 : ctx.newsSent === 'bear' ? 0 : ctx.newsSent === 'neutral' ? 0.6 : null;
     const yes = v => v == null ? null : v ? 1 : 0;
-    const sigPts = { ready: 1, pattern: 0.8, breakout: 0.8, quick: 0.6, near: 0.3 }[ctx.signal] ?? 0;
-    const sigTxt = { ready: 'READY signal (tested gate)', pattern: 'Pattern breakout (tested)', breakout: '20-day breakout (tested, separate list)', quick: 'Quick bounce (tested, watch-only)', near: 'A READY signal is close' }[ctx.signal] || 'No tested entry signal today';
+    const sigPts = { ready: 1, pattern: 0.8, breakout: 0.8, near: 0.3 }[ctx.signal] ?? 0;
+    const sigTxt = { ready: 'READY signal (tested gate)', pattern: 'Pattern breakout (tested)', breakout: '20-day breakout (tested, separate list)', near: 'A READY signal is close' }[ctx.signal] || 'No tested entry signal today';
     /* Weights from the 20 Nov 2026 check on every signal of the tested entries: higher highs & lows helped all of them
        (+0.01R to +0.11R a trade), momentum helped quick bounces (+0.18R vs +0.03R); "room to resistance" did the
        opposite and "near the 52-week high" was mixed, so neither is in the score. */
@@ -771,6 +740,6 @@
     return { exit: null, trail: R2(st), hc: R2(hc), days: d, e20: n ? R2(e20[Math.min(to, n - 1)]) : null };
   }
 
-  return { R2, srLevels, atrWilder, TRAIL, trailWalk, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, quickBounce, pullbackVolume, relStrength, pickLongSetup, setupVolumeOk, setupVolumeReason, WATCH_ONLY,
+  return { R2, srLevels, atrWilder, TRAIL, trailWalk, calcAtrStopLoss, swingSupport, weeklyTrend, longSetups, planRR, setupRR, limitEntry, isChoppy, ocPremium, pullbackVolume, relStrength, pickLongSetup, setupVolumeReason, WATCH_ONLY,
     commodityPlan, goldDriverRule, goldPetalExpiry, goldPetalContract, creditSpreadRule, isMonthlyExpiry, BUY_ONLY_MCX, GOLD_MCX, MCX_EXIT, stockTags, patternBreakout, optionDelta, swingGate, niftyWeeklySells, weeklySellEntry, stockScores, breakout20 };
 });

@@ -16,13 +16,12 @@
 
   /* Prevent iPhone Safari auto-zoom while typing/searching stocks. */
   input,
-  select,
-  textarea,
-  .search,
-  .stock-search,
-  #search,
-  #stockSearch,
-  #symSearch{
+select,
+textarea,
+.search,
+#search,
+#stockSearch,
+#symSearch {
     font-size:16px!important;
   }
 }
@@ -42,6 +41,5 @@
 }
 
 /* Compact Market Pulse guide */
-.pulse-guide,.market-pulse-guide{font-size:.72rem;line-height:1.25}
-.pulse-guide .guide-card,.market-pulse-guide .guide-card,.pulse-guide-card{padding:8px 10px}
-.pulse-guide h4,.market-pulse-guide h4{font-size:.78rem;margin:0 0 4px}
+.pulse-guide {font-size:.72rem;line-height:1.25}
+.pulse-guide h4 {font-size:.78rem;margin:0 0 4px}

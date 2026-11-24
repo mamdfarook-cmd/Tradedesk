@@ -1,0 +1,145 @@
+/* ═══ TradeDesk theme layer (24 Nov 2026) - the last stylesheet, wins over the older layers ═══
+   1. Shared layout for every theme: frozen sub-tab bars, slim scrollbars, aligned numbers, a compact phone header,
+      flat cards (no glow / heavy shadows).
+   2. Theme colours and fonts: Midnight Pro (html.theme-midnight, set in index.html; chosen 24 Nov 2026). */
+
+/* ---------- 1. Shared layout ---------- */
+:root{ --td-radius:10px; --td-radius-s:7px; }
+html[class*="theme-"] body{font-family:var(--th-font)!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
+html[class*="theme-"] .icp,html[class*="theme-"] .td-mtab-val,html[class*="theme-"] .ihp,html[class*="theme-"] td,
+html[class*="theme-"] .pl-lv b,html[class*="theme-"] .tp-detail-value{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+html[class*="theme-"] .td-mtab-val,html[class*="theme-"] .ihp{font-family:var(--th-num)!important}
+
+/* slim scrollbars */
+html[class*="theme-"] *{scrollbar-width:thin;scrollbar-color:var(--th-scroll) transparent}
+html[class*="theme-"] ::-webkit-scrollbar{width:8px;height:8px}
+html[class*="theme-"] ::-webkit-scrollbar-thumb{background:var(--th-scroll);border-radius:8px;border:2px solid transparent;background-clip:padding-box}
+html[class*="theme-"] ::-webkit-scrollbar-track{background:transparent}
+
+/* frozen bars: the page header, the instrument header and the sub-tab rows stay on screen while the content scrolls */
+html[class*="theme-"] .hdr{position:sticky!important;top:0!important;z-index:1000!important}
+html[class*="theme-"] .analysis-bar,
+html[class*="theme-"] .scr-tabs-row{position:sticky!important;top:-20px;z-index:40!important;background:var(--th-bar)!important;
+  backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px);margin-top:0!important;padding-top:8px!important;padding-bottom:8px!important;
+  border-bottom:1px solid var(--brd)!important}
+
+/* flat cards: border instead of glow */
+html[class*="theme-"],html[class*="theme-"] body,html[class*="theme-"] .ml{background:var(--bg)!important;background-attachment:scroll!important}
+html[class*="theme-"] .ov-box,html[class*="theme-"] .sc,html[class*="theme-"] .strat-hero,html[class*="theme-"] .candle-card,
+html[class*="theme-"] .lvl-card,html[class*="theme-"] .gauge-card,html[class*="theme-"] .alert-panel,html[class*="theme-"] .scr-header,
+html[class*="theme-"] .scr-card,html[class*="theme-"] .trade-plan-card,html[class*="theme-"] .tp-section,html[class*="theme-"] .tp-decision,
+html[class*="theme-"] .pos-calc,html[class*="theme-"] .market-verdict,html[class*="theme-"] .ni,html[class*="theme-"] .cal-event,
+html[class*="theme-"] .alert-item,html[class*="theme-"] .sugg-item,html[class*="theme-"] .idea-card,html[class*="theme-"] .scr-sum-card,
+html[class*="theme-"] .td-mtab,html[class*="theme-"] .pl-group,html[class*="theme-"] .chart-wrap,html[class*="theme-"] .td-data-panel{
+  background:var(--bgc)!important;border:1px solid var(--brd)!important;box-shadow:var(--th-shadow)!important;border-radius:var(--td-radius)!important}
+html[class*="theme-"] .ov-item,html[class*="theme-"] .sbi,html[class*="theme-"] .tp-item,html[class*="theme-"] .tp-mini,html[class*="theme-"] .tp-detail,
+html[class*="theme-"] .tp-qrow,html[class*="theme-"] .lvl-row,html[class*="theme-"] .pat-item,html[class*="theme-"] .sr,html[class*="theme-"] .zone-row,
+html[class*="theme-"] .idea-grid>div,html[class*="theme-"] .strat-cell,html[class*="theme-"] .pl-row{
+  background:var(--bgi)!important;border:1px solid var(--brd-soft)!important;box-shadow:none!important;border-radius:var(--td-radius-s)!important}
+
+/* signal colour = a thin coloured edge, not a coloured glow */
+html[class*="theme-"] .tp-decision.qualified,html[class*="theme-"] .trade-plan-card.bull,html[class*="theme-"] .idea-card:has(.idea-view.bull),
+html[class*="theme-"] .td-mtab:has(.td-mtab-chg[style*="--bull"]){background:var(--bgc)!important;border-color:var(--brd)!important;box-shadow:inset 3px 0 0 var(--bull),var(--th-shadow)!important}
+html[class*="theme-"] .tp-decision.reject,html[class*="theme-"] .trade-plan-card.bear,html[class*="theme-"] .idea-card:has(.idea-view.bear),
+html[class*="theme-"] .td-mtab:has(.td-mtab-chg[style*="--bear"]){background:var(--bgc)!important;border-color:var(--brd)!important;box-shadow:inset 3px 0 0 var(--bear),var(--th-shadow)!important}
+html[class*="theme-"] .tp-decision.conditional,html[class*="theme-"] .idea-card:has(.idea-view.neutral){background:var(--bgc)!important;border-color:var(--brd)!important;box-shadow:inset 3px 0 0 var(--neu),var(--th-shadow)!important}
+html[class*="theme-"] .tp-detail.bull,html[class*="theme-"] .tp-score-mini.bull,html[class*="theme-"] .tp-detail.bear,html[class*="theme-"] .tp-score-mini.bear,
+html[class*="theme-"] .tp-detail.neutral,html[class*="theme-"] .tp-score-mini.neutral{background:var(--bgi)!important}
+html[class*="theme-"] .ic:has(.q-up),html[class*="theme-"] .ic:has(.q-dn){background:transparent!important}
+html[class*="theme-"] .ih,html[class*="theme-"] .ih:has(.ihc.up),html[class*="theme-"] .ih:has(.ihc.down){background:var(--bgp)!important;border-bottom:1px solid var(--brd)!important}
+
+/* header, navigation, side list */
+html[class*="theme-"] .hdr{background:var(--th-hdr)!important;border-bottom:1px solid var(--brd)!important;box-shadow:none!important}
+html[class*="theme-"] .nbtn,html[class*="theme-"] .anl-btn,html[class*="theme-"] .scr-tab{background:transparent!important;border:1px solid var(--brd)!important;color:var(--tx2)!important;border-radius:999px!important;font-weight:600!important}
+html[class*="theme-"] .nbtn.active,html[class*="theme-"] .anl-btn.active,html[class*="theme-"] .scr-tab.active{background:var(--acc)!important;border-color:var(--acc)!important;color:var(--acc-fg)!important;font-weight:700!important}
+html[class*="theme-"] .nbtn:hover,html[class*="theme-"] .anl-btn:hover{border-color:var(--acc)!important;color:var(--tx)!important}
+html[class*="theme-"] .tb{background:var(--bgp)!important;border-bottom:1px solid var(--brd)!important}
+html[class*="theme-"] .tbt.active{background:transparent!important;box-shadow:inset 0 -2px 0 var(--acc)!important;color:var(--tx)!important}
+html[class*="theme-"] .ip{background:var(--bgp)!important;border-right:1px solid var(--brd)!important}
+html[class*="theme-"] .ic:hover{background:var(--th-hover)!important}
+html[class*="theme-"] .ic.active{background:var(--acc-soft)!important;box-shadow:inset 3px 0 0 var(--acc)!important}
+html[class*="theme-"] #sgo,html[class*="theme-"] .idea-btn:hover,html[class*="theme-"] .rb:hover{background:var(--acc)!important;color:var(--acc-fg)!important;border-color:transparent!important}
+html[class*="theme-"] .selector-toggle{background:var(--bgc)!important;border-color:var(--brd)!important}
+html[class*="theme-"] .aib{border-left-color:var(--acc)!important;background:var(--bgi)!important}
+html[class*="theme-"] .td-market-sec,html[class*="theme-"] .td-mtab-name,html[class*="theme-"] .pl-title{letter-spacing:.06em!important}
+html[class*="theme-"] .pl-head{background:transparent!important;border-bottom:1px solid var(--brd-soft)!important}
+html[class*="theme-"] .bdg.bull{background:var(--bullb)!important;color:var(--bull)!important;border-color:transparent!important}
+html[class*="theme-"] .bdg.bear{background:var(--bearb)!important;color:var(--bear)!important;border-color:transparent!important}
+html[class*="theme-"] .bdg.neutral,html[class*="theme-"] .bdg.na{background:var(--neub)!important;color:var(--neu)!important;border-color:transparent!important}
+
+/* phone: one-line scrolling nav, a lower header; the content panel (.ml) scrolls, so the sub-tab bars freeze at its top */
+@media (max-width:820px){
+  html[class*="theme-"] .hdr{padding:6px 10px 6px!important;gap:4px!important}
+  html[class*="theme-"] .tnav{flex-wrap:nowrap!important;overflow-x:auto!important;scrollbar-width:none;gap:6px!important;-webkit-overflow-scrolling:touch}
+  html[class*="theme-"] .tnav::-webkit-scrollbar{display:none}
+  html[class*="theme-"] .nbtn{padding:5px 13px!important;font-size:.8rem!important;min-height:30px!important;white-space:nowrap;flex:0 0 auto}
+  html[class*="theme-"] .hdr-right .mpill,html[class*="theme-"] .hdr-right button{font-size:.66rem!important;padding:3px 9px!important}
+  html[class*="theme-"] .logo{font-size:1.05rem!important}
+  html[class*="theme-"] .analysis-bar,html[class*="theme-"] .scr-tabs-row{top:0!important;overflow-x:auto;flex-wrap:nowrap!important;scrollbar-width:none}
+  html[class*="theme-"] .td-market-grid{grid-template-columns:repeat(3,minmax(0,1fr))!important;gap:6px!important}
+  html[class*="theme-"] .td-mtab{padding:7px 8px!important;min-height:0!important}
+  html[class*="theme-"] .td-mtab-name{font-size:.6rem!important}
+  html[class*="theme-"] .td-mtab-val{font-size:.92rem!important}
+  html[class*="theme-"] .td-mtab-chg,html[class*="theme-"] .td-mtab-st{font-size:.66rem!important}
+  html[class*="theme-"] .tb{padding-bottom:env(safe-area-inset-bottom)!important;background:var(--th-bar)!important;backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px)}
+}
+
+/* empty start screen: no panel box, the accent line icon */
+html[class*="theme-"] .es{background:transparent!important}
+html[class*="theme-"] .es .ei{color:var(--acc)!important;opacity:.85}
+
+/* phone: compact "app" density on every page (same idea as the Markets cards) */
+@media (max-width:820px){
+  html[class*="theme-"] .tc{padding:10px 10px 84px!important}
+  html[class*="theme-"] .ov-box,html[class*="theme-"] .sc,html[class*="theme-"] .strat-hero,html[class*="theme-"] .lvl-card,
+  html[class*="theme-"] .gauge-card,html[class*="theme-"] .alert-panel,html[class*="theme-"] .scr-header,html[class*="theme-"] .trade-plan-card,
+  html[class*="theme-"] .tp-section,html[class*="theme-"] .tp-decision,html[class*="theme-"] .pos-calc,html[class*="theme-"] .market-verdict,
+  html[class*="theme-"] .idea-card,html[class*="theme-"] .chart-wrap,html[class*="theme-"] .td-data-panel,
+  html[class*="theme-"] .ni,html[class*="theme-"] .cal-event,html[class*="theme-"] .alert-item{padding:10px 11px!important;margin-bottom:9px!important}
+  html[class*="theme-"] .tp-detail,html[class*="theme-"] .tp-mini,html[class*="theme-"] .tp-item,html[class*="theme-"] .ov-item,
+  html[class*="theme-"] .strat-cell,html[class*="theme-"] .lvl-row,html[class*="theme-"] .sr,html[class*="theme-"] .zone-row,
+  html[class*="theme-"] .pl-row,html[class*="theme-"] .tp-score-mini{padding:8px 9px!important}
+  html[class*="theme-"] .pl-row{margin-bottom:6px!important}
+  html[class*="theme-"] .pl-group{padding:0!important;margin-bottom:9px!important}
+  /* instrument header and the index / stock picker */
+  html[class*="theme-"] .ih{padding:8px 12px!important;min-height:0!important}
+  html[class*="theme-"] .ihp{font-size:1.2rem!important}
+  html[class*="theme-"] .ihn{font-size:.95rem!important}
+  html[class*="theme-"] .selector-toggle{padding:8px 12px!important;min-height:0!important}
+  html[class*="theme-"] .ip .ic{padding:8px 10px!important}
+  /* headings and big numbers one step smaller */
+  html[class*="theme-"] .idea-title{font-size:.95rem!important;line-height:1.3!important}
+  html[class*="theme-"] .mv-icon{font-size:1.3rem!important}
+  html[class*="theme-"] .mv-title{font-size:1rem!important}
+  html[class*="theme-"] .market-verdict{padding:10px!important}
+  html[class*="theme-"] .gauge-val{font-size:1.05rem!important}
+  html[class*="theme-"] .strat-cell [style*="font-size:1.5rem"],html[class*="theme-"] .strat-cell [style*="font-size:1.1rem"]{font-size:1.05rem!important}
+  html[class*="theme-"] .tp-score-mini-val{font-size:1.15rem!important}
+  html[class*="theme-"] .tp-decision-main{font-size:.95rem!important}
+  html[class*="theme-"] .tp-action-word{font-size:1rem!important}
+  html[class*="theme-"] .tp-limit-head{font-size:.9rem!important;line-height:1.35!important}
+  html[class*="theme-"] .tp-limit-sub,html[class*="theme-"] .pl-why{font-size:.76rem!important;line-height:1.45!important}
+  /* sub-tab buttons: small pills in one swipeable row */
+  html[class*="theme-"] .anl-btn,html[class*="theme-"] .scr-tab,html[class*="theme-"] .scr-act{padding:6px 12px!important;font-size:.76rem!important;min-height:30px!important;white-space:nowrap;flex:0 0 auto}
+  html[class*="theme-"] .tbt{font-size:.8rem!important;padding:9px 6px!important}
+  /* long explanations: two lines, tap to read all (td-ui.js toggles .td-open) */
+  html[class*="theme-"] .pl-sub,html[class*="theme-"] .scr-ctx-sub{
+    display:-webkit-box!important;-webkit-box-orient:vertical;-webkit-line-clamp:2;line-clamp:2;overflow:hidden!important;cursor:pointer;position:relative}
+  html[class*="theme-"] .pl-sub.td-open,html[class*="theme-"] .scr-universe.td-open,html[class*="theme-"] .scr-ctx-sub.td-open{display:block!important;-webkit-line-clamp:unset;overflow:visible!important}
+  html[class*="theme-"] .scr-universe,html[class*="theme-"] .tc > .aib{font-size:.72rem!important;padding:8px 10px!important;line-height:1.45!important}
+  html[class*="theme-"] .scr-universe{white-space:nowrap;text-overflow:ellipsis;overflow:hidden!important;cursor:pointer}
+  html[class*="theme-"] .scr-universe.td-open{white-space:normal}
+  html[class*="theme-"] .pl-head{padding:10px 11px!important}
+  html[class*="theme-"] .pl-title{font-size:.92rem!important}
+}
+
+/* ---------- 2. Themes ---------- */
+/* Midnight Pro - the earlier navy look, cleaned up: flat navy cards, emerald accent, Inter */
+html.theme-midnight{
+  --th-font:"Inter",system-ui,-apple-system,"Segoe UI",Roboto,Arial,sans-serif; --th-num:"Inter",system-ui,sans-serif;
+  --bg:#0a0f1a; --bgp:#0d1322; --bgc:#111a2b; --bgi:#162034; --brd:#1f2b40; --brdl:#2c3b55; --brd-soft:#1b263a;
+  --acc:#10b981; --acc2:#34d399; --acc-fg:#03140d; --acc-soft:rgba(16,185,129,.14);
+  --bull:#22c55e; --bullb:rgba(34,197,94,.14); --bear:#f43f5e; --bearb:rgba(244,63,94,.14); --neu:#f59e0b; --neub:rgba(245,158,11,.14);
+  --tx:#e8eef8; --tx2:#aab6c8; --tx3:#7d8aa0;
+  --th-hdr:rgba(10,15,26,.92); --th-bar:rgba(13,19,34,.94); --th-hover:rgba(255,255,255,.04); --th-scroll:#2c3b55; --th-shadow:0 0 0 transparent;
+}

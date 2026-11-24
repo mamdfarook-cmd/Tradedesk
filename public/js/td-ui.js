@@ -5,7 +5,7 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '23 Nov 2026 · 3';
+const TD_UI_VERSION = '24 Nov 2026 · 3';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
 
 
@@ -126,14 +126,15 @@ function tdAfterRender(tab){
 /* (13 Nov 2026: the auto-hiding header, sticky price strip, swipe-to-change-tab and pull-to-refresh were removed at
    the user's request - the header stays fixed and pages change only from the tab bar.) */
 
-/* ── READY / LIMIT / QUICK chips on the stock list, BUY / WAIT on MCX, PASS on Nifty - from data already on this
+/* ── READY / LIMIT chips on the stock list, BUY / WAIT on MCX, PASS on Nifty - from data already on this
    device (the last screener scan, the last plans), so no extra calls. ── */
 function refreshListChips(){
   let scan = null;
   try{ scan = (typeof MY_TRADE_CACHE_UI !== 'undefined' && MY_TRADE_CACHE_UI) || (typeof readMyTradeScreenerCache === 'function' ? readMyTradeScreenerCache() : null); }catch{}
   const st = {};
   if(scan){
-    (scan.picks || []).forEach(x => st['NSE:' + x.sym] = { t: 'READY', c: 'ready' });
+    /* a pick the Overview check moved to the Watchlist is not READY here either */
+    (scan.picks || []).filter(x => !x._overviewAction || x._overviewAction === 'READY' || x._overviewAction === 'UNCHECKED').forEach(x => st['NSE:' + x.sym] = { t: 'READY', c: 'ready' });
     (scan.watchlist || []).filter(x => x.limitReady && x.limitEntry).forEach(x => st['NSE:' + x.sym] = st['NSE:' + x.sym] || { t: 'LIMIT', c: 'ready' });
   }
   for(const [sym, lv] of Object.entries(typeof PLAN_LEVELS === 'object' ? PLAN_LEVELS : {})) if(sym.startsWith('MCX:') && lv) st[sym] = { t: lv.label === 'Sell' ? 'SELL' : 'BUY', c: lv.label === 'Sell' ? 'low' : 'ready' };
@@ -163,3 +164,11 @@ document.addEventListener('DOMContentLoaded', () => setTimeout(refreshListChips,
   };
   if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', start); else start();
 })();
+
+/* Phone: long explanations are cut to two lines (td-theme.css); a tap shows the whole text, another tap folds it. */
+document.addEventListener('click', e => {
+  if(!matchMedia('(max-width:820px)').matches) return;
+  const el = e.target.closest('.pl-sub, .scr-universe, .scr-ctx-sub');
+  if(!el || e.target.closest('a, button, input, select')) return;
+  el.classList.toggle('td-open');
+});

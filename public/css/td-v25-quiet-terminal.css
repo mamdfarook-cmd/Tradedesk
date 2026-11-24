@@ -62,13 +62,43 @@ body{background:var(--bg)!important;color:var(--tx)!important;letter-spacing:0!i
 .ap,.tc{background:var(--bg)!important}
 
 /* Cards: outer card = surface + hairline; inner items = slightly lighter tone, no border shadow */
-.ov-box,.sc,.strat-hero,.pulse-hero,.candle-card,.lvl-card,.gauge-card,.alert-panel,.scr-header,.scr-card,
-.trade-plan-card,.tp-section,.tp-decision,.pos-calc,.cg-gauge,.market-verdict,.ni,.coin-card,.earn-row,.cal-event,
-.alert-item,.sugg-item,.td-more,.idea-card,.ov-card,.scr-sum-card,.email-section,.td-mtab{
+.ov-box,
+.sc,
+.strat-hero,
+.candle-card,
+.lvl-card,
+.gauge-card,
+.alert-panel,
+.scr-header,
+.scr-card,
+.trade-plan-card,
+.tp-section,
+.tp-decision,
+.pos-calc,
+.market-verdict,
+.ni,
+.cal-event,
+.alert-item,
+.sugg-item,
+.idea-card,
+.scr-sum-card,
+.td-mtab {
   background:var(--bgc)!important;border:1px solid var(--brd)!important;box-shadow:none!important;border-radius:var(--r)!important}
-.cp-item,.ov-item,.sbi,.scd,.scr-met,.tp-item,.tp-mini,.tp-detail,.tp-qrow,.lvl-row,.pat-item,.sr,.coin-stat,.zone-row,.idea-grid>div{
+.ov-item,
+.sbi,
+.tp-item,
+.tp-mini,
+.tp-detail,
+.tp-qrow,
+.lvl-row,
+.pat-item,
+.sr,
+.zone-row,
+.idea-grid>div {
   background:var(--bgi)!important;border:1px solid transparent!important;box-shadow:none!important;border-radius:var(--rs)!important}
-.ov-box:hover,.scr-card:hover,.ov-card:hover,.coin-card:hover,.sugg-item:hover{border-color:var(--brdl)!important;box-shadow:none!important;background:var(--bgc)!important}
+.ov-box:hover,
+.scr-card:hover,
+.sugg-item:hover {border-color:var(--brdl)!important;box-shadow:none!important;background:var(--bgc)!important}
 /* The decision card keeps a thin colour edge so the verdict is found first */
 .tp-decision{border-top:2px solid var(--acc)!important}
 .idea-card{border-left:2px solid var(--acc)!important}
@@ -81,10 +111,28 @@ body{background:var(--bg)!important;color:var(--tx)!important;letter-spacing:0!i
 .tp-score-mini.neutral{border-top-color:var(--neu)!important}
 
 /* Section labels: small caps-style, quieter */
-.ov-title,.st,.tp-kicker,.tp-section-title,.tp-decision-label,.scr-sum-label,.ov-label,.strat-label,.scl,.cp-label,
-.pm-label,.gauge-title,.lvl-header,.vt,.idea-kicker,.tp-detail-label{
+.ov-title,
+.st,
+.tp-kicker,
+.tp-section-title,
+.tp-decision-label,
+.scr-sum-label,
+.ov-label,
+.strat-label,
+.pm-label,
+.gauge-title,
+.lvl-header,
+.vt,
+.idea-kicker,
+.tp-detail-label {
   font-weight:650!important;letter-spacing:.06em!important;color:var(--tx3)!important}
-.ov-val,.slv,.sn,.tp-val,.tp-detail-value,.strat-val,.cpb-val,.scr-score,.scr-sym{font-weight:650!important}
+.ov-val,
+.slv,
+.sn,
+.tp-val,
+.tp-detail-value,
+.strat-val,
+.cpb-val {font-weight:650!important}
 
 /* Badges: quiet fill + text colour, border only as a hairline */
 .bdg{font-weight:700!important;letter-spacing:.04em!important;border-width:1px!important}

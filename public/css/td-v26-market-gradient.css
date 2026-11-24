@@ -48,11 +48,40 @@ body{background:
 .ih:has(.ihc.down){background:linear-gradient(90deg,rgba(244,63,94,.13),rgba(13,22,38,.95) 55%)!important;border-bottom-color:rgba(244,63,94,.25)!important}
 
 /* Cards: navy gradient */
-.ov-box,.sc,.strat-hero,.pulse-hero,.candle-card,.lvl-card,.gauge-card,.alert-panel,.scr-header,.scr-card,
-.trade-plan-card,.tp-section,.tp-decision,.pos-calc,.cg-gauge,.market-verdict,.ni,.coin-card,.earn-row,.cal-event,
-.alert-item,.sugg-item,.td-more,.idea-card,.ov-card,.scr-sum-card,.email-section,.td-mtab{
+.ov-box,
+.sc,
+.strat-hero,
+.candle-card,
+.lvl-card,
+.gauge-card,
+.alert-panel,
+.scr-header,
+.scr-card,
+.trade-plan-card,
+.tp-section,
+.tp-decision,
+.pos-calc,
+.market-verdict,
+.ni,
+.cal-event,
+.alert-item,
+.sugg-item,
+.idea-card,
+.scr-sum-card,
+.td-mtab {
   background:var(--g-card)!important;border:1px solid var(--brd)!important;box-shadow:0 8px 22px rgba(0,0,0,.28)!important}
-.cp-item,.ov-item,.sbi,.scd,.scr-met,.tp-item,.tp-mini,.tp-detail,.tp-qrow,.lvl-row,.pat-item,.sr,.coin-stat,.zone-row,.idea-grid>div,.strat-cell{
+.ov-item,
+.sbi,
+.tp-item,
+.tp-mini,
+.tp-detail,
+.tp-qrow,
+.lvl-row,
+.pat-item,
+.sr,
+.zone-row,
+.idea-grid>div,
+.strat-cell {
   background:var(--bgi)!important;border:1px solid rgba(148,163,184,.08)!important;box-shadow:none!important}
 
 /* Green = bullish, red = bearish, amber = wait: gradient tint + coloured edge */

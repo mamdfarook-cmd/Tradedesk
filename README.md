@@ -137,11 +137,9 @@ Technicals page) · News. Nifty: Market Pulse · Technicals · Option Builder. R
 the Backtest and Yahoo vs Kite screener tabs.
 
 Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
-- Stock exit: sell all at 2R or day 15 (T1 stays the R:R check). Tags on every screener row: higher highs / higher
-  lows, near the 52-week high, double bottom above its neckline, and the stock-option put/call ratio (0.5+) from
-  Zerodha: open interest of every stock option (~80 quote requests, ~1.5 min) once a day after 15:40, or as soon as
-  Zerodha is connected when none is loaded (data/kite-pcr.json). NSE delivery % was removed: NSE's archive answers
-  Render with 403. New list: Pattern breakouts (double bottom / flat base), also
+- Stock exit: sell all at 2R or day 15 (READY moved to the 4 ATR trailing exit on 23 Nov 2026). Tags on every
+  screener row: higher highs / higher lows, near the 52-week high, double bottom above its neckline. The stock-option
+  put/call ratio and NSE delivery % tags were removed (no reliable edge; PCR is no longer fetched). New list: Pattern breakouts (double bottom / flat base), also
   shown as a card on the stock's Overview. The Overview's trend (bias) uses the screener's rule, so the two agree.
 - Missed checks catch up: an MCX check missed at 09:45 / 17:00 (deploy or restart) runs at the next minute between
   10:05 and 23:00; the Nifty entry-day check retries until 15:25 when the premiums were missing. The Track record's MCX /

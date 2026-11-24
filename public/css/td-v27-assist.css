@@ -30,25 +30,15 @@
 .j-sugg-none{padding:8px 10px;font-size:.78rem;color:var(--tx3)}
 .j-symchk{display:block;min-height:1em;margin-top:3px;font-size:.74rem}
 .j-fix{padding:2px 8px;font-size:.72rem;margin-left:4px}
-.sc-table td:nth-child(n+2),.sc-table th:nth-child(n+2){text-align:right}
-.sc-table td.sc-win{color:var(--bull);font-weight:700}
-.sc-table{table-layout:fixed}.idea-card .j-table.sc-table th,.idea-card .j-table.sc-table td{white-space:normal;overflow-wrap:anywhere}.sc-table th:first-child,.sc-table td:first-child{width:34%}
-@media(max-width:620px){.sc-table{font-size:.72rem}.sc-table th,.sc-table td{padding:5px 4px}}
-.sc-grps{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:8px}
-.sc-grp{border:1px solid var(--brd);border-radius:10px;padding:8px;min-width:0}
-.sc-grp.y{border-color:rgba(255,193,7,.35)}.sc-grp.k{border-color:rgba(0,188,212,.4)}
-.sc-grp-h{font-size:.74rem;font-weight:700;color:var(--tx2);margin-bottom:6px}.sc-grp-h i{font-style:normal;color:var(--tx3);margin-left:4px}
 .sc-chip{display:block;width:100%;text-align:left;background:none;border:0;border-top:1px solid var(--brd);padding:6px 2px;color:inherit;font:inherit;cursor:pointer}
 .sc-chip:first-of-type{border-top:0}.sc-chip b{font-size:.82rem}.sc-chip span{display:block;font-size:.7rem;color:var(--tx3);overflow-wrap:anywhere}
 .sc-chip:hover b{color:var(--acc)}
-.sc-none{font-size:.74rem;color:var(--tx3)}
 /* backtested tags on screener rows (19 Nov 2026) */
 .sc-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:5px}
 .sc-tag{font-size:.66rem;line-height:1.5;padding:0 7px;border-radius:999px;border:1px solid var(--brd);color:var(--tx3);white-space:nowrap}
 .sc-tag.on{color:var(--bull);border-color:rgba(0,200,83,.35)}
 .sc-tag.off{color:var(--tx3);opacity:.8}
 .rule-side.info{opacity:.72}
-@media(max-width:620px){.sc-grps{grid-template-columns:1fr}}
 .j-row.closed .j-row-sub{display:inline}
 .j-table-wrap{overflow-x:auto;margin-top:8px}
 .j-table{width:100%;border-collapse:collapse;font-size:.78rem}
@@ -118,7 +108,6 @@
 .td-market-sec{font-size:.64rem;font-weight:900;letter-spacing:.08em;text-transform:uppercase;color:var(--tx3);margin:12px 2px 6px}
 .td-mtab-st{font-size:.58rem;color:var(--tx3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .td-mtab-st.live{color:var(--bull)}
-.td-mtab-wide{grid-column:span 2}
 
 /* Track record sub-tabs: Stocks / Gold Petal / Nifty options */
 .td-trace-sub{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 10px}

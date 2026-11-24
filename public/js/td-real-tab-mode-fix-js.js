@@ -106,20 +106,16 @@
       <div class="td-market-head"><div class="td-market-title">Global Market Snapshot</div><div class="td-market-time">${new Date().toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'})}</div></div>
       <div class="td-market-sec">India</div>
       <div class="td-market-grid">
-        ${biasCard}${marketCard('India VIX',d.vix,2)}${ivCard}${breadthCard}${fiiCard}
-      </div>
-      <div class="td-market-sec">US now · futures (trade almost round the clock)</div>
-      <div class="td-market-grid">
-        ${marketCard('S&P 500 fut',d.spFut,0)}${marketCard('Nasdaq fut',d.nqFut,0)}${marketCard('US VIX',d.usvix,2)}
+        ${marketCard('GIFT Nifty',d.giftNifty,0)}${biasCard}${marketCard('India VIX',d.vix,2)}${ivCard}${breadthCard}${fiiCard}
       </div>
       <div class="td-market-sec">US cash close · Asia · Europe</div>
       <div class="td-market-grid">
-        ${marketCard('S&P 500',d.sp500,0)}${marketCard('Nasdaq',d.nasdaq,0)}${marketCard('Dow',d.dow,0)}
+        ${marketCard('S&P 500',d.sp500,0)}${marketCard('Nasdaq',d.nasdaq,0)}${marketCard('Dow',d.dow,0)}${marketCard('US VIX',d.usvix,2)}
         ${marketCard('Nikkei',d.nikkei,0)}${marketCard('Hang Seng',d.hangseng,0)}${marketCard('DAX',d.dax,0)}${marketCard('FTSE 100',d.ftse,0)}
       </div>
-      <div class="td-market-sec">Gold (₹/g = Gold Petal proxy, $ = COMEX) · currency · rates</div>
+      <div class="td-market-sec">Gold &amp; silver (COMEX, $) · currency · rates</div>
       <div class="td-market-grid">
-        ${marketCard('Gold ₹/g',d.goldInr,0)}${marketCard('Gold $',d.gold,1)}${marketCard('Silver $',d.silver,2)}
+        ${marketCard('Gold $',d.gold,1)}${marketCard('Silver $',d.silver,2)}
         ${marketCard('USD/INR',d.usdInr,2)}${marketCard('DXY',d.dxy,2)}${marketCard('US 10Y',d.us10y,2)}
       </div>
       <div class="td-market-sec">Oil</div>

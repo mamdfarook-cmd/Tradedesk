@@ -16,7 +16,6 @@
   .tp-item.is-wait .tp-val{color:var(--tx3)!important}
   .tp-item.plan-stop .tp-val{color:var(--bear)!important}
   .tp-item.plan-target .tp-val{color:var(--bull)!important}
-  .tp-item.plan-price .tp-val{color:#e8eef8!important}
   .cpb-val{color:#e8eef8!important}
   /* Phone: three screener modes on one row, Refresh wraps under them when space runs out. */
   @media(max-width:480px){

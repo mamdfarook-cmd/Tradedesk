@@ -3271,7 +3271,7 @@ function notifSupported(){ return ('Notification' in window); }
 function notifSecure(){ return window.isSecureContext || location.hostname === 'localhost' || location.hostname === '127.0.0.1'; }
 function refreshNotifState(){
   NOTIF_ENABLED = notifSupported() && Notification.permission === 'granted';
-  if (NOTIF_ENABLED) localStorage.setItem(NOTIF_PREF_KEY, '1');
+  if (NOTIF_ENABLED) { try { localStorage.setItem(NOTIF_PREF_KEY, '1'); } catch {} }
   return NOTIF_ENABLED;
 }
 
@@ -3969,7 +3969,7 @@ function updateForwardTestsFromPicks(picks=[], source='qualified') {
         status:'Open', phase:'entry', resultR:null, retNow:0, d5:null, d10:null, d20:null, closed:false,
         exitMode: p.gateV2 ? 'trail' : '2R', t2r: ftValid(p.plan?.stop) && entry > +p.plan.stop ? ftR(entry + 2 * (entry - +p.plan.stop)) : null, sector: p.sector || null,
         ...(p.gateV2 ? { planLocked: true } : {}),
-        tags: p.tags ? { hhhl: p.tags.hhhl ?? null, near52: p.tags.near52 ?? null, dbAbove: p.tags.dbAbove ?? null, pcrOk: p.tags.pcrOk ?? null } : null,
+        tags: p.tags ? { hhhl: p.tags.hhhl ?? null, near52: p.tags.near52 ?? null, dbAbove: p.tags.dbAbove ?? null } : null,
         createdAt:new Date().toISOString()
       };
       rows.push(rec); byKey.set(key, rec);
@@ -4059,7 +4059,7 @@ async function tabForwardTest() {
     </tr>`;
   }).join('') : `<tr><td colspan="10">No records yet. Each READY pick in Screener Match is saved here automatically and tracked to its stop or target.</td></tr>`;
   if(!live()) return;
-  tc.innerHTML = `${typeof traceSubTabs === 'function' ? traceSubTabs('stock') : ''}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">Track Record — how past screener picks played out</div><button onclick="localStorage.removeItem(FORWARD_TEST_KEY);tabForwardTest()" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear Records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Every READY pick is recorded at the price when it turned READY (the server records the 11:00 / 15:00 scan picks even when the app is closed) and checked on each day's candle. Picks from 19 Nov 2026 follow the tested exit: all at 2R or the stop, else the close of day 15; older ones keep their T1 / T2 plan. The signal day's candle is not judged because its high/low may have come before the signal.</div></div>
+  tc.innerHTML = `${typeof traceSubTabs === 'function' ? traceSubTabs('stock') : ''}<div class="scr-header"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><div style="font-size:1rem;font-weight:800;color:var(--acc)">Track Record — how past screener picks played out</div><button onclick="localStorage.removeItem(FORWARD_TEST_KEY);tabForwardTest()" style="margin-left:auto;padding:4px 12px;background:var(--bgi);border:1px solid var(--brdl);border-radius:var(--rs);color:var(--bear);font-size:.75rem;font-weight:700;cursor:pointer">Clear Records</button></div><div style="font-size:.72rem;color:var(--tx3);margin-top:6px">Every READY pick is recorded at the price when it turned READY (the server records the 11:00 / 15:00 scan picks even when the app is closed) and checked on each day's candle. READY picks from 23 Nov 2026 trail: a stop 4 ATR under the highest close, a close below EMA20 after day 5, or day 60; 19-22 Nov 2026: all at 2R or the stop, else the close of day 15; older ones keep their T1 / T2 plan. The signal day's candle is not judged because its high/low may have come before the signal.</div></div>
   <div class="scr-summary"><div class="scr-sum-card"><div class="scr-sum-label">Records</div><div class="scr-sum-val">${rows.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Open / Trail</div><div class="scr-sum-val" style="color:var(--acc)">${openCount}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Closed R Samples</div><div class="scr-sum-val">${finished.length}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Win Rate</div><div class="scr-sum-val" style="color:var(--bull)">${winRate}${winRate==='--'?'':'%'}</div></div><div class="scr-sum-card"><div class="scr-sum-label">Avg R</div><div class="scr-sum-val" style="color:${(+avgR||0)>=0?'var(--bull)':'var(--bear)'}">${avgR}${avgR==='--'?'':'R'}</div></div></div>
   <div class="ft-wrap"><table class="ft-table"><thead><tr><th>Date</th><th>Stock</th><th>Side</th><th>Entry</th><th>SL / Trail</th><th>Target</th><th>Now</th><th>Status</th><th>Result</th><th title="Fresh entry score when the signal was recorded (from 21 Nov 2026)">Fresh</th></tr></thead><tbody>${body}</tbody></table></div>
   ${tagTable}
@@ -4084,8 +4084,6 @@ async function tabScreener(mode = CURRENT_SCREENER_MODE, force = false) {
   if (mode === 'trades') { CURRENT_SCREENER_MODE = mode; await tabJournal(); return; }
   CURRENT_SCREENER_MODE = mode;
   if (mode === 'mytrade') { await tabMyTradeScreener(force); return; }
-  if (mode === 'stockweek') { await tabStockOfWeekScreener(); return; }
-  if (mode === 'picklist') { await tabPickList(); return; }
   if (mode === 'track') {
     await tabForwardTest();
     const tc = document.getElementById('tc');
@@ -4107,34 +4105,6 @@ function saveMyTradeScreenerCache(data) { saveDailyLocalCache('ready_watch_scree
 function clearMyTradeScreenerCache() { clearDailyLocalCache('ready_watch_screener_v15'); clearDailyLocalCache('ready_watch_screener_v12'); clearDailyLocalCache('ready_watch_screener_v10','ready_watch_screener_v11'); clearDailyLocalCache('ready_watch_screener_v9'); clearDailyLocalCache('ready_watch_screener_v8'); MY_TRADE_CACHE_UI = null; MY_TRADE_TS_UI = 0; }
 function screenerClientReadyOk(s) {
   return String(s?.tradeStatus || '').toUpperCase() === 'READY';   /* the server applies the tested gate */
-}
-function screenerTriggerHtml(s) {
-  const sec = s?.sector && Number.isFinite(+s?.sectorRank)
-    ? `<span class="scr-sec ${+s.sectorRank <= 5 ? 'lead' : +s.sectorRank > (+s.sectorOf || 99) - 3 ? 'lag' : ''}">${escHtml(s.sector)} #${s.sectorRank}/${s.sectorOf} · 1M ${+s.sectorRet1m >= 0 ? '+' : ''}${(+s.sectorRet1m).toFixed(1)}%</span>` : '';
-  const trg = s?.trigger ? `<div class="scr-trigger"><b>Trigger:</b> ${escHtml(s.trigger)}</div>` : '';
-  return (trg || sec) ? `<div class="scr-trigger-row">${trg}${sec}</div>` : '';
-}
-function screenerCardGateHtml(s) {
-  const rrOk = Number(s?.rr) >= 1.25;
-  /* Volume rule by setup (same as server): pullbacks = bounce-day volume >= 1.0x, breakouts = >= 1.1x. */
-  const setupName = s?.pickedSetup || s?.selectedStrategy || '';
-  const isPullback = /pullback|bounce/i.test(setupName), isBreakout = /breakout/i.test(setupName);
-  const volVal = isPullback && Number.isFinite(+s?.bounceVolume) ? +s.bounceVolume : Number(s?.volPressure || 0);
-  const volOk = isPullback ? volVal >= 1.0 : isBreakout ? volVal >= 1.1 : volVal >= 0.8;
-  const volLabel = isPullback ? 'Bounce vol' : 'Volume';
-  const rsOk = Number.isFinite(+s?.rs3m) ? +s.rs3m > 0 : true;
-  const setupScore = Math.round(+s?.selectedStrategyScore || +s?.finalQualification || 0);
-  const readyOk = screenerClientReadyOk(s);
-  const gateOk = String(s?.readyGate || '').toUpperCase() === 'PASS';
-  const pill = (label, ok, value) => `<span class="scr-filter" style="border-color:${ok?'rgba(76,175,80,.45)':'rgba(255,193,7,.45)'};color:${ok?'var(--bull)':'var(--neu)'}"><b>${label}</b>: ${value}</span>`;
-  return `<div class="scr-filters" style="margin-top:8px">
-    ${pill('Bias', s?.bias === 'Bullish', s?.bias || '-')}
-    ${pill('Setup', setupScore >= (readyOk ? 70 : 55), `${setupScore}%`)}
-    ${pill('RR', rrOk, `${Number(s?.rr || 0).toFixed(2)}x`)}
-    ${pill(volLabel, volOk, `${volVal.toFixed(2)}x`)}
-    ${Number.isFinite(+s?.rs3m) ? pill('RS 3M', rsOk, `${+s.rs3m > 0 ? '+' : ''}${(+s.rs3m).toFixed(1)}%${Number.isFinite(+s?.rsRank) ? ` · top ${Math.max(1, 100 - +s.rsRank)}%` : ''}`) : ''}
-    ${SwingPlan.WATCH_ONLY.has(s?.pickedSetup || '') ? pill('Gate', false, 'ALERT ONLY') : pill('Gate', gateOk, s?.readyGate || '-')}
-  </div>`;
 }
 async function tabMyTradeScreener(force = false) {
   const tc = document.getElementById('tc');
@@ -4182,7 +4152,6 @@ function screenerTagsHtml(t){
     chip(t.hhhl, 'Higher highs & lows', 'Swing structure intact. 10-year test: +0.055R a trade vs -0.015R when broken.'),
     t.near52 ? chip(true, '52-week high', 'Within 5% of the 52-week high: +0.057R a trade (weak effect).') : '',
     t.dbAbove ? chip(true, 'Double bottom', `Above the double-bottom neckline${t.dbNeck ? ' ' + fmt(t.dbNeck) : ''}: +0.099R a trade, 7 of 10 good years.`) : '',
-    t.pcr != null ? chip(t.pcrOk, `Option PCR ${(+t.pcr).toFixed(2)}`, `Put / call open interest of the stock's options (Zerodha, ${t.pcrDate || 'last update'}). Under 0.5 = heavy call writing above the price: skipping those lifted the swing backtest from +0.030R to +0.083R a trade.`) : '',
   ].join('');
   return out ? `<div class="sc-tags">${out}</div>` : '';
 }
@@ -4214,7 +4183,6 @@ function renderMyTradeScreener(data, source='server') {
   const groups = [
     {g:1, title:'Ready to trade', sub:'Tested READY gate (10-year backtest with the trailing exit: 45% wins, +0.57R a trade, 9 of 10 years): EMA20 crosses above EMA50 while the stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high. Signal on a close - buy at the price, stop under the setup, then a trailing exit (stop 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days; avg win +13%, avg loss -4%). The Overview confirms each one below.', cls:'bull', id:'scrMatchGrid'},
     {g:2, title:'Watchlist', sub:'A tested signal forming today (READY if it holds at the close, from 15:00), held by results / the market filter, or EMA20 about to cross EMA50.', cls:'bull', id:'scrDemoted'},
-    /* Quick bounce was removed 23 Nov 2026 (it lost money in the 10-year test). */
   ];
   /* One stock, one list. Order: READY (the server leaves it out of the other lists) -> Pattern breakout -> 20-day
      breakout -> Watchlist. A pattern / breakout row shows what the swing check said instead. */
@@ -4224,28 +4192,9 @@ function renderMyTradeScreener(data, source='server') {
   const pbSet = new Set(pb.map(symU));
   const bo = (data.breakouts20 || []).filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)));
   const boSet = new Set(bo.map(symU));
-  const qb = [].filter(q => !readySet.has(symU(q)) && !pbSet.has(symU(q)) && !boSet.has(symU(q)));
   const swingNote = {};
   all.forEach(s => { const g = screenerRowGroup(s); if((pbSet.has(symU(s)) || boSet.has(symU(s))) && g === 2) swingNote[symU(s)] = screenerRowTag(s, g).t; });
-  const shownElsewhere = s => !readySet.has(symU(s)) && (pbSet.has(symU(s)) || boSet.has(symU(s)) || qb.some(q => symU(q) === symU(s)));
-  const qbRow = q => `<div class="pl-row" data-sym="NSE:${escHtml(q.sym)}" data-name="${escHtml(q.sym)}" title="Open ${escHtml(q.sym)}">
-      <div class="pl-main">
-        <div class="pl-sym">${escHtml(q.sym)} <span class="pl-tag watch">Quick bounce · watch</span>${screenerResultsChip(q)}</div>
-        <div class="pl-setup">RSI-2 ${q.rsi2} · ₹${f(q.price)} · above 50 / 200-day average${q.sector ? ` · ${escHtml(q.sector)}` : ''}</div>
-        <div class="pl-why">Buy near ₹${f(q.close)} (next open). Sell at the first close above the 5-day average (₹${f(q.sma5)} today) or after 10 days.</div>
-        <div class="scr-ov" data-ovq="${escHtml(q.sym)}">Overview check…</div>
-      </div>
-      <div class="pl-levels">
-        <div><span>Buy</span><b>${f(q.close)}</b></div>
-        <div><span>SL</span><b style="color:var(--bear)">${f(q.stop)}</b></div>
-        <div><span>Exit</span><b style="color:var(--bull)">5-day avg</b></div>
-        <div><span>Now</span><b>${f(q.sma5)}</b></div>
-      </div>
-    </div>`;
-  const qbGroup = `<div class="pl-group neutral" id="scrQuickGrid">
-      <div class="pl-head"><div><div class="pl-title">Quick bounce (RSI-2) · watch only</div><div class="pl-sub">Short dip in an uptrend: 2-day RSI under 10, price above its 50- and 200-day averages, Nifty above its 200-day average. <b>Watch only - no alerts.</b> 10-year backtest: 63% of trades win, but the gains are tiny (+0.01R a trade), and with at most 5 positions open it lost money - a high win rate is not an edge here.</div></div><div class="pl-count">${qb.length}</div></div>
-      ${qb.length ? qb.map(qbRow).join('') : `<div class="pl-empty">${escHtml(data.quickBounceNote || 'None in this scan.')}</div>`}
-    </div>`;
+  const shownElsewhere = s => !readySet.has(symU(s)) && (pbSet.has(symU(s)) || boSet.has(symU(s)));
   /* Pattern breakouts (double bottom / flat base) from the same scan - pb above, without READY stocks. */
   const pbRow = q => `<div class="pl-row ready" data-sym="NSE:${escHtml(q.sym)}" data-name="${escHtml(q.sym)}" title="Open ${escHtml(q.sym)}">
       <div class="pl-main">
@@ -4299,7 +4248,7 @@ function renderMyTradeScreener(data, source='server') {
   const ts = data.generatedAt ? new Date(data.generatedAt) : null;
   const when = ts ? ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : '--';
   tc.innerHTML = `${screenerModeSwitch('mytrade')}${screenerContextHtml(data)}
-    <div class="aib" style="font-size:.72rem;margin-bottom:10px">Scan of ${when}${source === 'server' ? '' : ' (saved - Refresh before trading)'} · ${all.length} stocks${data.pcrInfo ? (data.pcrInfo.date ? ` · Option PCR from Zerodha, ${escHtml(data.pcrInfo.date)}${data.pcrInfo.final ? ' close' : ' (intraday)'}` : ' · Option PCR: connect Zerodha (loads once a day)') : ''}. Exit = sell all at 2R or day 15 (the tested exit). Tap a stock for its full Overview.
+    <div class="aib" style="font-size:.72rem;margin-bottom:10px">Scan of ${when}${source === 'server' ? '' : ' (saved - Refresh before trading)'} · ${(n => n + (n === 1 ? ' stock' : ' stocks'))(new Set([...all, ...pb, ...bo].map(symU)).size)}. Exit: READY trails (4 ATR under the highest close, a close below EMA20 after day 5, day 60); pattern and 20-day breakouts sell all at 2R or day 15. Tap a stock for its full Overview.
       <div id="scrConsistency" style="margin-top:6px"><button class="alert-chip" onclick="checkAllVsOverview()" title="Opens every listed stock's Overview in the background and compares bias, setup, R:R and action (about 4 data calls per stock)">Check all vs Overview</button></div></div>
     ${html}`;
   tc.querySelectorAll('.pl-row[data-sym]').forEach(el => el.addEventListener('click', () => {
@@ -4312,19 +4261,7 @@ function renderMyTradeScreener(data, source='server') {
     .then(() => verifyPatternWithOverview(pb.concat(bo), tc, live)).catch(() => {});
 }
 let SCR_VERIFY = Promise.resolve();
-async function verifyQuickWithOverview(list, tc, live){
-  for(const q of list){
-    if(!live()) return;
-    const sym = 'NSE:' + q.sym;
-    let v = null; try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[q.sym] || q.sym); } catch {}
-    if(!v && live()){ await new Promise(r => setTimeout(r, 1500)); try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[q.sym] || q.sym); } catch {} }
-    if(!live()) return;
-    const el = tc.querySelector(`.scr-ov[data-ovq="${q.sym}"]`);
-    if(el) el.innerHTML = !v ? `<span style="color:var(--neu)">Overview check unavailable — open the stock to confirm</span>`
-      : (v.quick ? `<span style="color:var(--bull);font-weight:800">Overview: quick bounce ✓</span>` : `<span style="color:var(--neu);font-weight:800">Overview: no quick bounce</span>`) + scoreChip(v);
-  }
-}
-function scoreChip(v){ return v && v.fresh != null ? ` <span class="sc-chip" title="Fresh entry / Hold score (Overview, without news)">Fresh ${v.fresh} · Hold ${v.hold}</span>` : ''; }
+function scoreChip(v){ return v && v.fresh != null ? ` <span class="sc-chip" title="Fresh entry / Hold score from the Overview, before news is loaded - the stock page adds news, so it can differ by a few points">Fresh ${v.fresh} · Hold ${v.hold} (no news)</span>` : ''; }
 async function verifyPatternWithOverview(list, tc, live){
   for(const q of list){
     if(!live()) return;
@@ -4349,7 +4286,7 @@ function stockScoresHtml(sc, ctx){
   const rows = list => `<ul class="sc-rows">${list.map(r => `<li class="${r.f == null ? 'na' : r.f >= 0.99 ? 'ok' : r.f > 0 ? 'part' : 'bad'}"><b>${escHtml(r.k)}</b> <span>${r.f == null ? 'n/a' : Math.round(r.w * r.f) + '/' + r.w}</span><em>${escHtml(r.t)}${r.tested ? ' · tested' : ''}</em></li>`).join('')}</ul>`;
   const freshNote = ctx?.signal === 'breakout' ? 'The score was not separately tested on the 20-day breakout list - its own backtest (51% wins, 8 of 10 years) is the guide.'
     : ctx?.signal === 'pattern' ? 'For pattern breakouts the backtest found no difference between high and low scores - follow the pattern\'s own stop and 2R.'
-    : 'Backtest: EMA20/50 crosses scoring 85+ made +0.25R a trade vs +0.13R at 70-84; quick bounces under 70 did worse (+0.12R vs +0.18R).';
+    : 'Backtest: EMA20/50 crosses scoring 85+ made +0.25R a trade vs +0.13R at 70-84.';
   return `<div class="sc-grid">
     <div class="sc-tile ${band(sc.fresh)}"><span>Fresh entry score</span><b>${sc.fresh ?? '--'}<small>/100</small></b><em>${word(sc.fresh)} - for buying now</em></div>
     <div class="sc-tile ${band(sc.hold)}"><span>Hold score</span><b>${sc.hold ?? '--'}<small>/100</small></b><em>${word(sc.hold)} - if you already hold it</em></div>
@@ -4402,6 +4339,7 @@ async function verifyScreenerPicksWithOverview(picks, data, tc, live = () => tru
         const tag = card.querySelector('.pl-tag'); if(tag){ tag.textContent = 'Overview: not yet'; tag.className = 'pl-tag watch'; }
         grid.appendChild(card); box.style.display = '';
         box.querySelector('.pl-empty')?.remove();
+        for(const g of [tc.querySelector('#scrMatchGrid'), box]){ const c = g?.querySelector('.pl-count'); if(c) c.textContent = g.querySelectorAll('.pl-row').length; }
       }
     }
   }
@@ -4413,128 +4351,6 @@ async function verifyScreenerPicksWithOverview(picks, data, tc, live = () => tru
   refreshForwardTestsWithPicks(confirmed);
   maybeRunTradeGateAfterScreenerLoad();
   notifyReadyScreenerPicks({...data, picks: confirmed}, 'Screener Match');
-}
-
-/* Watchlist uses the same /api/my-trade-screener response as Ready.
-   Old alternate screener wording is removed to avoid mixing two different screeners. */
-let STOCK_WEEK_CACHE_UI = null, STOCK_WEEK_TS_UI = 0;
-async function fetchStockOfWeekCached(force=false) {
-  if (!force && STOCK_WEEK_CACHE_UI && Date.now() - STOCK_WEEK_TS_UI < getScreenerUiTtlMs()) return { ...STOCK_WEEK_CACHE_UI, _localDailyCache:'memory' };
-  if (!force) {
-    const local = readDailyLocalCache('ready_watch_screener_v15');
-    if (local) { STOCK_WEEK_CACHE_UI = local; STOCK_WEEK_TS_UI = Date.now(); return { ...local, _localDailyCache:'local' }; }
-  }
-  const data = await apiFetch('/api/my-trade-screener' + (force ? '?refresh=1&_=' + Date.now() : ''), 120000);
-  STOCK_WEEK_CACHE_UI = data;
-  STOCK_WEEK_TS_UI = Date.now();
-  saveDailyLocalCache('ready_watch_screener_v15', data);
-  return { ...data, _localDailyCache:false };
-}
-function clearStockOfWeekCache() { clearDailyLocalCache('ready_watch_screener_v15'); clearDailyLocalCache('ready_watch_screener_v12'); clearDailyLocalCache('ready_watch_screener_v10','ready_watch_screener_v11'); clearDailyLocalCache('ready_watch_screener_v9'); clearDailyLocalCache('ready_watch_screener_v8'); STOCK_WEEK_CACHE_UI=null; STOCK_WEEK_TS_UI=0; }
-
-
-async function tabStockOfWeekScreener() {
-  const tc = document.getElementById('tc');
-  tc.innerHTML = `<div class="scr-loading">
-    <div class="sp"></div>
-    <div class="lt">Loading Watchlist…</div>
-    <div class="scr-progress">Uses the same scan as Ready. Ready symbols are excluded from Watchlist.</div>
-  </div>`;
-  try {
-    const data = await fetchStockOfWeekCached(false);
-    renderStockOfWeekScreener(data, data._localDailyCache || 'server');
-  } catch(e) {
-    tc.innerHTML = `<div class="eb"><strong>Watchlist error:</strong> ${e.message}<br>
-      <button onclick="clearStockOfWeekCache();tabStockOfWeekScreenerFresh()" style="margin-top:8px;padding:6px 14px;background:var(--acc);border:none;border-radius:var(--rs);color:#000;font-weight:700;cursor:pointer">↻ Retry</button></div>`;
-  }
-}
-
-async function tabStockOfWeekScreenerFresh() {
-  const tc = document.getElementById('tc');
-  tc.innerHTML = `<div class="scr-loading">
-    <div class="sp"></div>
-    <div class="lt">Refreshing Watchlist…</div>
-    <div class="scr-progress">Forcing fresh one-scan Ready/Watchlist refresh with duplicate removal.</div>
-  </div>`;
-  try {
-    const data = await fetchStockOfWeekCached(true);
-    renderStockOfWeekScreener(data, 'server');
-  } catch(e) {
-    tc.innerHTML = `<div class="eb"><strong>Watchlist refresh error:</strong> ${e.message}<br>
-      <button onclick="tabStockOfWeekScreenerFresh()" style="margin-top:8px;padding:6px 14px;background:var(--acc);border:none;border-radius:var(--rs);color:#000;font-weight:700;cursor:pointer">↻ Retry</button></div>`;
-  }
-}
-
-/* ── PICK LIST: the same scan (READY + Watchlist) sorted into three groups, in this order:
-   1. Breakout watch   (Breakout with Volume, Pre-Breakout Watch, Momentum Continuation)
-   2. Pullback 20 / 50 (EMA20 Pullback, EMA50 Deep Pullback, Support Bounce)
-   3. Near resistance / low R:R (R:R below 1.25 or under 3% room to resistance - whatever the setup)
-   Inside a group: READY first, then the scan's rank. No extra server call: it reuses the Watchlist cache. ── */
-function pickListGroup(s){
-  const setup = String(s.pickedSetup || s.selectedStrategy || '');
-  const rr = Number(s.rr), room = Number(s.resistanceRoom);
-  if((Number.isFinite(rr) && rr < SWING_MIN_RR) || (Number.isFinite(room) && room < 3)) return 3;
-  if(/breakout|momentum/i.test(setup)) return 1;
-  if(/pullback|bounce/i.test(setup)) return 2;
-  return 3;
-}
-async function tabPickList(force=false){
-  const tc = document.getElementById('tc');
-  tc.innerHTML = `${screenerModeSwitch('picklist')}<div class="scr-loading"><div class="sp"></div><div class="lt">Sorting today's scan…</div></div>`;
-  try {
-    const data = await fetchStockOfWeekCached(force);
-    if(CURRENT_SCREENER_MODE !== 'picklist') return;
-    renderPickList(data, data._localDailyCache || 'server');
-  } catch(e) {
-    tc.innerHTML = `${screenerModeSwitch('picklist')}<div class="eb"><strong>Pick List error:</strong> ${escHtml(e.message)}</div>`;
-  }
-}
-function renderPickList(data, source='server'){
-  const tc = document.getElementById('tc');
-  const seen = new Set(), all = [];
-  (data.picks || []).forEach(s => { const k = String(s.sym).toUpperCase(); if(!seen.has(k)){ seen.add(k); all.push({...s, _ready: screenerClientReadyOk(s)}); } });
-  (data.watchlist || []).forEach(s => { const k = String(s.sym).toUpperCase(); if(!seen.has(k)){ seen.add(k); all.push({...s, _ready:false}); } });
-  const groups = [
-    {n:1, title:'1 · Breakout watch', sub:'Buy only on a close above the trigger level with volume.', cls:'bull'},
-    {n:2, title:'2 · Pullback to EMA20 / EMA50', sub:'Buy the bounce: a green close at the average on normal volume.', cls:'bull'},
-    {n:3, title:'3 · Near resistance / low R:R', sub:'Little room to the next resistance or R:R under 1.25 - wait for a pullback or a breakout first.', cls:'neutral'},
-  ];
-  const f = v => Number.isFinite(+v) ? fmt(+v) : '--';
-  const row = s => {
-    const p = s.plan || {};
-    const rr = Number(s.rr), room = Number(s.resistanceRoom);
-    const why = s._ready ? (s.trigger || 'All checks pass') : (s.watchReason || s.trigger || '');
-    return `<div class="pl-row ${s._ready ? 'ready' : ''}" data-sym="NSE:${escHtml(s.sym)}" data-name="${escHtml(s.sym)}" title="Open ${escHtml(s.sym)}">
-      <div class="pl-main">
-        <div class="pl-sym">${escHtml(s.sym)} <span class="pl-tag ${s._ready ? 'ready' : 'watch'}">${s._ready ? 'READY' : 'WATCH'}</span>${screenerResultsChip(s)}</div>
-        <div class="pl-setup">${escHtml(s.pickedSetup || s.selectedStrategy || 'Setup')} · ₹${f(s.price)}${Number.isFinite(+s.weekChg) ? ` · <span style="color:${+s.weekChg >= 0 ? 'var(--bull)' : 'var(--bear)'}">${+s.weekChg >= 0 ? '+' : ''}${s.weekChg}% wk</span>` : ''}${s.sector ? ` · ${escHtml(s.sector)}` : ''}</div>
-        <div class="pl-why">${escHtml(String(why).slice(0, 140))}</div>
-      </div>
-      <div class="pl-levels">
-        <div><span>Entry</span><b>${f(p.entry)}</b></div>
-        <div><span>SL</span><b style="color:var(--bear)">${f(p.stop)}</b></div>
-        <div><span>T1</span><b style="color:var(--bull)">${f(p.target)}</b></div>
-        <div><span>R:R</span><b style="color:${rr >= SWING_MIN_RR ? 'var(--bull)' : 'var(--neu)'}">${Number.isFinite(rr) ? rr.toFixed(2) : '--'}</b></div>
-        <div><span>Room</span><b style="color:${room >= 3 ? 'var(--tx)' : 'var(--neu)'}">${Number.isFinite(room) ? room.toFixed(1) + '%' : '--'}</b></div>
-      </div>
-    </div>`;
-  };
-  const html = groups.map(g => {
-    const list = all.filter(s => pickListGroup(s) === g.n).sort((a,b) => (b._ready - a._ready) || ((+b.rankScore || 0) - (+a.rankScore || 0)));
-    return `<div class="pl-group ${g.cls}">
-      <div class="pl-head"><div><div class="pl-title">${g.title}</div><div class="pl-sub">${g.sub}</div></div><div class="pl-count">${list.length}</div></div>
-      ${list.length ? list.map(row).join('') : '<div class="pl-empty">None in today\'s scan.</div>'}
-    </div>`;
-  }).join('');
-  const ts = data.generatedAt ? new Date(data.generatedAt) : null;
-  const when = ts ? ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) : '--';
-  tc.innerHTML = `${screenerModeSwitch('picklist')}${screenerContextHtml(data)}
-    <div class="aib" style="font-size:.72rem;margin-bottom:10px">Scan of ${when}${source === 'server' ? '' : ' (saved today - Refresh before trading)'} · ${all.length} stocks · READY first in each group, then the scan rank. Tap a stock for its full Overview.</div>
-    ${html}`;
-  tc.querySelectorAll('.pl-row[data-sym]').forEach(el => el.addEventListener('click', () => {
-    const sym = el.dataset.sym;
-    loadInstrument(sym, CLIENT_NAMES[sym.replace('NSE:','')] || el.dataset.name);
-  }));
 }
 
 /* ── MONTHLY MOMENTUM (separate from the swing screener) ──
@@ -4593,8 +4409,6 @@ function renderMomentum(d){
     </div>`;
 }
 
-/* ── BACKTEST: the screener's READY / Ready-on-limit rules replayed on the last ~15 months (server /api/backtest) ── */
-
 /* ── Screener vs Overview: every listed stock checked against its own Overview (bias, setup, R:R, action) ── */
 async function checkAllVsOverview(){
   const data = MY_TRADE_CACHE_UI; if(!data) return;
@@ -4624,14 +4438,6 @@ async function checkAllVsOverview(){
       if(why.length && sp > 0 && op > 0 && Math.abs(op - sp) / sp > 0.001) why.push(`price moved ${op > sp ? '+' : ''}${((op - sp) / sp * 100).toFixed(2)}% since the scan (₹${fmt(sp)} → ₹${fmt(op)}) - Refresh the scan to compare like for like`);
     }
     if(why.length) bad.push(`<b>${escHtml(s.sym)}</b>: ${escHtml(why.join(', '))}`); else ok++;
-  }
-  for(const q of []){   /* Quick bounce removed 23 Nov 2026 */
-    if(!live()) return;
-    box.innerHTML = `Checking quick bounce ${q.sym} against its Overview…`;
-    const sym = 'NSE:' + q.sym; delete OVERVIEW_VERDICT[sym];
-    let v = null; try { v = await probeOverviewVerdict(sym, CLIENT_NAMES[q.sym] || q.sym); } catch {}
-    n++; names.push(`${q.sym} (quick bounce)`);
-    if(!v) bad.push(`<b>${escHtml(q.sym)}</b>: Overview did not load`); else if(!v.quick) bad.push(`<b>${escHtml(q.sym)}</b>: no quick bounce on the Overview`); else ok++;
   }
   box.innerHTML = `<b style="color:${bad.length ? 'var(--bear)' : 'var(--bull)'}">Screener vs Overview: ${ok} of ${n} match</b>${bad.length ? ` · ${bad.join(' · ')}` : ` - same action, signal and stop on every stock (${escHtml(names.join(', '))}).`}`;
 }
@@ -4686,69 +4492,6 @@ function screenerModeSwitch(active='mytrade') {
   </div>`;
 }
 
-
-function renderStockOfWeekScreener(data, source='server') {
-  const tc = document.getElementById('tc');
-  const readySyms = new Set((data.picks || data.screen1 || []).map(x => String(x.sym || '').toUpperCase()));
-  const picks = (data.watchlist || data.screen2 || []).filter(x => !readySyms.has(String(x.sym || '').toUpperCase()));
-  const ts = data.generatedAt ? new Date(data.generatedAt) : new Date();
-  const cacheLabel = source === 'local' ? 'Daily local cache' : source === 'memory' ? 'Session cache' : 'Fresh server scan';
-  const tsStr = ts.toLocaleTimeString('en-IN', {hour:'2-digit', minute:'2-digit'}) + ', ' + ts.toLocaleDateString('en-IN');
-  const stratScore = (obj) => Number.isFinite(+obj?.score) ? Math.round(+obj.score) : '-';
-  const stratColor = (obj) => {
-    const v = +obj?.score;
-    return Number.isFinite(v) ? (v >= 70 ? 'var(--bull)' : v >= 55 ? 'var(--neu)' : 'var(--tx3)') : 'var(--tx3)';
-  };
-  const cards = picks.map((s,i)=>{
-    const chgColor = s.weekChg >= 0 ? 'var(--bull)' : 'var(--bear)';
-    const sign = s.weekChg >= 0 ? '+' : '';
-    const score = Math.round(+s.finalQualification || ((+s.score || 0) * 100));
-    const setupTxt = s.setup || 'Base screen match';
-    /* Why the stock is on the Watchlist. A stock that passes every stock-level check and is held back only by
-       the market filter or a results date used to read "Need Confirmation", which looked like a missing check. */
-    const watchOnlySetup = SwingPlan.WATCH_ONLY.has(s.pickedSetup || '');
-    const status = s.readyCore && s.regimeBlock ? {t:'Stock ready · waiting for market', c:'var(--acc)',
-        why:'Passes every stock check. Becomes READY when the market filter allows fresh longs (Nifty above EMA50 with breadth 40%+, or a broad recovery).'}
-      : s.readyCore && s.resultsBlock ? {t:'Stock ready · results soon', c:'var(--acc)', why: s.watchReason || 'Passes every stock check; results are within 5 trading days.'}
-      : /ranked below the top 10/i.test(s.watchReason || '') ? {t:'READY · ranked below top 10', c:'var(--bull)', why:'Passes every check, including the market filter; only the top 10 are listed as Screener Match.'}
-      : watchOnlySetup ? {t:`Alert only · ${s.pickedSetup}`, c:'var(--neu)', why: s.watchReason || 'Watch-only setup: wait for a breakout close or a pullback setup.'}
-      : {t:`Needs confirmation · ${setupTxt}`, c:'var(--neu)', why: s.watchReason || 'Near-ready, not trade-ready yet'};
-    const alertTxt = status.why;
-    const alertColor = status.c;
-    const ss = s.strategyScores || {};
-    return `<div class="scr-card" data-sym="NSE:${s.sym}" data-name="${s.sym}" title="Click to analyse ${s.sym}">
-      <div class="scr-rank">#${i+1}</div>
-      <div class="scr-top">
-        <div class="scr-title-wrap">
-          <div class="scr-sym"><span class="scr-sym-text">${s.sym}</span></div>
-          <div class="scr-pattern" style="color:${status.c}">${escHtml(status.t)}</div>${screenerResultsChip(s)}
-        </div>
-        <div class="scr-price-wrap">
-          <div class="scr-price">₹${fmt(s.price)}</div>
-          <div class="scr-chg" style="color:${chgColor}">${sign}${s.weekChg}% week</div>
-        </div>
-      </div>
-      <div style="margin-top:8px;padding:6px 9px;border:1px solid var(--brdl);border-radius:var(--rs);background:rgba(255,255,255,.03);font-size:.74rem;font-weight:900;color:${alertColor}" title="${s.alertReason || 'Same eligible large-cap scan, but Ready conditions have not fully passed yet'}">Why on Watchlist: ${escHtml(alertTxt)}</div>
-      ${screenerCardGateHtml(s)}
-      ${screenerTriggerHtml(s)}
-      <div class="scr-metrics">
-        <div class="scr-met"><div class="scr-ml">Score</div><div class="scr-mv" title="Server shortlist score uses neutral market/event credit; open full analysis for live /100 score" style="color:${score>=70?'var(--bull)':score>=55?'var(--neu)':'var(--bear)'}">${score}%</div></div>
-        <div class="scr-met" title="Current price must be equal to or above EMA20"><div class="scr-ml">EMA20</div><div class="scr-mv" style="color:${+s.price>=+s.e20?'var(--bull)':'var(--bear)'}">₹${fmt(s.e20)}</div></div>
-        <div class="scr-met" title="Current price vs EMA50"><div class="scr-ml">EMA50</div><div class="scr-mv" style="color:${+s.price>=+s.e50?'var(--bull)':'var(--bear)'}">₹${fmt(s.e50)}</div></div>
-        <div class="scr-met" title="EMA20 Pullback score"><div class="scr-ml">EMA20 PB</div><div class="scr-mv" style="color:${stratColor(ss.emaPullback)}">${stratScore(ss.emaPullback)}</div></div>
-        <div class="scr-met" title="EMA50 Deep Pullback score"><div class="scr-ml">EMA50 PB</div><div class="scr-mv" style="color:${stratColor(ss.ema50DeepPullback)}">${stratScore(ss.ema50DeepPullback)}</div></div>
-        <div class="scr-met" title="Support / Resistance Bounce score"><div class="scr-ml">S/R Bounce</div><div class="scr-mv" style="color:${stratColor(ss.supportBounce)}">${stratScore(ss.supportBounce)}</div></div>
-      </div>
-
-    </div>`;
-  }).join('');
-  tc.innerHTML = `${screenerModeSwitch('stockweek')}
-    ${screenerContextHtml(data)}
-    ${cards ? `<div class="scr-grid">${cards}</div>` : '<div class="scr-empty">No Watchlist confirmation stocks today.</div>'}`;
-  tc.querySelectorAll('.scr-card[data-sym]').forEach(el=>{
-    el.addEventListener('click',()=>loadInstrument(el.dataset.sym, CLIENT_NAMES[el.dataset.sym.replace('NSE:','')] || el.dataset.name || el.dataset.sym.replace('NSE:','')));
-  });
-}
 
 /* ══════════════════════════════════════════════════════════════════
    SECTOR HEATMAP TAB
@@ -5245,7 +4988,6 @@ function selectActiveFourStrategySetup({setupPool, preferredBias, price, e20, e5
   const candidates = sameDirPool.length ? sameDirPool : pool;
   const txt = s => `${s?.name||''} ${s?.type||''} ${s?.entry||''} ${s?.rationale||''}`.toLowerCase();
   const findBy = re => candidates.find(s => re.test(txt(s)));
-  const nearPct = (a,b,pct=1.25)=>Number.isFinite(a)&&Number.isFinite(b)&&Math.abs(a-b)/Math.max(Math.abs(b),1)*100<=pct;
   const levelValue = v => Number(v && typeof v === 'object' ? v.v : v);
   const nearestSupport = levelValue(srLevels?.nearestSupport ?? srLevels?.support);
   const nearestResistance = levelValue(srLevels?.nearestResistance ?? srLevels?.resistance);
@@ -6114,7 +5856,7 @@ async function tabOverview(sym) {
   if(sgPlan?.active){
     actionBadge = 'READY'; decisionClass = 'qualified'; actionBadgeSub = sgPlan.g.setup;
     decisionMain = `READY · ${sgPlan.g.setup}`;
-    actionLine = `${escHtml(sgPlan.g.why)}. Signal at ${sgPlan.signalDay === 'yesterday' ? "yesterday's" : "today's"} close: buy ${sgPlan.signalDay === 'yesterday' ? 'now' : 'near the close or at the next open'} ~${fmt(sgPlan.g.entry)}, stop ${fmt(sgPlan.g.stop)}, sell all at 2R ${fmt(sgPlan.g.target)} or the close of day 15.`;
+    actionLine = `${escHtml(sgPlan.g.why)}. Signal at ${sgPlan.signalDay === 'yesterday' ? "yesterday's" : "today's"} close: buy ${sgPlan.signalDay === 'yesterday' ? 'now' : 'near the close or at the next open'} ~${fmt(sgPlan.g.entry)}, stop ${fmt(sgPlan.g.stop)}, then trail 4 ATR under the highest close (sell on a close below EMA20 after day 5, at most 60 days).`;
   } else if(!isMCXSymbol(sym) && !isIndexSymbol(sym)){
     actionBadge = 'WAIT'; decisionClass = 'conditional'; actionBadgeSub = sgPlan?.forming ? 'Forming today' : 'No tested signal';
     decisionMain = sgPlan?.forming ? 'Signal forming - confirm at the close' : 'Wait - no tested swing signal';
@@ -6133,29 +5875,14 @@ async function tabOverview(sym) {
     : actionBadge === 'WAIT' ? 'Do not enter now'
     : 'Watchlist only';
   const activeTradeAllowed = actionBadge === 'READY';
-  /* Ready on limit (same rule as the screener): a pullback / bounce plan whose only failing checks are about
-     price - R:R under 1.25 from here, late from EMA20, or the Fresh Entry Score that only the R:R points keep
-     under 70 (re-scored at the limit's R:R). */
-  const limitPlan = null;   /* the old buy-limit plan belonged to the untested READY (removed 20 Nov 2026) */
-  /* Quick Bounce (RSI-2) on completed bars - the same function and filters as the screener's list. */
-  /* Removed from the app 23 Nov 2026 (it lost money in the 10-year test): the card no longer shows. */
-  const qbPlan = (() => {
-    return null;
-    if(isMCXSymbol(sym) || isIndexSymbol(sym)) return null;
-    const d = CUR_DATA.daily, e = getConfirmedDailyIndex(d, sym);
-    const q = SwingPlan.quickBounce({ C: d.C.slice(0, e + 1), H: d.H.slice(0, e + 1), L: d.L.slice(0, e + 1) });
-    if(!q?.ok) return null;
-    const niftyOk = marketRegime?.aboveSma200 !== false;
-    return { ...q, niftyOk, active: niftyOk && !resultsSoon && !swingCtx?.events?.block };
-  })();
-  if(OVERVIEW_VERDICT[sym]) OVERVIEW_VERDICT[sym].quick = !!qbPlan?.active;
   /* Pattern breakout: the screener's separate list (double bottom / flat base), its own tested entry, stop and exit.
      It does not need the swing READY gate, so "WAIT" above and a breakout here can both be right. */
   const pbPlan = (() => {
     if(isMCXSymbol(sym) || isIndexSymbol(sym)) return null;
     const d = CUR_DATA.daily, n = d.C?.length || 0; if(n < 80) return null;
-    const pe50 = emaLast(d.C, 50), pe200 = emaLast(d.C, 200), last = d.C[n-1];
-    if(!(last > pe50 && pe50 > pe200)) return null;
+    /* same entry filter as the screener: a Bullish bias (price > EMA50 > EMA200, not choppy) */
+    if(bias !== 'Bullish') return null;
+    const last = d.C[n-1];
     const pb = SwingPlan.patternBreakout({ H: d.H, L: d.L, C: d.C, V: d.V, atr: calcATRFromBars(d.C, d.H, d.L, last, d.C[n-2], 14) });
     if(!pb) return null;
     const niftyOk = marketRegime?.trendUp !== false;
@@ -6175,8 +5902,8 @@ async function tabOverview(sym) {
   /* Fresh entry and Hold scores (SwingPlan.stockScores) from the Analysis trend, the tested factors, sector and news
      (news is loaded after the page, only when you open the stock). */
   const scoreCtx = isStockOv ? {
-    signal: sgPlan?.active ? 'ready' : pbPlan?.active ? 'pattern' : boPlan?.active ? 'breakout' : qbPlan?.active ? 'quick' : (sgPlan?.near || sgPlan?.forming) ? 'near' : null,
-    stop: sgPlan?.active ? sgPlan.g.stop : pbPlan?.active ? pbPlan.stop : boPlan?.active ? boPlan.stop : qbPlan?.active ? qbPlan.stop : null,
+    signal: sgPlan?.active ? 'ready' : pbPlan?.active ? 'pattern' : boPlan?.active ? 'breakout' : (sgPlan?.near || sgPlan?.forming) ? 'near' : null,
+    stop: sgPlan?.active ? sgPlan.g.stop : pbPlan?.active ? pbPlan.stop : boPlan?.active ? boPlan.stop : null,
     niftyUp: marketRegime ? marketRegime.trendUp !== false : null, rs3m: relStrength?.rs3m ?? null, tf: tfDen ? { bull: tfBull, denom: tfDen } : null,
     sectorUp: swingCtx?.sectorStrength?.ret1m != null && Number.isFinite(+swingCtx.sectorStrength.ret1m) ? +swingCtx.sectorStrength.ret1m > 0 : null,
     eventsClear: swingCtx ? !resultsSoon && !swingCtx.events?.block : null,
@@ -6250,15 +5977,14 @@ async function tabOverview(sym) {
   /* Same fill as the Overview R:R (rrFromPrice): pullbacks / bounces are bought at the current price, breakouts at
      the trigger if it is above. The EMA / support level is the zone, not the fill - sizing from it understated
      the risk (e.g. stop 4 away sized as 2 away = 1.6x the chosen Risk %). */
-  const plannedEntry = plannedOk ? (limitPlan ? limitPlan.price : rrFromPrice) : null;   /* a limit plan fills at the limit */
-  PLAN_LEVELS[sym] = limitPlan ? { entry: limitPlan.price, stop: limitPlan.stop, t1: limitPlan.target, label: 'Limit' }
-    : activeTradeAllowed ? { entry: price, stop: activeStopLoss, t1: activeTarget, label: 'Entry' }
+  const plannedEntry = plannedOk ? rrFromPrice : null;
+  PLAN_LEVELS[sym] = activeTradeAllowed ? { entry: price, stop: activeStopLoss, t1: activeTarget, label: 'Entry' }
     : plannedOk ? { entry: plannedEntry, stop: +strategyPlan.stopLoss, t1: +strategyPlan.target1, label: 'Planned' } : null;
   const positionCalc = buildPositionSizeCalc(activeTradeAllowed
     ? {id:`poscalc_${sym}`, bias: sgPlan?.active ? 'Bullish' : bias, price, target1:activeTarget, stopLoss:activeStopLoss, targetLabel:activeTargetLabel}
     : plannedOk
       ? {id:`poscalc_${sym}`, bias, price:plannedEntry, target1:+strategyPlan.target1, stopLoss:+strategyPlan.stopLoss, targetLabel:'T1 (planned)',
-         note:`Sized from the planned ${escHtml(strategyPlan.setupName || 'setup')}${limitPlan ? ' (buy limit)' : ''}: entry ${fmt(plannedEntry)} · SL ${fmt(strategyPlan.stopLoss)} · T1 ${fmt(strategyPlan.target1)}. ${limitPlan ? 'Quantity for the buy limit - it fills only if price comes back to it.' : `Decision is ${actionBadge} - quantity only, enter when it turns READY.`}`}
+         note:`Sized from the planned ${escHtml(strategyPlan.setupName || 'setup')}: entry ${fmt(plannedEntry)} · SL ${fmt(strategyPlan.stopLoss)} · T1 ${fmt(strategyPlan.target1)}. Decision is ${actionBadge} - quantity only, enter when it turns READY.`}
       : {id:`poscalc_${sym}`, bias:'Sideways', price, target1:null, stopLoss:null, targetLabel:'Target'});
   const rejectHtml = ''; /* Removed Trade Filter Warnings card: details already exist in decision/reason fields. */
   const qHtml = quality.map(q=>`<div class="tp-qrow"><div><strong>${q.name}</strong><span>${q.note}</span></div><b>${q.pts}/${q.max}</b></div>`).join('');
@@ -6291,14 +6017,6 @@ async function tabOverview(sym) {
         : sgPlan?.active ? 'Also a READY signal - follow the READY plan above.' : `The breakout is there, but it is paused: ${!boPlan.niftyOk ? 'Nifty is not in its uptrend' : 'results or a corporate event are close'}.`}</div>
       ${boPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup:'20-day breakout', entry: boPlan.entry, stop: boPlan.stop, t1: boPlan.target, exitDays: 15})})">📒 I took this trade</button>` : ''}
     </div>` : ''}
-    ${qbPlan ? `<div class="tp-limit-card tp-qb-card${qbPlan.active ? '' : ' paused'}">
-      <div class="tp-limit-head"><span class="pl-tag ${qbPlan.active ? 'watch' : 'low'}">QUICK BOUNCE · WATCH ONLY · RSI-2 ${qbPlan.rsi2}</span> ${qbPlan.active ? `Buy near <b>₹${fmt(qbPlan.close)}</b>` : 'Paused'}</div>
-      <div class="tp-limit-sub">${qbPlan.active
-        ? `Short dip in an uptrend: close above its 50-day (${fmt(qbPlan.sma50)}) and 200-day (${fmt(qbPlan.sma200)}) averages, 2-day RSI ${qbPlan.rsi2} (under 10). Buy at the next open, stop ₹${fmt(qbPlan.stop)} (2.5 × ATR), sell at the first close above the 5-day average (₹${fmt(qbPlan.sma5)} today - it moves every day) or after 10 trading days. Separate from the swing plan below. Backtest: about 2 in 3 trades win, +0.3% a trade after costs, 3-4 days - but over 10 years with at most 5 positions at a time it lost money overall, so small size only.`
-        : `RSI-2 is ${qbPlan.rsi2}, but the setup is paused: ${!qbPlan.niftyOk ? 'Nifty is below its 200-day average' : 'results are due within 5 trading days'}.`}</div>
-      ${qbPlan.active ? `<button type="button" class="idea-btn" style="margin:6px 0" onclick="openTradeForm(${jsArg({kind:'stock', sym, name, setup:'Quick Bounce', entry:qbPlan.close, stop:qbPlan.stop, t1: qbPlan.sma5 > qbPlan.close ? qbPlan.sma5 : null})})">📒 I took this trade</button>` : ''}
-      ${qbPlan.active ? buildPositionSizeCalc({id:`poscalc_qb_${sym}`, bias:'Bullish', price:qbPlan.close, target1: qbPlan.sma5 > qbPlan.close ? qbPlan.sma5 : qbPlan.close + qbPlan.atr, stopLoss:qbPlan.stop, targetLabel:'5-day avg (est.)', note:'Sized from the Quick Bounce stop (2.5 × ATR). The exit is the first close above the 5-day average, so the gain shown is an estimate.'}) : ''}
-    </div>` : ''}
     <div class="tp-decision ${decisionClass}">
       <div class="tp-decision-top">
         <div>
@@ -6308,7 +6026,7 @@ async function tabOverview(sym) {
         <div class="tp-action-badge">
           <div class="tp-action-word">${actionBadge}</div>
           <div class="tp-action-lbl">${actionBadgeSub}</div>
-          <div class="tp-action-lbl" title="Score = Fresh Entry Score (the gate needs 70+). Confidence = 55% score + 25% R:R + 20% trend strength, minus warnings, so it is usually below the score.">${isStockOv ? (sgPlan?.g?.ok ? `Risk ${fmt(sgPlan.g.riskPct)}% · exit 2R or day 15` : 'Tested READY gate') : `Score ${qScore}/100 · Confidence ${confidence}/100`}</div>
+          <div class="tp-action-lbl" title="Score = Fresh Entry Score (the gate needs 70+). Confidence = 55% score + 25% R:R + 20% trend strength, minus warnings, so it is usually below the score.">${isStockOv ? (sgPlan?.g?.ok ? `Risk ${fmt(sgPlan.g.riskPct)}% · trailing exit` : 'Tested READY gate') : `Score ${qScore}/100 · Confidence ${confidence}/100`}</div>
         </div>
       </div>
       ${topDecisionDetails}
@@ -6323,10 +6041,10 @@ async function tabOverview(sym) {
           <div class="tp-kicker-row">
             <div class="tp-kicker">Trade Plan</div>
             <div class="tp-actions">
-              <button type="button" class="tp-share-btn tp-alert-btn" onclick="openAlertPopup(${jsArg(sym)}, ${jsArg(isMCXSymbol(sym) ? {} : (isStockOv ? (sgPlan?.g?.ok ? {entry: sgPlan.g.entry, sl: sgPlan.g.stop, t1: sgPlan.g.target} : {}) : {limit:limitPlan ? limitPlan.price : null, entry:+strategyPlan?.entryPrice || null, sl:+stopLoss || null, t1:+target1 || null}))})" title="Price alert for ${escHtml(name)}" aria-label="Set a price alert">🔔${ALERTS.some(a => a.sym === sym && !a.triggered) ? '<i class="tp-alert-dot"></i>' : ''}</button>
+              <button type="button" class="tp-share-btn tp-alert-btn" onclick="openAlertPopup(${jsArg(sym)}, ${jsArg(isMCXSymbol(sym) ? {} : (isStockOv ? (sgPlan?.g?.ok ? {entry: sgPlan.g.entry, sl: sgPlan.g.stop, t1: sgPlan.g.target} : {}) : {limit:null, entry:+strategyPlan?.entryPrice || null, sl:+stopLoss || null, t1:+target1 || null}))})" title="Price alert for ${escHtml(name)}" aria-label="Set a price alert">🔔${ALERTS.some(a => a.sym === sym && !a.triggered) ? '<i class="tp-alert-dot"></i>' : ''}</button>
               <a class="tp-share-btn" href="${shareUrl}" target="_blank" rel="noopener" title="Share trade plan on WhatsApp" aria-label="Share trade plan on WhatsApp">💬</a>
-              ${!isMCXSymbol(sym) && (bias === 'Bullish' || sgPlan?.active) && (activeTradeAllowed || plannedOk || limitPlan) ? `<button type="button" class="tp-share-btn" onclick="openTradeForm(${jsArg((() => { const e = limitPlan ? limitPlan.price : activeTradeAllowed ? price : plannedEntry, st = limitPlan ? limitPlan.stop : activeTradeAllowed ? activeStopLoss : +strategyPlan.stopLoss;
-                return {kind:'stock', sym, name, setup: sgPlan?.active ? sgPlan.g.setup : strategyPlan?.setupName || '', entry: e, stop: st, t1: sgPlan?.active ? null : +e > +st ? R2(+e + 2 * (+e - +st)) : null, t2: limitPlan ? limitPlan.target : activeTradeAllowed ? activeTarget : +strategyPlan.target1, exitDays: sgPlan?.active ? SwingPlan.TRAIL.maxDays : 15, ...(sgPlan?.active ? { exitMode: 'trail' } : {})}; })())})" title="I took this trade - add it to My trades (stop / target alerts)" aria-label="I took this trade">📒</button>` : ''}
+              ${!isMCXSymbol(sym) && (bias === 'Bullish' || sgPlan?.active) && (activeTradeAllowed || plannedOk) ? `<button type="button" class="tp-share-btn" onclick="openTradeForm(${jsArg((() => { const e = activeTradeAllowed ? price : plannedEntry, st = activeTradeAllowed ? activeStopLoss : +strategyPlan.stopLoss;
+                return {kind:'stock', sym, name, setup: sgPlan?.active ? sgPlan.g.setup : strategyPlan?.setupName || '', entry: e, stop: st, t1: sgPlan?.active ? null : +e > +st ? R2(+e + 2 * (+e - +st)) : null, t2: activeTradeAllowed ? activeTarget : +strategyPlan.target1, exitDays: sgPlan?.active ? SwingPlan.TRAIL.maxDays : 15, ...(sgPlan?.active ? { exitMode: 'trail' } : {})}; })())})" title="I took this trade - add it to My trades (stop / target alerts)" aria-label="I took this trade">📒</button>` : ''}
             </div>
           </div>
           <div class="tp-title">${escHtml(name)}</div>
@@ -6350,7 +6068,7 @@ async function tabOverview(sym) {
         ${planItem('Daily + Weekly Trend', trendCombo, trendSub, trendClass)}`}
         ${sgPlan?.active ? planItem('Exit Plan', `Stop-loss ${fmt(sgPlan.g.stop)}, then trail it 4 ATR under the highest close · sell on a close below EMA20 after day 5 · at most 60 days`, 'Tested exit (10-year backtest: +0.57R a trade vs +0.18R at 2R) - the 09:20 alert tells you each new stop', 'plan-exit') : activeTradeAllowed && strategyPlan?.setup?.exit ? planItem('Exit Plan', `Sell all at 2R ${escHtml(strategyPlan.setup.target2R || '--')} or day 15`, escHtml(strategyPlan.setup.exit.replace(/^Exit plan( \(tested\))?:\s*/,'')), 'plan-exit') : ''}
       </div>
-      ${activeTradeAllowed || limitPlan || plannedOk ? positionCalc : `<details class="tp-more"><summary>Position size calculator (fills in when a trade is ready)</summary>${positionCalc}</details>`}
+      ${activeTradeAllowed || plannedOk ? positionCalc : `<details class="tp-more"><summary>Position size calculator (fills in when a trade is ready)</summary>${positionCalc}</details>`}
       <details class="tp-more"><summary>More details: ${isStockOv ? 'price and volume status' : 'Fresh Entry / Hold score, price and volume status'}</summary>
       ${isStockOv ? '' : scoreMini}
       <div class="tp-status-grid">
@@ -7199,7 +6917,7 @@ document.addEventListener('DOMContentLoaded',()=>{
     show('ls','none'); show('ih','none'); show('tbar','none'); show('tc','none'); show('es','flex');
     if(view === 'indices' || view === 'commodities') document.getElementById('view-' + view)?.classList.add('selector-open');   /* nothing chosen yet: show the list */
     const copy = {
-      indices: ['Select an index', 'Pick Nifty 50, Nifty Next 50 or Nifty Midcap 150. Sector indices are on the Markets page (Sectors).'],
+      indices: ['Select an index', 'Pick Nifty 50, Nifty Next 50 or Nifty Midcap 150. Sector indices: open an index, then News & Sectors.'],
       stocks: ['Search a stock', 'Type a symbol in the search box, open a recent stock, or open the Screener (top menu) for swing candidates and the monthly momentum list.'],
       commodities: ['Select a commodity', 'Pick Gold Petal, Crude Oil or Natural Gas - the three with a backtested buy setup.']
     }[view];
