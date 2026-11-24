@@ -69,10 +69,12 @@ html[class*="theme-"] .bdg.neutral,html[class*="theme-"] .bdg.na{background:var(
 
 /* phone: one-line scrolling nav, a lower header; the content panel (.ml) scrolls, so the sub-tab bars freeze at its top */
 @media (max-width:820px){
-  html[class*="theme-"] .hdr{padding:6px 10px 6px!important;gap:4px!important}
+  /* home-screen app: the page runs under the phone status bar (black-translucent), so the header starts below it */
+  html[class*="theme-"] .hdr{padding:calc(6px + env(safe-area-inset-top)) 10px 6px!important;gap:4px!important}
   html[class*="theme-"] .tnav{flex-wrap:nowrap!important;overflow-x:auto!important;scrollbar-width:none;gap:6px!important;-webkit-overflow-scrolling:touch}
   html[class*="theme-"] .tnav::-webkit-scrollbar{display:none}
-  html[class*="theme-"] .nbtn{padding:5px 13px!important;font-size:.8rem!important;min-height:30px!important;white-space:nowrap;flex:0 0 auto}
+  /* each menu button as wide as its word (an older rule made all five 66px, so "Screener" spilled over its edge) */
+  html[class*="theme-"] .nbtn{padding:5px 8px!important;font-size:.78rem!important;min-height:30px!important;white-space:nowrap;flex:1 1 auto!important;width:auto!important;min-width:0!important;text-align:center!important}
   html[class*="theme-"] .hdr-right .mpill,html[class*="theme-"] .hdr-right button{font-size:.66rem!important;padding:3px 9px!important}
   html[class*="theme-"] .logo{font-size:1.05rem!important}
   html[class*="theme-"] .analysis-bar,html[class*="theme-"] .scr-tabs-row{top:0!important;overflow-x:auto;flex-wrap:nowrap!important;scrollbar-width:none}
@@ -132,6 +134,11 @@ html[class*="theme-"] .es .ei{color:var(--acc)!important;opacity:.85}
   html[class*="theme-"] .pl-head{padding:10px 11px!important}
   html[class*="theme-"] .pl-title{font-size:.92rem!important}
 }
+
+/* notifications (showToast): desktop top right, below any status bar; phone at the bottom above the tab bar, so
+   they never sit under the status bar or cover the header */
+.td-toast{position:fixed;top:calc(14px + env(safe-area-inset-top));right:16px;z-index:9999;max-width:320px}
+@media (max-width:820px){ .td-toast{top:auto;bottom:calc(72px + env(safe-area-inset-bottom));left:10px;right:10px;max-width:none} }
 
 /* ---------- 2. Themes ---------- */
 /* Midnight Pro - the earlier navy look, cleaned up: flat navy cards, emerald accent, Inter */

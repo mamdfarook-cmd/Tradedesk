@@ -1,3 +1,12 @@
+# Phone fixes: menu text centred, header clear of the status bar, notifications (24 Nov 2026 · page version 24 Nov 2026 · 4)
+
+- Top menu on a phone: an older rule made all five buttons 66px wide, so "Screener" spilled past its edge and looked
+  off-centre; each button now fits its word and all five fit without scrolling.
+- Home-screen app: the page runs under the phone status bar (black-translucent), and the 24 Nov · 3 header lost the
+  safe-area padding, so the logo, NSE Holiday and Logout sat under the clock; the header now starts below it.
+- Notifications (price alerts, backup messages): on a phone they appear at the bottom above the tab bar, full width,
+  never under the status bar or over the header; on desktop top right, below any status bar.
+
 # Midnight Pro theme, compact phone layout, unused CSS removed (24 Nov 2026 · page version 24 Nov 2026 · 3)
 
 - New look (td-theme.css, the last style layer; chosen from 3 previews): flat navy cards, emerald accent, Inter font

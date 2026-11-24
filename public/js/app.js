@@ -3430,7 +3430,8 @@ function sendNotification(title, body, type='bull', opts={}) {
 function showToast(title, body, type) {
   const t = document.createElement('div');
   const col = type==='bull'?'var(--bull)':type==='bear'?'var(--bear)':'var(--neu)';
-  t.style.cssText = `position:fixed;top:20px;right:20px;z-index:9999;background:var(--bgp);border:2px solid ${col};border-radius:10px;padding:14px 18px;max-width:320px;box-shadow:0 4px 20px rgba(0,0,0,.4);animation:slideIn .3s ease`;
+  t.className = 'td-toast';   /* position: td-theme.css (below the phone status bar) */
+  t.style.cssText = `background:var(--bgp);border:2px solid ${col};border-radius:10px;padding:14px 18px;box-shadow:0 4px 20px rgba(0,0,0,.4);animation:slideIn .3s ease`;
   t.innerHTML = `<div style="font-weight:700;color:${col};font-size:.9rem;margin-bottom:4px">${escHtml(title)}</div><div style="font-size:.78rem;color:var(--tx2)">${escHtml(body)}</div>`;
   document.body.appendChild(t);
   setTimeout(() => t.remove(), 6000);
