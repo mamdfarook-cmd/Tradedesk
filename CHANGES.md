@@ -1,3 +1,8 @@
+# Angel One login fix (25 Nov 2026 · page version 25 Nov 2026 · 2)
+
+- "Connect Angel One" showed Angel One's "Invalid redirect url" page: the login link now carries redirect_url
+  (APP_URL + /api/smartapi/callback), which Angel One requires even when My Apps has the same address.
+
 # Angel One SmartAPI replaces Zerodha Kite (25 Nov 2026 · page version 25 Nov 2026 · 1)
 
 - Live option premiums (Nifty, Bank Nifty, FinNifty, every expiry), the NSE index values and India VIX now come from

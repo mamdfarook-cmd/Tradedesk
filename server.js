@@ -861,7 +861,9 @@ function angelLoginUrl() {
   const st = require('crypto').randomBytes(16).toString('hex'), now = Date.now();
   for (const [k, t] of ANGEL_LOGINS) if (now - t > 10 * 60e3) ANGEL_LOGINS.delete(k);
   ANGEL_LOGINS.set(st, now);
-  return `${ANGEL.login}?api_key=${encodeURIComponent(ANGEL.key)}&state=${st}`;
+  /* redirect_url is required: without it Angel One answers "Invalid redirect url" even when My Apps has the same address.
+     It must match the Redirect URL saved in My Apps exactly (APP_URL on Render + /api/smartapi/callback). */
+  return `${ANGEL.login}?api_key=${encodeURIComponent(ANGEL.key)}&redirect_url=${encodeURIComponent((APP_URL || '') + '/api/smartapi/callback')}&state=${st}`;
 }
 async function angelCallback(p) {
   const now = Date.now(), st = p.get('state');
