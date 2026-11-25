@@ -1,3 +1,12 @@
+# Angel One automatic login (25 Nov 2026 · page version 25 Nov 2026 · 3)
+
+- No daily OTP: with SMARTAPI_CLIENT_CODE, SMARTAPI_PIN and SMARTAPI_TOTP_SECRET on Render, TradeDesk logs in to Angel
+  One by itself (TOTP made from the secret key, RFC 6238 - checked against the standard test values): a minute after
+  every start, at 08:40 on trading days and whenever data is needed. The 08:45 reminder only comes if that failed.
+- Brakes against an account lock: one try at a time, 30 minutes after a failed try, at most 3 failed tries a day; a
+  rejected PIN / TOTP / client code stops automatic login until the value is fixed. The card shows the state.
+- Without the three values nothing changes: the "Connect Angel One" button works as before.
+
 # Angel One login fix (25 Nov 2026 · page version 25 Nov 2026 · 2)
 
 - "Connect Angel One" showed Angel One's "Invalid redirect url" page: the login link now carries redirect_url

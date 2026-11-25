@@ -20,13 +20,31 @@ TradeDesk only READS market data. It never places, changes or cancels an order, 
 2. Render dashboard -> your tradedesk service -> Environment -> Add Environment Variable:
      SMARTAPI_API_KEY = the "API Key" from the same app page
    Save (Render restarts the app). Do not paste it into chat, GitHub or the upload zip.
-   Not needed and never asked for: your client code, PIN, TOTP or the API secret.
+   Not needed for the daily button: your client code, PIN, TOTP or the API secret (only the optional AUTOMATIC
+   LOGIN below uses client code, PIN and TOTP secret).
    The old KITE_API_KEY / KITE_API_SECRET variables are no longer used - delete them.
 
 3. Open TradeDesk -> Screener -> My trades -> "Angel One SmartAPI" card -> Connect Angel One.
    You log in on Angel One's own page (client code, PIN, TOTP - TradeDesk never sees them) and come back connected.
 
-Every morning: Angel One ends every SmartAPI login at midnight. Press Connect Angel One once before the market opens;
+AUTOMATIC LOGIN (optional - no daily tap; chosen 25 Nov 2026)
+   Add three more variables on Render (Environment), then Save:
+     SMARTAPI_CLIENT_CODE  = your Angel One client ID
+     SMARTAPI_PIN          = your 4-digit login PIN
+     SMARTAPI_TOTP_SECRET  = the TEXT KEY behind your authenticator QR code (not a 6-digit code). It is shown when
+                             TOTP is enabled at smartapi.angelone.in/enable-totp ("can't scan? enter this key").
+                             If it was not saved, enable TOTP again there to get a new key, and add the new QR to
+                             your authenticator app too.
+   TradeDesk then logs itself in a minute after every start / upload, at 08:40 on trading days, and whenever data is
+   needed after midnight. Safety brakes: one try at a time, 30 minutes between failed tries, at most 3 failed tries a
+   day, and a rejected PIN / TOTP / client code stops automatic login until the value is fixed - so it can never lock
+   your Angel One account. The card says "Automatic login: ON" and shows any error.
+   RISK: anyone who gets into your Render account can read these three values and log in to your Angel One account
+   (including from other apps that can place orders). Keep Render protected with a strong password and 2-factor login.
+   Never paste these values into chat, GitHub or the upload zip.
+
+Every morning (only without automatic login): Angel One ends every SmartAPI login at midnight. Press Connect
+Angel One once before the market opens;
 at 08:45 on trading days a phone / browser notification reminds you when it is not connected. Also press it again
 after an upload (a deploy wipes the saved login).
 

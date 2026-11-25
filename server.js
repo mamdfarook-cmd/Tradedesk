@@ -778,6 +778,11 @@ const ANGEL = {
   api: String(process.env.SMARTAPI_API_BASE || 'https://apiconnect.angelone.in').replace(/\/$/, ''),
   login: String(process.env.SMARTAPI_LOGIN_URL || 'https://smartapi.angelone.in/publisher-login'),
   master: String(process.env.SMARTAPI_MASTER_URL || 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json'),
+  /* Automatic daily login (25 Nov 2026, the user's choice): client code, PIN and the TOTP secret (the text key behind
+     the authenticator QR code) on Render. Without them the daily "Connect Angel One" button is used. */
+  clientCode: String(process.env.SMARTAPI_CLIENT_CODE || process.env.ANGEL_CLIENT_CODE || '').trim(),
+  pin: String(process.env.SMARTAPI_PIN || process.env.ANGEL_PIN || '').trim(),
+  totpSecret: String(process.env.SMARTAPI_TOTP_SECRET || process.env.ANGEL_TOTP_SECRET || '').replace(/[\s-]/g, '').toUpperCase(),
   /* Angel One asks for these headers on every call; it does not check them for market data. */
   localIp: String(process.env.SMARTAPI_LOCAL_IP || '127.0.0.1'),
   publicIp: String(process.env.SMARTAPI_PUBLIC_IP || '127.0.0.1'),
@@ -824,7 +829,66 @@ function angelSession() {
   return ANGEL_SESSION && Date.now() < ANGEL_SESSION.until ? ANGEL_SESSION : null;
 }
 /* Angel One data can be used now: key set and today's login done. */
-function angelReady() { return !!(ANGEL.key && angelSession()); }
+function angelReady() { return !!(ANGEL.key && (angelSession() || angelAutoOk())); }
+/* ── automatic login ──
+   TOTP (RFC 6238: HMAC-SHA1, 30 s, 6 digits) from the base32 secret, then loginByPassword. Brakes so a wrong PIN or
+   secret can never lock the Angel One account: one try at a time, 30 minutes between failed tries, at most 3 failed
+   tries a day, and a rejected PIN / TOTP / client code stops automatic login until Render restarts (fix the value). */
+const angelAutoSet = () => !!(ANGEL.key && ANGEL.clientCode && ANGEL.pin && ANGEL.totpSecret);
+const ANGEL_AUTO = { tries: [], lastFail: 0, failMsg: null, stopped: null, inflight: null, lastOk: null };
+function angelAutoOk() {
+  if (!angelAutoSet() || ANGEL_AUTO.stopped) return false;
+  const day = istDateKey();
+  return ANGEL_AUTO.tries.filter(t => t.day === day && !t.ok).length < 3;
+}
+function base32Bytes(s) {
+  const A = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ234567'; let bits = 0, val = 0; const out = [];
+  for (const ch of String(s).replace(/=+$/, '')) {
+    const i = A.indexOf(ch); if (i < 0) throw new Error('TOTP secret is not a valid base32 key');
+    val = (val << 5) | i; bits += 5;
+    if (bits >= 8) { out.push((val >>> (bits - 8)) & 255); bits -= 8; }
+  }
+  return Buffer.from(out);
+}
+function totpNow(secret, ms = Date.now()) {
+  const c = require('crypto'), ctr = Buffer.alloc(8); ctr.writeBigUInt64BE(BigInt(Math.floor(ms / 1000 / 30)));
+  const h = c.createHmac('sha1', base32Bytes(secret)).update(ctr).digest(), o = h[h.length - 1] & 15;
+  return String(((h.readUInt32BE(o) & 0x7fffffff) % 1e6)).padStart(6, '0');
+}
+async function angelAutoLogin(why) {
+  if (angelSession()) return angelSession();
+  if (!angelAutoOk()) throw new Error(ANGEL_AUTO.stopped || 'automatic login paused after 3 failed tries today');
+  if (ANGEL_AUTO.inflight) return ANGEL_AUTO.inflight;
+  if (Date.now() - ANGEL_AUTO.lastFail < 30 * 60e3) throw new Error('automatic login failed recently - next try after ' + new Date(ANGEL_AUTO.lastFail + 30 * 60e3).toISOString());
+  ANGEL_AUTO.inflight = (async () => {
+    const day = istDateKey(), t0 = Date.now(), path = '/rest/auth/angelbroking/user/v1/loginByPassword';
+    const hdr = { 'Content-Type': 'application/json', Accept: 'application/json', 'X-UserType': 'USER', 'X-SourceID': 'WEB',
+      'X-ClientLocalIP': ANGEL.localIp, 'X-ClientPublicIP': ANGEL.publicIp, 'X-MACAddress': ANGEL.mac, 'X-PrivateKey': ANGEL.key, Referer: null, Origin: null };
+    let r, j = null;
+    try {
+      r = await get(ANGEL.api + path, hdr, JSON.stringify({ clientcode: ANGEL.clientCode, password: ANGEL.pin, totp: totpNow(ANGEL.totpSecret) }), 'POST');
+      try { j = JSON.parse(r.body); } catch {}
+    } catch (e) { angelNote(path, t0, null, e); ANGEL_AUTO.tries.push({ day, ok: false }); ANGEL_AUTO.lastFail = Date.now(); ANGEL_AUTO.failMsg = e.message; throw e; }
+    angelNote(path, t0, r.status);
+    const tok = j?.data?.jwtToken;
+    if (r.status !== 200 || !(j?.status === true || j?.success === true) || !tok) {
+      const code = j?.errorcode || j?.errorCode || '', msg = (j?.message || 'HTTP ' + r.status) + (code ? ' (' + code + ')' : '');
+      ANGEL_AUTO.tries.push({ day, ok: false }); ANGEL_AUTO.lastFail = Date.now(); ANGEL_AUTO.failMsg = msg;
+      /* wrong PIN / TOTP / client code: retrying would count towards Angel One's lockout - stop until the value is fixed */
+      if (/pin|password|totp|otp|client ?code|invalid user|credential/i.test(msg)) ANGEL_AUTO.stopped = 'automatic login stopped: Angel One said "' + msg + '" - check SMARTAPI_CLIENT_CODE / SMARTAPI_PIN / SMARTAPI_TOTP_SECRET on Render (saving restarts the app)';
+      ANGEL_STATE.lastError = path + ': ' + msg; ANGEL_STATE.lastErrorAt = new Date().toISOString();
+      throw new Error('Angel One automatic login: ' + msg);
+    }
+    ANGEL_AUTO.tries.push({ day, ok: true }); ANGEL_AUTO.failMsg = null; ANGEL_AUTO.lastOk = new Date().toISOString();
+    let prof = null; try { prof = await angelCall('/rest/secure/angelbroking/user/v1/getProfile', null, { token: tok }); } catch {}
+    ANGEL_SESSION = { token: String(tok).replace(/^Bearer\s+/i, ''), user: prof?.clientcode || ANGEL.clientCode, name: prof?.name || null, at: Date.now(), until: angelTokenEnd(Date.now()), auto: true };
+    ANGEL_SESSION_LOADED = true; angelSaveSession(); API_CACHE.delete('angel:idx');
+    console.log('Angel One: automatic login ok (' + (why || 'on demand') + ')');
+    angelInstruments().catch(e => console.warn('Angel One instruments:', e.message));
+    return ANGEL_SESSION;
+  })().finally(() => { ANGEL_AUTO.inflight = null; });
+  return ANGEL_AUTO.inflight;
+}
 /* A SmartAPI session ends at midnight IST: the first 00:00 after the login. */
 function angelTokenEnd(ms) {
   const ist = new Date(ms + 5.5 * 3600e3);
@@ -838,7 +902,8 @@ function angelNote(path, t0, status, e) {
 /* One SmartAPI call (through the 'angel' queue: Angel One allows 1 quote request a second). */
 async function angelCall(path, body = null, opts = {}) {
   if (!ANGEL.key) throw new Error('Angel One not set up (SMARTAPI_API_KEY on Render)');
-  const token = opts.token || angelSession()?.token;
+  let token = opts.token || angelSession()?.token;
+  if (!token && angelAutoOk()) token = (await angelAutoLogin('on demand'))?.token;
   if (!token) throw new Error('Angel One not connected today - press "Connect Angel One" (Screener -> My trades)');
   const hdr = { 'Content-Type': 'application/json', Accept: 'application/json', 'X-UserType': 'USER', 'X-SourceID': 'WEB',
     'X-ClientLocalIP': ANGEL.localIp, 'X-ClientPublicIP': ANGEL.publicIp, 'X-MACAddress': ANGEL.mac, 'X-PrivateKey': ANGEL.key,
@@ -1038,10 +1103,13 @@ async function angelOptionChain(sym, name, want, opts) {
   try { return { ...(await OC_INFLIGHT.get(fk)), saved: false }; }
   catch (e) { if (hit && age < 4 * 86400e3) return served(hit); throw e; }
 }
+if (angelAutoSet()) setTimeout(() => { if (!angelSession()) angelAutoLogin('start-up').catch(e => console.warn(e.message)); }, 60e3);
 function angelStatus() {
   const s = angelSession(), ins = ANGEL_INSTR;
   return {
     configured: !!ANGEL.key, keySet: !!ANGEL.key,
+    auto: { set: angelAutoSet(), clientCodeSet: !!ANGEL.clientCode, pinSet: !!ANGEL.pin, totpSecretSet: !!ANGEL.totpSecret,
+      lastOk: ANGEL_AUTO.lastOk, lastError: ANGEL_AUTO.failMsg, stopped: ANGEL_AUTO.stopped, failsToday: ANGEL_AUTO.tries.filter(t => t.day === istDateKey() && !t.ok).length },
     /* names (never values) of the Angel-like variables this server sees - tells a typo in the name from a missing one */
     envNames: Object.keys(process.env).filter(k => /SMARTAPI|ANGEL/i.test(k)).sort(),
     connected: !!s, user: s?.user || null, name: s?.name || null,
@@ -6607,6 +6675,7 @@ async function assistantTick() {
   try {
     const at = (min, id) => m >= min && m < min + 20 && flagOnce(`job|${id}|${key}`);
     /* Angel One: the session ends at midnight every day - a reminder to log in before the market opens. */
+    if (nseDay && angelAutoSet() && !angelSession() && at(8 * 60 + 40, 'angel-auto-login')) { try { await angelAutoLogin('08:40'); } catch (e) { console.warn(e.message); } }
     if (nseDay && ANGEL.key && !angelSession() && at(8 * 60 + 45, 'angel-login')) await pushAll({ title: 'Connect Angel One for today', body: 'Live option premiums, India VIX and index values come from Angel One. Its login ends at midnight - tap to connect (TradeDesk -> My trades -> Connect Angel One).', tag: 'td-angel', url: '/api/smartapi/login' });
     if (nseDay && at(9 * 60 + 30, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
     else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; an MCX alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });

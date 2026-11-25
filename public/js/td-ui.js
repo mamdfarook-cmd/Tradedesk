@@ -5,7 +5,7 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '25 Nov 2026 · 2';
+const TD_UI_VERSION = '25 Nov 2026 · 3';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
 
 

@@ -20,6 +20,13 @@ services:
       # Optional: Angel One SmartAPI (live premiums / indices / India VIX) - see SMARTAPI-SETUP.txt. Leave empty to skip.
       - key: SMARTAPI_API_KEY
         sync: false
+      # Optional automatic daily login (see SMARTAPI-SETUP.txt): client ID, PIN, TOTP secret key.
+      - key: SMARTAPI_CLIENT_CODE
+        sync: false
+      - key: SMARTAPI_PIN
+        sync: false
+      - key: SMARTAPI_TOTP_SECRET
+        sync: false
       # The site's own address (Angel One's login comes back to APP_URL/api/smartapi/callback).
       - key: APP_URL
         sync: false
