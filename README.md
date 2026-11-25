@@ -83,9 +83,9 @@ browser alerts). Schedule (IST, NSE trading days unless noted):
 - 09:45 and 17:00 (weekdays) MCX - Gold Petal, Crude Oil Mini, Natural Gas Mini: only when a BUY is ready (gold:
   all three buy-only, sold at T1 or day 10 - gold since 20 Nov 2026 without the driver filter), entry
   within 1 ATR of the price; a plan waiting for a bigger dip alerts when price reaches its buy level.
-- Nifty options, only on the first trading day after a weekly expiry (as tested): 10:00 a reminder if Zerodha is not
+- Nifty options, only on the first trading day after a weekly expiry (as tested): 10:00 a reminder if Angel One is not
   connected; 15:05 one alert with the bull-put rule (held to expiry) and the weekly sells (trend sell of one side, short strangle,
-  both 2%+ away, exit on a close at 2x the premium / credit) with today's strikes and premiums from Zerodha.
+  both 2%+ away, exit on a close at 2x the premium / credit) with today's strikes and premiums from Angel One.
 - 11:00 and 15:00 stock scans: READY stocks of the tested gate (from 20 Nov 2026: EMA20 crosses above EMA50 while the
   stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high; signal on a close; from 23 Nov 2026 a trailing
   exit: stop 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days - 09:20 tells you
@@ -113,24 +113,25 @@ refuses this server's address); nseRefused: how often that happened (no NSE live
 
 FII / DII (22 Nov 2026): from Moneycontrol's FII / DII page, every 3 hours (every 30 minutes after 18:00 IST
   until the day's row is there); NSDL (FPI only, settled figure) when
-Moneycontrol refuses. NSE refuses Render's address; Kite has none. /api/health -> freeSources shows the source or the error.
+Moneycontrol refuses. NSE refuses Render's address. /api/health -> freeSources shows the source or the error.
 When NSE refuses: results dates and dividend ex-dates from Yahoo's calendar (estimates are notes, not blocks), bonus /
 split ex-dates from Yahoo's split calendar, the universe re-priced from the saved list. ASM / GSM: NSE only. Saved in
 data/free-cal.json.
 
 Data sources (18 Nov 2026). NSE refuses Render's address, so NSE market-data requests were removed:
-- Option premiums: Zerodha Kite only (live, any expiry). Not connected: the last saved Kite chain on the pages,
+- Option premiums: Angel One only (live, any expiry). Not connected: the last saved chain on the pages,
   Black-Scholes estimates from India VIX otherwise (marked "Estimated premiums"; the 15:05 entry-day alert names the
-  estimated strikes); the Track record needs Kite.
-- Index values and previous closes: Zerodha Kite when connected, else Yahoo. Fin Services Ex-Bank = FINIETF ETF x the
-  ratio learned from Kite, else the built-in ratio 978.8 (FINEXBANK_RATIO overrides it).
+  estimated strikes); the Track record needs Angel One.
+- Index values and previous closes: Angel One when connected (the indices it lists), else Yahoo. Fin Services Ex-Bank
+  (not listed by Angel One) = FINIETF ETF x the built-in ratio 978.8 (FINEXBANK_RATIO overrides it).
 - Trading holidays: NSE's 2026 list is built in (NSE_HOLIDAYS=YYYY-MM-DD,... adds days; add 2027 in December).
 - Still asked from NSE (other checks use them; saved / built-in data when refused, retried every 3-6 hours): the
   results calendar, corporate actions, ASM / GSM lists, the holiday list and the index member lists (universe).
-Zerodha Kite Connect (optional, recommended): with KITE_API_KEY / KITE_API_SECRET on Render and the daily
-"Connect Zerodha" login (Screener -> My trades; Zerodha ends it at 06:00), option premiums of every expiry, every NSE
-index (Fin Services Ex-Bank included) and India VIX come live from Kite - no NSE call. Read-only, no orders.
-Setup in KITE-SETUP.txt; /api/health -> kite, /api/kite/status.
+Angel One SmartAPI (optional, recommended; replaced Zerodha Kite on 25 Nov 2026 - free, no subscription): with
+SMARTAPI_API_KEY on Render and the daily "Connect Angel One" login (Screener -> My trades; Angel One ends it at
+midnight), option premiums of every expiry, the NSE indices Angel One lists and India VIX come live from Angel One - no
+NSE call. Read-only, no orders, so no static IP. Setup in SMARTAPI-SETUP.txt; /api/health -> angel,
+/api/smartapi/status.
 Layout (20 Nov 2026): Indices = Nifty 50 / Next 50 / Midcap 150 (sectors are on Markets -> Sectors); MCX = Gold Petal,
 Crude Oil, Natural Gas (the backtested ones). The list folds after a pick. Stock / MCX: Overview · Analysis (one
 Technicals page) · News. Nifty: Market Pulse · Technicals · Option Builder. Removed: Decision, the stock Strategy page,

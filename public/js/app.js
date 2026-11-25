@@ -2078,7 +2078,7 @@ function evDay(key){
 function creditRuleHtml(x){
   const r = x?.rule;
   if(!x || x.sym !== 'NSE:NIFTY') return '';
-  if(!r) return `<div class="idea-card" data-idx-rule><div class="idea-kicker">Your credit-spread rule · Nifty</div><div class="idea-foot">Needs live option premiums from Zerodha: connect it in Screener → My trades → Connect Zerodha (its login ends at 06:00 every day), then reopen this page.</div></div>`;
+  if(!r) return `<div class="idea-card" data-idx-rule><div class="idea-kicker">Your credit-spread rule · Nifty</div><div class="idea-foot">Needs live option premiums from Angel One: connect it in Screener → My trades → Connect Angel One (its login ends at midnight every day), then reopen this page.</div></div>`;
   const sideHtml = q => q.none ? `<div class="rule-side"><b>${q.type}</b><div class="idea-foot">No strike 2%+ away with delta under 0.20 and a quoted premium.</div></div>`
     : `<div class="rule-side${r.pick === q ? ' picked' : ''}${q.ty === 'C' ? ' info' : ''}"><b>${q.type}${r.pick === q ? ' · today' : q.ty === 'C' ? ' · not traded' : ''}</b>
       <div class="rule-legs">Sell ${q.sell} ${q.ty === 'P' ? 'PE' : 'CE'} ₹${fmt(q.sellPx)} · Buy ${q.buy} ${q.ty === 'P' ? 'PE' : 'CE'} ₹${fmt(q.buyPx)}</div>
@@ -2087,7 +2087,7 @@ function creditRuleHtml(x){
   return `<div class="idea-card" data-idx-rule style="border-color:${r.ok ? 'var(--bull)' : 'var(--brd)'}">
     <div class="idea-head"><div><div class="idea-kicker">Your credit-spread rule · Nifty · expiry ${escHtml(ideaDate(x.ruleExpiry || ''))} (${r.daysToExpiry} days)</div><div class="idea-title">${escHtml(r.verdict)}</div></div>
       <div class="idea-view ${r.ok && x.weekly?.entry?.isEntryDay ? 'bull' : 'neutral'}">${!r.ok ? 'NO TRADE' : x.weekly?.entry?.isEntryDay ? 'ENTRY TODAY' : 'PASS · WAIT'}</div></div>
-    ${x.estimated ? `<div class="idea-foot" style="margin:4px 0 6px;color:var(--neu)"><b>Estimated premiums</b> - ${escHtml(x.chainSource)}. Strikes and credit are Black-Scholes estimates; check the real credit in your broker before selling (connect Zerodha for live premiums).</div>` : ''}
+    ${x.estimated ? `<div class="idea-foot" style="margin:4px 0 6px;color:var(--neu)"><b>Estimated premiums</b> - ${escHtml(x.chainSource)}. Strikes and credit are Black-Scholes estimates; check the real credit in your broker before selling (connect Angel One for live premiums).</div>` : ''}
     ${x.weekly?.entry ? `<div class="idea-foot" style="margin:4px 0 6px">${x.weekly.entry.isEntryDay ? '<b style="color:var(--bull)">Entry day today</b> - sell the spread near the close (after 15:00).' : `Entered only at the close of the first trading day after an expiry - next: <b>${escHtml(ideaDate(x.weekly.entry.entryDay))}</b>. Levels below are today's, for reference.`}</div>` : ''}
     <div class="rule-grid">${sideHtml(r.put)}${sideHtml(r.call)}</div>
     ${r.ok ? `<button type="button" class="idea-btn" onclick="openTradeForm(${jsArg({kind:'option', sym:'NSE:NIFTY', name:'Nifty', setup: r.pick.type, optType: r.pick.ty, shortStrike: r.pick.sell, longStrike: r.pick.buy, credit: r.pick.credit, wing: Math.abs(r.pick.sell - r.pick.buy), lotQty: x.cfg.lot, expiry: x.ruleExpiry})})">📒 I took this trade</button>` : ''}
@@ -2099,7 +2099,7 @@ function weeklySellHtml(x){
   const w = x?.weekly; if(!x || x.sym !== 'NSE:NIFTY' || !w) return '';
   const lot = x.cfg.lot, e = w.entry, t = w.trend, g = w.strangle;
   const when = (!e ? '' : e.isEntryDay ? `<b style="color:var(--bull)">Entry day today</b> - sell near the close (after 15:00) for the ${escHtml(ideaDate(x.ruleExpiry || ''))} expiry`
-    : `Next entry: <b>${escHtml(ideaDate(e.entryDay))}</b> at the close (the first trading day after an expiry). Levels below are today's, for reference.`) + (x.estimated ? ' <b style="color:var(--neu)">Premiums are Black-Scholes estimates (Zerodha not connected).</b>' : '');
+    : `Next entry: <b>${escHtml(ideaDate(e.entryDay))}</b> at the close (the first trading day after an expiry). Levels below are today's, for reference.`) + (x.estimated ? ' <b style="color:var(--neu)">Premiums are Black-Scholes estimates (Angel One not connected).</b>' : '');
   const side = (title, ok, body, stats) => `<div class="rule-side${ok ? ' picked' : ''}"><b>${title}</b>${body}<div class="idea-foot">${stats}</div></div>`;
   const tBody = t.ok ? `<div class="rule-legs">Sell <b>${t.strike} ${t.ty === 'P' ? 'PE' : 'CE'}</b> ₹${fmt(t.premium)} (₹${fmt(t.premium * lot, 0)} a lot) · ${fmt(t.away)}% away · delta ${fmt(Math.abs(t.delta))}</div>
       <div class="rule-legs">Exit if it <b>closes at ₹${fmt(t.exitAt)}</b> or more (loss ≈ ₹${fmt(t.premium * lot, 0)} a lot), else hold to expiry</div>`

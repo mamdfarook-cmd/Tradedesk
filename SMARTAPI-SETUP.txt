@@ -1,0 +1,35 @@
+TradeDesk + Angel One SmartAPI - one-time setup (about 5 minutes), then one tap each morning
+==========================================================================================
+
+What it fixes: NSE refuses Render's address, so live option premiums and NSE's index values did not load there.
+With Angel One connected they come from Angel One instead (free - SmartAPI has no subscription fee):
+  - live option premiums (bid / ask / last, OI, volume) of Nifty, Bank Nifty and FinNifty, every expiry -
+    trade ideas, the option builder, the 10:00 Nifty rule and the Track record checks;
+  - the NSE indices Angel One lists (Nifty 50, Bank, Next 50, Fin Services, Midcap 150, the sector indices) and
+    India VIX, live. Not listed by Angel One, so still from Yahoo: Fin Services Ex-Bank (FINIETF x the built-in
+    ratio), Consumer Durables, Healthcare, Oil & Gas, Housing, India Digital, India Tourism;
+  - expiry dates and lot sizes from Angel One's public instrument list (read once a day).
+TradeDesk only READS market data. It never places, changes or cancels an order, so no static IP is needed
+(Angel One checks the static IP only for order APIs).
+
+1. Redirect URL (smartapi.angelone.in -> My Apps -> your app):
+     Redirect URL  =  https://trade-desk.tech/api/smartapi/callback
+   (the exact address is also shown on the Angel One card in TradeDesk, under Screener -> My trades;
+    it comes from APP_URL on Render - set APP_URL = https://trade-desk.tech)
+
+2. Render dashboard -> your tradedesk service -> Environment -> Add Environment Variable:
+     SMARTAPI_API_KEY = the "API Key" from the same app page
+   Save (Render restarts the app). Do not paste it into chat, GitHub or the upload zip.
+   Not needed and never asked for: your client code, PIN, TOTP or the API secret.
+   The old KITE_API_KEY / KITE_API_SECRET variables are no longer used - delete them.
+
+3. Open TradeDesk -> Screener -> My trades -> "Angel One SmartAPI" card -> Connect Angel One.
+   You log in on Angel One's own page (client code, PIN, TOTP - TradeDesk never sees them) and come back connected.
+
+Every morning: Angel One ends every SmartAPI login at midnight. Press Connect Angel One once before the market opens;
+at 08:45 on trading days a phone / browser notification reminds you when it is not connected. Also press it again
+after an upload (a deploy wipes the saved login).
+
+Check: /api/health -> "angel": connected true, ready true, "indices" = how many NSE indices were matched,
+"notFound" = indices Angel One's list does not have (those stay on Yahoo). /api/smartapi/status has the details and the
+last error. Not connected -> everything works as before (Yahoo values, Black-Scholes premium estimates).

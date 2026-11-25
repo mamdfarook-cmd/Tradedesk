@@ -125,7 +125,7 @@ async function tabTrace(kind){
   try {
     const st = await apiFetch('/api/assistant-status', 10000);
     const lines = gold ? Object.entries(st.mcxNames || {}).map(([s, n]) => `${n}: ${st.mcx?.[s]?.day === st.day ? st.mcx[s].text : 'not checked yet today (09:45 and 17:00; a missed check runs at the next minute between 10:05 and 23:00)'}`)
-      : [`Nifty: ${st.nifty?.day === st.day ? st.nifty.text : st.kite ? 'not checked yet today (10:00)' : 'not checked - connect Zerodha (checked within a minute after you connect, until 15:00)'}`];
+      : [`Nifty: ${st.nifty?.day === st.day ? st.nifty.text : st.angel ? 'not checked yet today (10:00)' : 'not checked - connect Angel One (checked within a minute after you connect, until 15:00)'}`];
     today = `<div class="aib" style="font-size:.72rem;margin:8px 0"><b>Today's server check</b> (a trade is recorded only when this says ready / passed):<br>${lines.map(escHtml).join('<br>')}</div>`;
   } catch {}
   if (!live()) return;

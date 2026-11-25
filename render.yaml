@@ -17,8 +17,9 @@ services:
       # Random secret for login cookies and background-alert keys (Render generates it once, free).
       - key: APP_SECRET
         generateValue: true
-      # Optional: Zerodha Kite Connect (live premiums / indices) - see KITE-SETUP.txt. Leave empty to skip.
-      - key: KITE_API_KEY
+      # Optional: Angel One SmartAPI (live premiums / indices / India VIX) - see SMARTAPI-SETUP.txt. Leave empty to skip.
+      - key: SMARTAPI_API_KEY
         sync: false
-      - key: KITE_API_SECRET
+      # The site's own address (Angel One's login comes back to APP_URL/api/smartapi/callback).
+      - key: APP_URL
         sync: false

@@ -231,32 +231,32 @@ function jPushHtml(st){
   </div>`;
 }
 
-/* Zerodha Kite (live premiums, Fin Ex-Bank, index values): the day's login - Zerodha ends it at 06:00 daily. */
-async function jKite(action){
-  const box = document.getElementById('j-kite-msg');
-  if(action === 'connect'){ location.href = API + '/api/kite/login'; return; }
+/* Angel One SmartAPI (live premiums, India VIX, index values): the day's login - Angel One ends it at midnight. */
+async function jAngel(action){
+  const box = document.getElementById('j-angel-msg');
+  if(action === 'connect'){ location.href = API + '/api/smartapi/login'; return; }
   try{
-    const r = await fetch(API + '/api/kite/' + action, { method:'POST', credentials:'same-origin' });
+    const r = await fetch(API + '/api/smartapi/' + action, { method:'POST', credentials:'same-origin' });
     const j = await r.json().catch(() => ({}));
     if(!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
     if(box) box.innerHTML = 'Disconnected.';
     setTimeout(tabJournal, 800);
   }catch(e){ if(box) box.innerHTML = `<span style="color:var(--bear)">${escHtml(e.message)}</span>`; }
 }
-function jKiteHtml(st){
+function jAngelHtml(st){
   if(!st) return '';
   const tm = iso => { try{ return new Date(iso).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', hour12:false, timeZone:'Asia/Kolkata'}); }catch{ return iso; } };
-  const msg = window.TD_KITE_MSG; window.TD_KITE_MSG = null;
-  const envNote = st.configured ? '' : `<div style="display:block;font-size:.78rem;line-height:1.55;color:var(--tx2);margin:8px 0"><b>This server sees:</b> KITE_API_KEY ${st.keySet ? '✓' : '✗ missing'} · KITE_API_SECRET ${st.secretSet ? '✓' : '✗ missing'}${(st.envNames || []).length ? ` · variable names found: ${st.envNames.map(escHtml).join(', ')}` : ' · no variable with KITE in its name'}. The <b>Connect Zerodha</b> button appears here once both show ✓ (after Render restarts with them).</div>`;
-  const steps = `<ol class="j-steps"><li>On <b>developers.kite.trade</b> open your app and set the <b>Redirect URL</b> to <code>${escHtml(st.redirectUrl || '/api/kite/callback')}</code></li><li>Render → your service → <b>Environment</b> → add <code>KITE_API_KEY</code> and <code>KITE_API_SECRET</code> (from the same app page) → save (it redeploys).</li><li>When Render has restarted, reload this page: a <b>Connect Zerodha</b> button appears on this card - press it once every morning (Zerodha ends the login at 06:00).</li></ol>`;
-  const state = !st.configured ? 'Not set up' : st.noMarketData ? 'Connected - but your Kite plan has no market data' : st.connected ? `Connected${st.name ? ' as ' + escHtml(st.name) : ''} · until ${tm(st.until)}` : 'Not connected today';
-  const ins = st.instruments, miss = ins?.notFound?.length ? ` · not found in Kite: ${ins.notFound.map(s => escHtml(s.replace(/^NSE:/, ''))).join(', ')}` : '';
+  const msg = window.TD_ANGEL_MSG; window.TD_ANGEL_MSG = null;
+  const envNote = st.configured ? '' : `<div style="display:block;font-size:.78rem;line-height:1.55;color:var(--tx2);margin:8px 0"><b>This server sees:</b> SMARTAPI_API_KEY ${st.keySet ? '✓' : '✗ missing'}${(st.envNames || []).length ? ` · variable names found: ${st.envNames.map(escHtml).join(', ')}` : ' · no variable with SMARTAPI or ANGEL in its name'}. The <b>Connect Angel One</b> button appears here once it shows ✓ (after Render restarts with it).</div>`;
+  const steps = `<ol class="j-steps"><li>On <b>smartapi.angelone.in</b> → My Apps, open your app and set the <b>Redirect URL</b> to <code>${escHtml(st.redirectUrl || '/api/smartapi/callback')}</code></li><li>Render → your service → <b>Environment</b> → add <code>SMARTAPI_API_KEY</code> (the API key from the same app page) → save (it redeploys). Your client code, PIN and TOTP are never needed here.</li><li>When Render has restarted, reload this page: a <b>Connect Angel One</b> button appears on this card - press it once every morning (Angel One ends the login at midnight).</li></ol>`;
+  const state = !st.configured ? 'Not set up' : st.connected ? `Connected${st.name ? ' as ' + escHtml(st.name) : ''} · until ${tm(st.until)}` : 'Not connected today';
+  const ins = st.instruments, miss = ins?.notFound?.length ? ` · not listed by Angel One (Yahoo used): ${ins.notFound.map(s => escHtml(s.replace(/^NSE:/, ''))).join(', ')}` : '';
   return `<div class="idea-card j-kite">
-    <div class="idea-head"><div><div class="idea-kicker">Zerodha Kite (market data)</div><div class="idea-title">${state}</div></div><div class="idea-view ${st.ready ? 'bull' : st.configured ? 'bear' : 'neutral'}">${st.ready ? 'ON' : 'OFF'}</div></div>
-    <div class="idea-foot">When connected: live option premiums for trade ideas, the option builder and the Track record; every NSE index incl. Fin Services and Fin Services Ex-Bank; India VIX - without asking NSE. Read-only: TradeDesk never places orders.${st.noMarketData ? ' <b>Kite answered "insufficient permission" for quotes - the free Personal plan has no market data; the paid Connect plan is needed.</b>' : ''}${ins ? `<br>Instrument list ${escHtml(ins.day || '')}: ${ins.indices} indices${miss}${st.lastOk ? ` · last Kite answer ${tm(st.lastOk)}` : ''}` : ''}${st.lastError ? `<br><span style="color:var(--tx3)">Last Kite error: ${escHtml(st.lastError)}</span>` : ''}</div>
+    <div class="idea-head"><div><div class="idea-kicker">Angel One SmartAPI (market data)</div><div class="idea-title">${state}</div></div><div class="idea-view ${st.ready ? 'bull' : st.configured ? 'bear' : 'neutral'}">${st.ready ? 'ON' : 'OFF'}</div></div>
+    <div class="idea-foot">When connected: live option premiums for trade ideas, the option builder and the Track record; the NSE indices Angel One lists (Nifty, Bank Nifty, Fin Services, sectors); India VIX - without asking NSE. Read-only: TradeDesk never places orders.${ins ? `<br>Instrument list ${escHtml(ins.day || '')}: ${ins.indices} indices${miss}${st.lastOk ? ` · last Angel One answer ${tm(st.lastOk)}` : ''}` : ''}${st.lastError ? `<br><span style="color:var(--tx3)">Last Angel One error: ${escHtml(st.lastError)}</span>` : ''}</div>
     ${st.configured ? '' : envNote + steps}
-    <div class="j-actions">${st.configured ? `<button class="idea-btn" onclick="jKite('connect')">${st.connected ? 'Reconnect' : 'Connect Zerodha'}</button>` : ''}${st.connected ? `<button class="idea-btn ghost" onclick="jKite('logout')">Disconnect</button>` : ''}</div>
-    <div id="j-kite-msg" class="idea-foot">${msg ? (msg === 'ok' ? '<span style="color:var(--bull)">Zerodha connected ✓</span>' : `<span style="color:var(--bear)">Zerodha login: ${escHtml(msg)}</span>`) : ''}</div>
+    <div class="j-actions">${st.configured ? `<button class="idea-btn" onclick="jAngel('connect')">${st.connected ? 'Reconnect' : 'Connect Angel One'}</button>` : ''}${st.connected ? `<button class="idea-btn ghost" onclick="jAngel('logout')">Disconnect</button>` : ''}</div>
+    <div id="j-angel-msg" class="idea-foot">${msg ? (msg === 'ok' ? '<span style="color:var(--bull)">Angel One connected ✓</span>' : `<span style="color:var(--bear)">Angel One login: ${escHtml(msg)}</span>`) : ''}</div>
   </div>`;
 }
 
@@ -306,8 +306,8 @@ async function tabJournal(){
   tc.innerHTML = `${screenerModeSwitch('trades')}${bar}
     <div class="idea-card"><div class="idea-head"><div><div class="idea-kicker">Open trades</div><div class="idea-title">${open.length ? `${open.length} open` : 'No open trade'}</div>${open.length ? '<div class="j-total" data-jtotal>Profit / loss now: loading…</div>' : ''}</div><button class="idea-btn" onclick="openTradeForm({})">+ Add manually</button></div>
       ${open.length ? open.map(row).join('') : '<div class="idea-foot">Tap 📒 on a stock\'s trade plan, the Gold Petal idea or the Nifty rule card when you take a trade - or add one here.</div>'}</div>
-    ${statsHtml}${closedHtml}<div data-j-kite></div><div data-j-push></div>`;
-  apiFetch('/api/kite/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-kite]'); if(el) el.innerHTML = jKiteHtml(st); } }).catch(() => {});
+    ${statsHtml}${closedHtml}<div data-j-angel></div><div data-j-push></div>`;
+  apiFetch('/api/smartapi/status', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-angel]'); if(el) el.innerHTML = jAngelHtml(st); } }).catch(() => {});
   if (open.some(t => t.kind === 'stock')) (J_SECTORS ? Promise.resolve(J_SECTORS) : apiFetch('/api/universe', 20000).then(u => (J_SECTORS = Object.fromEntries((u.rows || []).filter(r => r.sym && r.sector).map(r => [r.sym, r.sector])))))
     .then(sec => { if (!live()) return; const el = tc.querySelector('[data-j-port]'); if (el) el.innerHTML = jPortfolioWarn(open, sec, pct, lim); }).catch(() => {});
   apiFetch('/api/push/key', 10000).then(st => { if(live()) { const el = tc.querySelector('[data-j-push]'); if(el) el.innerHTML = jPushHtml(st); } }).catch(() => {});
@@ -347,7 +347,7 @@ async function tabJournal(){
 (function deepLink(){
   let q; try{ q = new URLSearchParams(location.search); }catch{ return; }
   const sym = (q.get('sym') || '').toUpperCase(), view = q.get('view');
-  if(q.get('kite')) window.TD_KITE_MSG = q.get('kite');   /* result of the Zerodha login, shown on the Kite card */
+  if(q.get('angel')) window.TD_ANGEL_MSG = q.get('angel');   /* result of the Angel One login, shown on its card */
   if(!sym && !view) return;
   const go = () => {
     try{

@@ -20,17 +20,17 @@ const zlib  = require('zlib');
 const PORT  = process.env.PORT || 3000;
 /* ── Data-source context ──
    Stock charts come from Yahoo. The "Yahoo vs Kite" screener comparison that ran a second scan in a 'kite' context
-   was removed on 20 Nov 2026; the per-source stores below stay (always 'yahoo') so the screener code is unchanged. */
+   was removed on 20 Nov 2026 (and Kite itself on 25 Nov 2026); the per-source store below stays (always 'yahoo') so
+   the screener code is unchanged. */
 const SRC_ALS = new (require('async_hooks').AsyncLocalStorage)();
 const dataSrc = () => (SRC_ALS.getStore() && SRC_ALS.getStore().src) || 'yahoo';
 const srcStoreInit = () => ({ MY_TRADE_SCREENER_CACHE: null, MY_TRADE_SCREENER_TS: 0, MY_TRADE_SCREENER_INFLIGHT: null, NIFTY_REGIME_CACHE: null, NIFTY_REGIME_TS: 0,
   NIFTY_CLOSES: null, LAST_BREADTH: null, LAST_SECTOR_STRENGTH: null, LAST_SCAN_DIAG: { ts: 0, rows: [] } });
-const SRCV = { yahoo: srcStoreInit(), kite: srcStoreInit() };
+const SRCV = { yahoo: srcStoreInit() };
 const SV = () => SRCV[dataSrc()];
-/* Chart requests per source, shown on the Data source card: served, failed, average time, and (Kite) how many fell
-   back to Yahoo and why. */
-const srcStatInit = () => ({ charts: 0, ok: 0, failed: 0, ms: 0, fallbacks: 0, notOnKite: 0, quoteCalls: 0, histCalls: 0, lastFallbacks: [] });
-const SRC_STATS = { since: new Date().toISOString(), yahoo: srcStatInit(), kite: srcStatInit() };
+/* Chart requests, shown on the Data source card: served, failed, average time. */
+const srcStatInit = () => ({ charts: 0, ok: 0, failed: 0, ms: 0, fallbacks: 0, quoteCalls: 0, histCalls: 0, lastFallbacks: [] });
+const SRC_STATS = { since: new Date().toISOString(), yahoo: srcStatInit() };
 /* Shared with the browser (public/swing-plan.js): S/R levels, setup stop/target, setup choice, R:R,
    pullback volume rule and relative strength are computed by the same code in the screener and Overview. */
 /* Start-up check: a GitHub web upload that misses the public/ sub-folders (picking files instead of dragging
@@ -236,12 +236,10 @@ function outboundStats() {
    layer serves its last cached value instead. */
 const HOST_LIMITS = [
   { re: /(^|\.)finance\.yahoo\.com$/i,   max: 4, gapMs: 150, key: 'yahoo' },
-  /* Zerodha Kite: 1 quote request a second (Kite's limit), one at a time */
-  { re: { test: h => { try { return h === new URL(KITE.api).hostname; } catch { return false; } } }, max: 1, gapMs: 1100, key: 'kite' },
+  /* Angel One SmartAPI: 1 quote request a second (Angel One's limit), one at a time */
+  { re: { test: h => { try { return h === new URL(ANGEL.api).hostname; } catch { return false; } } }, max: 1, gapMs: 1100, key: 'angel' },
   /* All NSE addresses share one queue: NSE moved www.nseindia.com to www.nseindia.in on 14 Nov 2026, and the .in
      host had fallen into the generic bucket (2 at a time, 0.5 s apart) - the bursts NSE's bot protection blocks. */
-  /* Kite historical candles: 3 requests a second allowed - kept a little under */
-  { re: /^kite-hist$/, max: 2, gapMs: 360, key: 'kitehist' },
   { re: /(^|\.)nseindia\.(com|in|co\.in|org)$/i, max: 1, gapMs: 2000, key: 'nse' },
   { re: /(^|\.)bseindia\.com$/i,         max: 1, gapMs: 1500, key: 'bse' },
   { re: /.*/,                            max: 2, gapMs: 500 },   /* news sites and other APIs */
@@ -287,7 +285,7 @@ function noteHostResult(host, status) {
   }
 }
 function get(targetUrl, extraHdrs = {}, body = null, method = 'GET', queueHost = null) {
-  const host = queueHost || new URL(targetUrl).hostname;   /* queueHost: a named queue (kite-hist) instead of the URL's host */
+  const host = queueHost || new URL(targetUrl).hostname;   /* queueHost: a named queue instead of the URL's host */
   const st = hostState(host);
   if (Date.now() < st.coolUntil) {
     const er = new Error(`${host} paused after a rate-limit reply (until ${new Date(st.coolUntil).toISOString()})`);
@@ -762,30 +760,36 @@ function futRollAdjust(ticker, bars, kind = 'daily', dailyAdj = null) {
 }
 
 
-/* ── ZERODHA KITE CONNECT (optional, 18 Nov 2026) ──
-   NSE refuses Render's address, so option premiums, Fin Services Ex-Bank and NSE's previous closes did not load
-   there. With KITE_API_KEY + KITE_API_SECRET set on Render and the day's "Connect Zerodha" login done (a Kite access
-   token ends at 06:00 the next morning - Zerodha / SEBI rule, it cannot be renewed without logging in), these come
-   from Kite's quote API instead:
+/* ── ANGEL ONE SMARTAPI (optional, 25 Nov 2026 - replaced Zerodha Kite) ──
+   NSE refuses Render's address, so option premiums and NSE's previous closes did not load there. With SMARTAPI_API_KEY
+   set on Render and the day's "Connect Angel One" login done (a SmartAPI session ends at midnight IST - Angel One rule,
+   it cannot be renewed without logging in), these come from Angel One's market-data API instead:
      - option premiums (bid / ask / last / OI / volume) of Nifty, Bank Nifty, FinNifty - live, kept 60 s;
-     - every NSE index (Fin Services and Fin Services Ex-Bank included) and India VIX - live, kept 30 s;
-     - expiry dates and lot sizes from Kite's instrument list (downloaded once a day).
-   Read-only: this app never places, changes or cancels an order. (FII / DII is not in Kite's API; removed 18 Nov 2026.)
-   Not connected, or a Kite plan without market data -> the NSE / Yahoo paths below, as before. */
-const KITE = {
-  /* also accepts the names people often type (KITE_KEY, ZERODHA_API_KEY...) */
-  key: String(process.env.KITE_API_KEY || process.env.KITE_KEY || process.env.ZERODHA_API_KEY || process.env.KITE_APIKEY || '').trim(),
-  secret: String(process.env.KITE_API_SECRET || process.env.KITE_SECRET || process.env.ZERODHA_API_SECRET || process.env.KITE_APISECRET || '').trim(),
-  api: String(process.env.KITE_API_BASE || 'https://api.kite.trade').replace(/\/$/, ''),
-  login: String(process.env.KITE_LOGIN_URL || 'https://kite.zerodha.com/connect/login'),
+     - the NSE indices Angel One lists (Nifty 50, Bank, Fin Services, sectors...) and India VIX - live, kept 30 s;
+     - expiry dates and lot sizes from Angel One's public instrument list (downloaded once a day).
+   Indices Angel One does not list (Fin Services Ex-Bank, Consumer Durables, Healthcare, Oil & Gas, Housing, Digital,
+   Tourism) keep using Yahoo / the built-in ratio, as when nobody is connected.
+   Login: Angel One's own "publisher login" page; it sends the user back to /api/smartapi/callback with the session
+   token. Render holds only the API key - never the client code, PIN or TOTP.
+   Read-only: this app never places, changes or cancels an order. */
+const ANGEL = {
+  /* also accepts the names people often type */
+  key: String(process.env.SMARTAPI_API_KEY || process.env.SMARTAPI_KEY || process.env.ANGEL_API_KEY || process.env.ANGELONE_API_KEY || '').trim(),
+  api: String(process.env.SMARTAPI_API_BASE || 'https://apiconnect.angelone.in').replace(/\/$/, ''),
+  login: String(process.env.SMARTAPI_LOGIN_URL || 'https://smartapi.angelone.in/publisher-login'),
+  master: String(process.env.SMARTAPI_MASTER_URL || 'https://margincalculator.angelbroking.com/OpenAPI_File/files/OpenAPIScripMaster.json'),
+  /* Angel One asks for these headers on every call; it does not check them for market data. */
+  localIp: String(process.env.SMARTAPI_LOCAL_IP || '127.0.0.1'),
+  publicIp: String(process.env.SMARTAPI_PUBLIC_IP || '127.0.0.1'),
+  mac: String(process.env.SMARTAPI_MAC || '02:00:00:00:00:01'),
 };
-const KITE_FILE = require('path').join(__dirname, 'data', 'kite-session.json');
-const KITE_INSTR_FILE = require('path').join(__dirname, 'data', 'kite-instruments.json');
-let KITE_SESSION = null, KITE_SESSION_LOADED = false;   /* { token, user, name, at, until } - token kept encrypted on disk */
-const KITE_STATE = { lastOk: null, lastError: null, lastErrorAt: null, noMarketData: false, calls: [] };
-/* Index symbol -> pattern on Kite's index name (letters and digits only). Matched against Kite's instrument list, so a
-   renamed index is still found; /api/kite/status lists any index it could not match. */
-const KITE_IDX_RE = {
+const ANGEL_FILE = require('path').join(__dirname, 'data', 'angel-session.json');
+const ANGEL_INSTR_FILE = require('path').join(__dirname, 'data', 'angel-instruments.json');
+let ANGEL_SESSION = null, ANGEL_SESSION_LOADED = false;   /* { token, user, name, at, until } - token kept encrypted on disk */
+const ANGEL_STATE = { lastOk: null, lastError: null, lastErrorAt: null, calls: [] };
+/* Index symbol -> pattern on Angel One's index name (letters and digits only). Matched against the instrument list, so
+   a renamed index is still found; /api/smartapi/status lists any index it could not match. */
+const IDX_RE = {
   'NSE:NIFTY': /^NIFTY50$/, 'NSE:BANKNIFTY': /^NIFTYBANK$/, 'NSE:NIFTYNXT50': /^NIFTYNEXT50$/, 'NSE:NIFTYFMCG': /^NIFTYFMCG$/,
   'NSE:NIFTYENERGY': /^NIFTYENERGY$/, 'NSE:NIFTYCONSDUR': /^NIFTYCONS\w*DUR/, 'NSE:NIFTYFINEXBANK': /^NIFTYFIN\w*EX\w*B/,
   'NSE:NIFTYIT': /^NIFTYIT$/, 'NSE:NIFTYPVTBANK': /^NIFTY(PVT|PRIVATE)BANK$/, 'NSE:NIFTYAUTO': /^NIFTYAUTO$/,
@@ -796,226 +800,235 @@ const KITE_IDX_RE = {
   'NSE:NIFTYDIGITAL': /^NIFTY(IND|INDIA)DIGITAL/, 'NSE:NIFTYTOURISM': /^NIFTY(IND|INDIA)TOURISM/, 'NSE:NIFTYMEDIA': /^NIFTYMEDIA$/,
   'NSE:NIFTYREALTY': /^NIFTYREALTY$/, 'VIX': /^INDIAVIX$/,
 };
-const KITE_OC_NAMES = new Set(['NIFTY', 'BANKNIFTY', 'FINNIFTY']);
+const OC_NAMES = new Set(['NIFTY', 'BANKNIFTY', 'FINNIFTY']);
 
-function kiteCipherKey() { return require('crypto').createHash('sha256').update('td-kite-v1|' + APP_SECRET).digest(); }
-function kiteSaveSession() {
+function angelCipherKey() { return require('crypto').createHash('sha256').update('td-angel-v1|' + APP_SECRET).digest(); }
+function angelSaveSession() {
   try {
-    const fs = require('fs'); fs.mkdirSync(require('path').dirname(KITE_FILE), { recursive: true });
-    if (!KITE_SESSION) { try { fs.unlinkSync(KITE_FILE); } catch {} return; }
-    const c = require('crypto'), iv = c.randomBytes(12), ci = c.createCipheriv('aes-256-gcm', kiteCipherKey(), iv);
-    const data = Buffer.concat([ci.update(JSON.stringify(KITE_SESSION), 'utf8'), ci.final()]);
-    fs.writeFileSync(KITE_FILE, JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: ci.getAuthTag().toString('base64'), data: data.toString('base64') }));
-  } catch (e) { console.warn('Kite session save:', e.message); }
+    const fs = require('fs'); fs.mkdirSync(require('path').dirname(ANGEL_FILE), { recursive: true });
+    if (!ANGEL_SESSION) { try { fs.unlinkSync(ANGEL_FILE); } catch {} return; }
+    const c = require('crypto'), iv = c.randomBytes(12), ci = c.createCipheriv('aes-256-gcm', angelCipherKey(), iv);
+    const data = Buffer.concat([ci.update(JSON.stringify(ANGEL_SESSION), 'utf8'), ci.final()]);
+    fs.writeFileSync(ANGEL_FILE, JSON.stringify({ v: 1, iv: iv.toString('base64'), tag: ci.getAuthTag().toString('base64'), data: data.toString('base64') }));
+  } catch (e) { console.warn('Angel session save:', e.message); }
 }
-function kiteSession() {
-  if (!KITE_SESSION_LOADED) {
-    KITE_SESSION_LOADED = true;
+function angelSession() {
+  if (!ANGEL_SESSION_LOADED) {
+    ANGEL_SESSION_LOADED = true;
     try {
-      const o = JSON.parse(require('fs').readFileSync(KITE_FILE, 'utf8')), c = require('crypto');
-      const d = c.createDecipheriv('aes-256-gcm', kiteCipherKey(), Buffer.from(o.iv, 'base64')); d.setAuthTag(Buffer.from(o.tag, 'base64'));
-      KITE_SESSION = JSON.parse(Buffer.concat([d.update(Buffer.from(o.data, 'base64')), d.final()]).toString('utf8'));
+      const o = JSON.parse(require('fs').readFileSync(ANGEL_FILE, 'utf8')), c = require('crypto');
+      const d = c.createDecipheriv('aes-256-gcm', angelCipherKey(), Buffer.from(o.iv, 'base64')); d.setAuthTag(Buffer.from(o.tag, 'base64'));
+      ANGEL_SESSION = JSON.parse(Buffer.concat([d.update(Buffer.from(o.data, 'base64')), d.final()]).toString('utf8'));
     } catch {}
   }
-  return KITE_SESSION && Date.now() < KITE_SESSION.until ? KITE_SESSION : null;
+  return ANGEL_SESSION && Date.now() < ANGEL_SESSION.until ? ANGEL_SESSION : null;
 }
-/* Kite data can be used now: keys set, today's login done, and the plan has market data. */
-function kiteReady() { return !!(KITE.key && KITE.secret && kiteSession()) && !KITE_STATE.noMarketData; }
-/* A Kite token ends at 06:00 IST: the first 06:00 after the login. */
-function kiteTokenEnd(ms) {
+/* Angel One data can be used now: key set and today's login done. */
+function angelReady() { return !!(ANGEL.key && angelSession()); }
+/* A SmartAPI session ends at midnight IST: the first 00:00 after the login. */
+function angelTokenEnd(ms) {
   const ist = new Date(ms + 5.5 * 3600e3);
-  let end = Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate(), 6, 0) - 5.5 * 3600e3;
-  if (end <= ms) end += 86400e3;
-  return end;
+  return Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate() + 1, 0, 0) - 5.5 * 3600e3;
 }
-function kiteNote(path, t0, status, e) {
+function angelNote(path, t0, status, e) {
   const o = { at: new Date().toISOString(), path: String(path).split('?')[0], ms: Date.now() - t0 };
   if (status != null) o.status = status; if (e) o.error = String(e.message || e).slice(0, 140);
-  KITE_STATE.calls.push(o); if (KITE_STATE.calls.length > 10) KITE_STATE.calls.shift();
+  ANGEL_STATE.calls.push(o); if (ANGEL_STATE.calls.length > 10) ANGEL_STATE.calls.shift();
 }
-/* One Kite API call (through the 'kite' queue: Kite allows 1 quote request a second). */
-async function kiteCall(path, opts = {}) {
-  if (!KITE.key || !KITE.secret) throw new Error('Zerodha Kite not set up (KITE_API_KEY / KITE_API_SECRET on Render)');
-  const s = opts.noAuth ? null : kiteSession();
-  if (!opts.noAuth && !s) throw new Error('Zerodha not connected today - press "Connect Zerodha" (Screener -> My trades)');
-  const hdr = { 'X-Kite-Version': '3', Accept: opts.csv ? 'text/csv,*/*' : 'application/json', Referer: null, Origin: null };
-  if (s) hdr.Authorization = `token ${KITE.key}:${s.token}`;
-  let body = null;
-  if (opts.form) { body = new URLSearchParams(opts.form).toString(); hdr['Content-Type'] = 'application/x-www-form-urlencoded'; }
+/* One SmartAPI call (through the 'angel' queue: Angel One allows 1 quote request a second). */
+async function angelCall(path, body = null, opts = {}) {
+  if (!ANGEL.key) throw new Error('Angel One not set up (SMARTAPI_API_KEY on Render)');
+  const token = opts.token || angelSession()?.token;
+  if (!token) throw new Error('Angel One not connected today - press "Connect Angel One" (Screener -> My trades)');
+  const hdr = { 'Content-Type': 'application/json', Accept: 'application/json', 'X-UserType': 'USER', 'X-SourceID': 'WEB',
+    'X-ClientLocalIP': ANGEL.localIp, 'X-ClientPublicIP': ANGEL.publicIp, 'X-MACAddress': ANGEL.mac, 'X-PrivateKey': ANGEL.key,
+    Authorization: 'Bearer ' + token, Referer: null, Origin: null };
   const t0 = Date.now(); let r;
-  try { r = await get(KITE.api + path, hdr, body, opts.method || 'GET', opts.queue || null); }
-  catch (e) { kiteNote(path, t0, null, e); KITE_STATE.lastError = e.message; KITE_STATE.lastErrorAt = new Date().toISOString(); throw e; }
-  kiteNote(path, t0, r.status);
-  if (opts.csv && r.status === 200) { KITE_STATE.lastOk = new Date().toISOString(); return r.body; }
+  try { r = await get(ANGEL.api + path, hdr, body ? JSON.stringify(body) : null, body ? 'POST' : 'GET'); }
+  catch (e) { angelNote(path, t0, null, e); ANGEL_STATE.lastError = e.message; ANGEL_STATE.lastErrorAt = new Date().toISOString(); throw e; }
+  angelNote(path, t0, r.status);
   let j = null; try { j = JSON.parse(r.body); } catch {}
-  if (r.status === 200 && j?.status === 'success') { KITE_STATE.lastOk = new Date().toISOString(); return j.data; }
-  const type = j?.error_type || '', msg = j?.message || ('HTTP ' + r.status);
-  if (type === 'TokenException' && s) { KITE_SESSION = null; kiteSaveSession(); }   /* logged out / expired: login again */
-  if (type === 'PermissionException' && /^\/quote/.test(path)) KITE_STATE.noMarketData = true;   /* plan without market data */
-  if ((type === 'PermissionException' || /permission|subscri/i.test(msg)) && /^\/instruments\/historical/.test(path)) KITE_STATE.noHistorical = Date.now();   /* plan without historical data */
-  KITE_STATE.lastError = `${String(path).split('?')[0]}: ${type || 'HTTP ' + r.status} - ${msg}`; KITE_STATE.lastErrorAt = new Date().toISOString();
-  const er = new Error('Zerodha: ' + msg); er.kiteType = type; throw er;
+  if (r.status === 200 && j && (j.status === true || j.success === true)) { ANGEL_STATE.lastOk = new Date().toISOString(); return j.data; }
+  const code = j?.errorcode || j?.errorCode || '', msg = j?.message || ('HTTP ' + r.status);
+  /* logged out / expired / bad token: login again (AG8001 invalid token, AG8002 expired, AG8003 missing) */
+  if (!opts.token && (r.status === 401 || r.status === 403 || /^AG800[123]$/.test(code) || /token/i.test(msg) && /invalid|expired/i.test(msg))) { ANGEL_SESSION = null; angelSaveSession(); }
+  ANGEL_STATE.lastError = `${path}: ${code || 'HTTP ' + r.status} - ${msg}`; ANGEL_STATE.lastErrorAt = new Date().toISOString();
+  const er = new Error('Angel One: ' + msg + (code ? ' (' + code + ')' : '')); er.angelCode = code; throw er;
 }
-/* ── daily login ── */
-const KITE_LOGINS = new Map();   /* state -> time the login was started (10 minutes to finish it) */
-function kiteLoginUrl() {
+/* ── daily login (Angel One's publisher-login page, then back to /api/smartapi/callback) ── */
+const ANGEL_LOGINS = new Map();   /* state -> time the login was started (10 minutes to finish it) */
+function angelLoginUrl() {
   const st = require('crypto').randomBytes(16).toString('hex'), now = Date.now();
-  for (const [k, t] of KITE_LOGINS) if (now - t > 10 * 60e3) KITE_LOGINS.delete(k);
-  KITE_LOGINS.set(st, now);
-  return `${KITE.login}?v=3&api_key=${encodeURIComponent(KITE.key)}&redirect_params=${encodeURIComponent('td_state=' + st)}`;
+  for (const [k, t] of ANGEL_LOGINS) if (now - t > 10 * 60e3) ANGEL_LOGINS.delete(k);
+  ANGEL_LOGINS.set(st, now);
+  return `${ANGEL.login}?api_key=${encodeURIComponent(ANGEL.key)}&state=${st}`;
 }
-async function kiteCallback(p) {
-  const now = Date.now(), st = p.get('td_state');
-  for (const [k, t] of KITE_LOGINS) if (now - t > 10 * 60e3) KITE_LOGINS.delete(k);
-  /* Only a login started from this app in the last 10 minutes: Kite returns td_state; without it, the one pending login. */
-  if (st ? !KITE_LOGINS.delete(st) : KITE_LOGINS.size !== 1) throw new Error('login link expired - press Connect Zerodha again');
-  if (!st) KITE_LOGINS.clear();
-  const rt = String(p.get('request_token') || '');
-  if (p.get('status') !== 'success' || !/^[A-Za-z0-9]{8,64}$/.test(rt)) throw new Error('Zerodha login was not completed');
-  const checksum = require('crypto').createHash('sha256').update(KITE.key + rt + KITE.secret).digest('hex');
-  const d = await kiteCall('/session/token', { noAuth: true, method: 'POST', form: { api_key: KITE.key, request_token: rt, checksum } });
-  if (!d?.access_token) throw new Error('Zerodha gave no access token');
-  KITE_SESSION = { token: d.access_token, user: d.user_id || null, name: d.user_shortname || d.user_name || null, at: Date.now(), until: kiteTokenEnd(Date.now()) };
-  KITE_SESSION_LOADED = true; KITE_STATE.noMarketData = false; kiteSaveSession();
-  API_CACHE.delete('kite:idx');
-  kiteInstruments().then(() => kiteIndexQuotes()).catch(e => console.warn('Kite after login:', e.message));
-  return KITE_SESSION;
+async function angelCallback(p) {
+  const now = Date.now(), st = p.get('state');
+  for (const [k, t] of ANGEL_LOGINS) if (now - t > 10 * 60e3) ANGEL_LOGINS.delete(k);
+  /* Only a login started from this app in the last 10 minutes: Angel One returns the state; without it, the one pending login. */
+  if (st ? !ANGEL_LOGINS.delete(st) : ANGEL_LOGINS.size !== 1) throw new Error('login link expired - press Connect Angel One again');
+  if (!st) ANGEL_LOGINS.clear();
+  const tok = String(p.get('auth_token') || p.get('jwtToken') || p.get('jwt_token') || '').replace(/^Bearer\s+/i, '').trim();
+  if (!/^[A-Za-z0-9._-]{20,4096}$/.test(tok)) throw new Error('Angel One login was not completed');
+  /* Check the token works before keeping it (and get the account name to show on the card). */
+  const prof = await angelCall('/rest/secure/angelbroking/user/v1/getProfile', null, { token: tok });
+  ANGEL_SESSION = { token: tok, user: prof?.clientcode || null, name: prof?.name || null, at: Date.now(), until: angelTokenEnd(Date.now()) };
+  ANGEL_SESSION_LOADED = true; angelSaveSession();
+  API_CACHE.delete('angel:idx');
+  angelInstruments().then(() => angelIndexQuotes()).catch(e => console.warn('Angel One after login:', e.message));
+  return ANGEL_SESSION;
 }
-async function kiteLogout() {
-  const s = kiteSession();
-  if (s) { try { await kiteCall(`/session/token?api_key=${encodeURIComponent(KITE.key)}&access_token=${encodeURIComponent(s.token)}`, { method: 'DELETE' }); } catch {} }
-  KITE_SESSION = null; KITE_SESSION_LOADED = true; kiteSaveSession();
+async function angelLogout() {
+  const s = angelSession();
+  if (s) { try { await angelCall('/rest/secure/angelbroking/user/v1/logout', { clientcode: s.user || '' }); } catch {} }
+  ANGEL_SESSION = null; ANGEL_SESSION_LOADED = true; angelSaveSession();
 }
-/* ── instrument list: option strikes / expiries / lot sizes and the index names, once a day ── */
-function kiteCsv(text) {
-  const rows = [], lines = String(text || '').split(/\r?\n/);
-  for (const line of lines) {
-    if (!line) continue;
-    const out = []; let cur = '', q = false;
-    for (let i = 0; i < line.length; i++) {
-      const ch = line[i];
-      if (q) { if (ch === '"') { if (line[i + 1] === '"') { cur += '"'; i++; } else q = false; } else cur += ch; }
-      else if (ch === '"') q = true; else if (ch === ',') { out.push(cur); cur = ''; } else cur += ch;
-    }
-    out.push(cur); rows.push(out);
-  }
-  const head = rows.shift() || [];
-  return rows.map(r => Object.fromEntries(head.map((h, i) => [h, r[i]])));
+/* ── instrument list: option strikes / expiries / lot sizes and the index tokens, once a day ──
+   Angel One's list is one ~40 MB JSON array of flat objects (no login needed). It is read as it streams in and only
+   the rows used here are kept: parsing it whole would need ~300 MB of memory, more than Render's free plan has. */
+const angelNorm = s => String(s || '').toUpperCase().replace(/&/g, 'AND').replace(/[^A-Z0-9]/g, '');
+const ANGEL_MON = { JAN: '01', FEB: '02', MAR: '03', APR: '04', MAY: '05', JUN: '06', JUL: '07', AUG: '08', SEP: '09', OCT: '10', NOV: '11', DEC: '12' };
+const angelExpiryIso = s => { const m = /^(\d{2})([A-Z]{3})(\d{4})$/.exec(String(s || '').toUpperCase()); return m && ANGEL_MON[m[2]] ? `${m[3]}-${ANGEL_MON[m[2]]}-${m[1]}` : null; };
+function angelMasterRows(onRow) {
+  return new Promise((resolve, reject) => {
+    const u = new URL(ANGEL.master); countOutbound(u.hostname, 0);
+    let settled = false, buf = '', n = 0;
+    const done = (fn, v) => { if (settled) return; settled = true; clearTimeout(deadline); fn(v); };
+    const req = https.request({ hostname: u.hostname, path: u.pathname + u.search, method: 'GET', headers: { 'User-Agent': BASE_HDR['User-Agent'], Accept: 'application/json', 'Accept-Encoding': 'gzip' }, timeout: 30000 }, res => {
+      if (res.statusCode !== 200) { res.resume(); return done(reject, new Error('instrument list: HTTP ' + res.statusCode)); }
+      const stream = res.headers['content-encoding'] === 'gzip' ? res.pipe(zlib.createGunzip()) : res;
+      stream.setEncoding('utf8');
+      stream.on('data', chunk => {
+        buf += chunk;
+        let start = buf.indexOf('{'), end;
+        while (start >= 0 && (end = buf.indexOf('}', start)) >= 0) {
+          try { onRow(JSON.parse(buf.slice(start, end + 1))); n++; } catch {}
+          start = buf.indexOf('{', end + 1);
+        }
+        buf = start >= 0 ? buf.slice(start) : '';
+      });
+      stream.on('end', () => done(resolve, n));
+      stream.on('error', er => done(reject, er));
+      if (stream !== res) res.on('error', er => done(reject, er));
+    });
+    const deadline = setTimeout(() => { req.destroy(); done(reject, new Error('instrument list: deadline exceeded')); }, 120000);
+    req.on('timeout', () => { req.destroy(); done(reject, new Error('instrument list: timeout')); });
+    req.on('error', er => done(reject, er));
+    req.end();
+  });
 }
-const kiteNorm = s => String(s || '').toUpperCase().replace(/&/g, 'AND').replace(/[^A-Z0-9]/g, '');
-let KITE_INSTR = null, KITE_INSTR_INFLIGHT = null, KITE_INSTR_TRIED = 0;
-try { KITE_INSTR = JSON.parse(require('fs').readFileSync(KITE_INSTR_FILE, 'utf8')); } catch {}
-async function kiteInstruments() {
+let ANGEL_INSTR = null, ANGEL_INSTR_INFLIGHT = null, ANGEL_INSTR_TRIED = 0;
+try { ANGEL_INSTR = JSON.parse(require('fs').readFileSync(ANGEL_INSTR_FILE, 'utf8')); } catch {}
+async function angelInstruments() {
   const today = istDateKey();
-  if (KITE_INSTR?.day === today && KITE_INSTR.v === 3) return KITE_INSTR;
-  const old = KITE_INSTR && Date.now() - (KITE_INSTR.ts || 0) < 4 * 86400e3 ? KITE_INSTR : null;
-  if (old && Date.now() - KITE_INSTR_TRIED < 10 * 60e3) return old;   /* failed recently: keep the last list */
-  if (KITE_INSTR_INFLIGHT) return KITE_INSTR_INFLIGHT;
-  KITE_INSTR_TRIED = Date.now();
-  KITE_INSTR_INFLIGHT = (async () => {
-    const [nfo, nse] = await Promise.all([kiteCall('/instruments/NFO', { csv: true }), kiteCall('/instruments/NSE', { csv: true })]);
-    const opt = {}, lot = {}, sopt = {};
-    for (const r of kiteCsv(nfo)) {
+  if (ANGEL_INSTR?.day === today && ANGEL_INSTR.v === 1) return ANGEL_INSTR;
+  const old = ANGEL_INSTR && Date.now() - (ANGEL_INSTR.ts || 0) < 4 * 86400e3 ? ANGEL_INSTR : null;
+  if (old && Date.now() - ANGEL_INSTR_TRIED < 10 * 60e3) return old;   /* failed recently: keep the last list */
+  if (ANGEL_INSTR_INFLIGHT) return ANGEL_INSTR_INFLIGHT;
+  ANGEL_INSTR_TRIED = Date.now();
+  ANGEL_INSTR_INFLIGHT = (async () => {
+    const opt = {}, lot = {}, idxRows = [];
+    const rows = await angelMasterRows(r => {
+      if (r.exch_seg === 'NSE' && r.instrumenttype === 'AMXIDX') { idxRows.push({ token: String(r.token), symbol: r.symbol, name: r.name }); return; }
       const name = String(r.name || '').toUpperCase();
-      /* Stock options (for the option put/call ratio tag): name -> ['NFO:<tradingsymbol>', 'CE'|'PE'] */
-      if (!KITE_OC_NAMES.has(name) && r.segment === 'NFO-OPT' && (r.instrument_type === 'CE' || r.instrument_type === 'PE') && r.tradingsymbol)
-        (sopt[name] = sopt[name] || []).push(['NFO:' + r.tradingsymbol, r.instrument_type]);
-      if (!KITE_OC_NAMES.has(name) || (r.instrument_type !== 'CE' && r.instrument_type !== 'PE') || !/^\d{4}-\d{2}-\d{2}$/.test(r.expiry || '')) continue;
-      (opt[name] = opt[name] || []).push([r.expiry, +r.strike, r.instrument_type, r.tradingsymbol]);
-      if (+r.lot_size > 0 && (!lot[name] || r.expiry < lot[name].exp)) lot[name] = { exp: r.expiry, n: +r.lot_size };
+      if (r.exch_seg !== 'NFO' || r.instrumenttype !== 'OPTIDX' || !OC_NAMES.has(name)) return;
+      const exp = angelExpiryIso(r.expiry), ty = /CE$/.test(r.symbol) ? 'CE' : /PE$/.test(r.symbol) ? 'PE' : null, k = +r.strike / 100;
+      if (!exp || !ty || !(k > 0) || !r.token) return;
+      (opt[name] = opt[name] || []).push([exp, k, ty, String(r.token)]);
+      if (+r.lotsize > 0 && (!lot[name] || exp < lot[name].exp)) lot[name] = { exp, n: +r.lotsize };
+    });
+    if (!opt.NIFTY?.length) throw new Error(`Angel One instrument list has no Nifty options (${rows} rows read)`);
+    const idx = {};
+    for (const [sym, re] of Object.entries(IDX_RE)) {
+      const hit = idxRows.find(r => re.test(angelNorm(r.symbol))) || idxRows.find(r => re.test(angelNorm(r.name)));
+      if (hit) idx[sym] = hit.token;
     }
-    if (!opt.NIFTY?.length) throw new Error('Kite instrument list has no Nifty options');
-    const idxRows = kiteCsv(nse).filter(r => r.segment === 'INDICES' || r.instrument_type === 'INDEX');
-    const idx = {}, idxTok = {}, eq = {}, eqName = {};
-    for (const [sym, re] of Object.entries(KITE_IDX_RE)) {
-      const hit = idxRows.find(r => re.test(kiteNorm(r.tradingsymbol))) || idxRows.find(r => re.test(kiteNorm(r.name)));
-      if (hit) { idx[sym] = 'NSE:' + hit.tradingsymbol; idxTok[sym] = +hit.instrument_token; }
-    }
-    /* NSE stocks / ETFs: symbol -> instrument token (historical candles need the token) */
-    for (const r of kiteCsv(nse)) if (r.segment === 'NSE' && r.instrument_type === 'EQ' && r.tradingsymbol && +r.instrument_token > 0) { eq[r.tradingsymbol] = +r.instrument_token; if (r.name) eqName[r.tradingsymbol] = r.name; }
-    KITE_INSTR = { v: 3, day: today, ts: Date.now(), opt, sopt, lot: Object.fromEntries(Object.entries(lot).map(([k, v]) => [k, v.n])), idx, idxTok, eq, eqName, indexNames: idxRows.length };
-    try { require('fs').mkdirSync(require('path').dirname(KITE_INSTR_FILE), { recursive: true }); require('fs').writeFileSync(KITE_INSTR_FILE, JSON.stringify(KITE_INSTR)); } catch {}
-    return KITE_INSTR;
-  })().catch(e => { if (old) { console.warn('Kite instruments (keeping the last list):', e.message); return old; } throw e; })
-    .finally(() => { KITE_INSTR_INFLIGHT = null; });
-  return KITE_INSTR_INFLIGHT;
+    ANGEL_INSTR = { v: 1, day: today, ts: Date.now(), opt, lot: Object.fromEntries(Object.entries(lot).map(([k, v]) => [k, v.n])), idx, indexNames: idxRows.length };
+    try { require('fs').mkdirSync(require('path').dirname(ANGEL_INSTR_FILE), { recursive: true }); require('fs').writeFileSync(ANGEL_INSTR_FILE, JSON.stringify(ANGEL_INSTR)); } catch {}
+    return ANGEL_INSTR;
+  })().catch(e => { if (old) { console.warn('Angel One instruments (keeping the last list):', e.message); return old; } throw e; })
+    .finally(() => { ANGEL_INSTR_INFLIGHT = null; });
+  return ANGEL_INSTR_INFLIGHT;
 }
-/* Quotes for many instruments ('NSE:NIFTY 50', 'NFO:NIFTY26N2424000CE'...), 250 per request. */
-async function kiteQuote(list, mode = '', per = 250) {
+/* Quotes for many tokens of one exchange, 50 per request (Angel One's limit). Returns token -> quote. */
+async function angelQuote(exch, tokens, mode = 'FULL') {
   const out = {};
-  for (let i = 0; i < list.length; i += per) {
-    const part = list.slice(i, i + per);
-    Object.assign(out, await kiteCall(`/quote${mode}?` + part.map(x => 'i=' + encodeURIComponent(x)).join('&')) || {});
+  for (let i = 0; i < tokens.length; i += 50) {
+    const d = await angelCall('/rest/secure/angelbroking/market/v1/quote/', { mode, exchangeTokens: { [exch]: tokens.slice(i, i + 50) } });
+    for (const q of d?.fetched || []) out[String(q.symbolToken)] = q;
   }
   return out;
 }
 
-/* Every index (and India VIX) in one request, kept 30 s in market hours, 10 minutes outside. */
-async function kiteIndexQuotes() {
-  return (await cacheWrap('kite:idx', istMarketHoursS() ? 30e3 : 10 * 60e3, async () => {
-    const ins = await kiteInstruments(), list = [...new Set(Object.values(ins.idx || {}))];
-    if (!list.length) throw new Error('no index found in Kite\'s instrument list');
-    return kiteQuote(list, '/ohlc');
+/* Every listed index (and India VIX) in one request, kept 30 s in market hours, 10 minutes outside. */
+async function angelIndexQuotes() {
+  return (await cacheWrap('angel:idx', istMarketHoursS() ? 30e3 : 10 * 60e3, async () => {
+    const ins = await angelInstruments(), list = [...new Set(Object.values(ins.idx || {}))];
+    if (!list.length) throw new Error('no index found in Angel One\'s instrument list');
+    return angelQuote('NSE', list, 'OHLC');
   })).value;
 }
-/* Index price in the shape of getPriceAndChange(): Kite's live value and previous close; Yahoo only for the mini chart. */
-async function kiteIndexPrice(sym, ticker) {
-  const ins = await kiteInstruments(), id = ins.idx?.[sym];
-  if (!id) throw new Error(sym + ' not in Kite\'s index list');
-  const q = (await kiteIndexQuotes())[id], live = +q?.last_price, prev = +q?.ohlc?.close;
-  if (!(live > 0)) throw new Error('Kite gave no value for ' + id);
+/* Index price in the shape of getPriceAndChange(): Angel One's live value and previous close; Yahoo only for the mini chart. */
+async function angelIndexPrice(sym, ticker) {
+  const ins = await angelInstruments(), id = ins.idx?.[sym];
+  if (!id) throw new Error(sym + ' not in Angel One\'s index list');
+  const q = (await angelIndexQuotes())[id], live = +q?.ltp, prev = +q?.close;
+  if (!(live > 0)) throw new Error('Angel One gave no value for ' + sym);
   let y = null; if (ticker) { try { y = await withTimeout(getPriceAndChange(ticker, sym), 8000, ticker + ' mini chart'); } catch {} }
   const scale = NSE_INDEX_PRIMARY.has(sym) && y?.liveRaw > 0 ? live / y.liveRaw : 1;   /* Fin Ex-Bank: Yahoo has only the ETF */
   if (NSE_INDEX_PRIMARY.has(sym) && scale > 1 && NSE_SNAP.ratio[sym]?.day !== istDateKey()) { NSE_PROXY_RATIO[sym] = scale; NSE_SNAP.ratio[sym] = { k: scale, day: istDateKey() }; nseSnapSave(); }
   const spark = (y?.spark || []).map(v => v * scale); if (spark.length) spark[spark.length - 1] = live; else spark.push(live);
   const p0 = prev > 0 ? prev : live;
   return { liveRaw: live, prevRaw: p0, rawChg: live - p0, rawPct: p0 > 0 ? (live - p0) / p0 * 100 : 0,
-    todayOpen: +q.ohlc?.open || live, todayHigh: +q.ohlc?.high || live, todayLow: +q.ohlc?.low || live, todayVol: 0,
-    changeBasis: 'previousClose', basisTime: null, marketTime: y?.marketTime || Math.round(Date.now() / 1000), spark: spark.slice(-6), source: 'Zerodha Kite' };
+    todayOpen: +q.open || live, todayHigh: +q.high || live, todayLow: +q.low || live, todayVol: 0,
+    changeBasis: 'previousClose', basisTime: null, marketTime: y?.marketTime || Math.round(Date.now() / 1000), spark: spark.slice(-6), source: 'Angel One' };
 }
-async function kiteVix() {
-  const ins = await kiteInstruments(), id = ins.idx?.VIX;
-  if (!id) throw new Error('India VIX not in Kite\'s index list');
-  const v = +(await kiteIndexQuotes())[id]?.last_price;
-  if (!(v > 0)) throw new Error('Kite gave no India VIX');
+async function angelVix() {
+  const ins = await angelInstruments(), id = ins.idx?.VIX;
+  if (!id) throw new Error('India VIX not in Angel One\'s index list');
+  const v = +(await angelIndexQuotes())[id]?.ltp;
+  if (!(v > 0)) throw new Error('Angel One gave no India VIX');
   return v;
 }
-/* ── option chain from Kite (same shape as NSE's, built by ocBuild) ── */
-const KITE_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-const kiteKeyToNse = k => `${k.slice(8, 10)}-${KITE_MON[+k.slice(5, 7) - 1]}-${k.slice(0, 4)}`;
-async function kiteExpiryInfo(name) {
-  const ins = await kiteInstruments(), rows = ins.opt?.[name];
-  if (!rows?.length) throw new Error('no ' + name + ' options in Kite\'s instrument list');
-  return { expiryDates: [...new Set(rows.map(r => r[0]))].sort().map(kiteKeyToNse) };
+/* ── option chain from Angel One (same shape as NSE's, built by ocBuild) ── */
+const MON3 = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+const isoToNseDate = k => `${k.slice(8, 10)}-${MON3[+k.slice(5, 7) - 1]}-${k.slice(0, 4)}`;
+async function angelExpiryInfo(name) {
+  const ins = await angelInstruments(), rows = ins.opt?.[name];
+  if (!rows?.length) throw new Error('no ' + name + ' options in Angel One\'s instrument list');
+  return { expiryDates: [...new Set(rows.map(r => r[0]))].sort().map(isoToNseDate) };
 }
 const OC_SPOT_SYM = { NIFTY: 'NSE:NIFTY', BANKNIFTY: 'NSE:BANKNIFTY', FINNIFTY: 'NSE:FINNIFTY' };
-async function kiteOptionChain(sym, name, want, opts) {
-  const exps = ocOpenExpiries(await kiteExpiryInfo(name));
+async function angelOptionChain(sym, name, want, opts) {
+  const exps = ocOpenExpiries(await angelExpiryInfo(name));
   const dd0 = (a, b) => Math.abs(Date.parse(a) - Date.parse(b));
   const pick = exps.find(e => e.key === want) || (want ? exps.slice().sort((a, b) => dd0(a.key, want) - dd0(b.key, want))[0] : exps[0]);
-  if (!pick) throw new Error('no open ' + name + ' expiry in Kite\'s list');
+  if (!pick) throw new Error('no open ' + name + ' expiry in Angel One\'s list');
   const key = `${name}_${pick.key}`, hit = NSE_SNAP.chains[key], age = hit ? Date.now() - hit.ts : Infinity;
   const ttl = Math.min(opts.fresh != null ? opts.fresh : Infinity, istMarketHoursS() ? 60e3 : 15 * 60e3);
   const served = h => ({ ...h.value, expiries: exps.map(e => e.key).slice(0, 8), saved: true, stale: Date.now() - h.ts > 10 * 60e3, staleAgeSec: Math.round((Date.now() - h.ts) / 1000) });
-  if (hit && hit.src === 'kite' && age < ttl) return served(hit);
-  const fk = 'kite:' + key;
+  if (hit && hit.src === 'angel' && age < ttl) return served(hit);
+  const fk = 'angel:' + key;
   if (!OC_INFLIGHT.has(fk)) OC_INFLIGHT.set(fk, (async () => {
-    const ins = await kiteInstruments(), q0 = (await kiteIndexQuotes())[ins.idx?.[OC_SPOT_SYM[name]]], spot = +q0?.last_price;
-    if (!(spot > 0)) throw new Error('Kite gave no ' + name + ' spot');
+    const ins = await angelInstruments(), q0 = (await angelIndexQuotes())[ins.idx?.[OC_SPOT_SYM[name]]], spot = +q0?.ltp;
+    if (!(spot > 0)) throw new Error('Angel One gave no ' + name + ' spot');
+    /* the 200 contracts nearest the spot (100 strikes): 4 quote requests at Angel One's 1 a second */
     const rows = (ins.opt[name] || []).filter(r => r[0] === pick.key && Math.abs(r[1] - spot) / spot <= 0.12)
-      .sort((a, b) => Math.abs(a[1] - spot) - Math.abs(b[1] - spot)).slice(0, 480);
-    if (!rows.length) throw new Error('no strikes near the spot in Kite\'s list');
-    const q = await kiteQuote(rows.map(r => 'NFO:' + r[3]));
+      .sort((a, b) => Math.abs(a[1] - spot) - Math.abs(b[1] - spot)).slice(0, 200);
+    if (!rows.length) throw new Error('no strikes near the spot in Angel One\'s list');
+    const q = await angelQuote('NFO', rows.map(r => r[3]), 'FULL');
     const by = new Map();
-    for (const [, k, ty, ts] of rows) {
-      const o = q['NFO:' + ts]; if (!o) continue;
+    for (const [, k, ty, tok] of rows) {
+      const o = q[tok]; if (!o) continue;
       const row = by.get(k) || { strikePrice: k }; by.set(k, row);
-      row[ty] = { lastPrice: +o.last_price || 0, buyPrice1: +o.depth?.buy?.[0]?.price || 0, sellPrice1: +o.depth?.sell?.[0]?.price || 0,
-        openInterest: +o.oi || 0, changeinOpenInterest: 0, impliedVolatility: 0, totalTradedVolume: +o.volume || 0 };
+      row[ty] = { lastPrice: +o.ltp || 0, buyPrice1: +o.depth?.buy?.[0]?.price || 0, sellPrice1: +o.depth?.sell?.[0]?.price || 0,
+        openInterest: +o.opnInterest || 0, changeinOpenInterest: 0, impliedVolatility: 0, totalTradedVolume: +o.tradeVolume || 0 };
     }
-    const ist = new Date(Date.now() + 5.5 * 3600e3), ts = `${kiteKeyToNse(ist.toISOString().slice(0, 10))} ${ist.toISOString().slice(11, 19)}`;
-    const value = { ...ocBuild(sym, name, { records: { underlyingValue: spot, timestamp: ts, data: [...by.values()] } }, pick, exps), source: 'Zerodha Kite', lotSize: ins.lot?.[name] || null };
-    NSE_SNAP.chains[key] = { value, ts: Date.now(), src: 'kite' };
+    if (!by.size) throw new Error('Angel One gave no option quotes');
+    const ist = new Date(Date.now() + 5.5 * 3600e3), ts = `${isoToNseDate(ist.toISOString().slice(0, 10))} ${ist.toISOString().slice(11, 19)}`;
+    const value = { ...ocBuild(sym, name, { records: { underlyingValue: spot, timestamp: ts, data: [...by.values()] } }, pick, exps), source: 'Angel One', lotSize: ins.lot?.[name] || null };
+    NSE_SNAP.chains[key] = { value, ts: Date.now(), src: 'angel' };
     for (const k of Object.keys(NSE_SNAP.chains)) if (Date.now() - NSE_SNAP.chains[k].ts > 8 * 86400e3) delete NSE_SNAP.chains[k];
     nseSnapSave(); NSE_OC_LAST.ok = new Date().toISOString();
     return value;
@@ -1023,19 +1036,18 @@ async function kiteOptionChain(sym, name, want, opts) {
   try { return { ...(await OC_INFLIGHT.get(fk)), saved: false }; }
   catch (e) { if (hit && age < 4 * 86400e3) return served(hit); throw e; }
 }
-function kiteStatus() {
-  const s = kiteSession(), ins = KITE_INSTR;
+function angelStatus() {
+  const s = angelSession(), ins = ANGEL_INSTR;
   return {
-    configured: !!(KITE.key && KITE.secret), keySet: !!KITE.key, secretSet: !!KITE.secret,
-    noHistorical: !!(KITE_STATE.noHistorical && Date.now() - KITE_STATE.noHistorical < 3600e3),
-    /* names (never values) of the Kite-like variables this server sees - tells a typo in the name from a missing one */
-    envNames: Object.keys(process.env).filter(k => /KITE|ZERODHA/i.test(k)).sort(),
+    configured: !!ANGEL.key, keySet: !!ANGEL.key,
+    /* names (never values) of the Angel-like variables this server sees - tells a typo in the name from a missing one */
+    envNames: Object.keys(process.env).filter(k => /SMARTAPI|ANGEL/i.test(k)).sort(),
     connected: !!s, user: s?.user || null, name: s?.name || null,
-    until: s ? new Date(s.until).toISOString() : null, noMarketData: KITE_STATE.noMarketData, ready: kiteReady(),
-    redirectUrl: (APP_URL || '') + '/api/kite/callback',
+    until: s ? new Date(s.until).toISOString() : null, ready: angelReady(),
+    redirectUrl: (APP_URL || '') + '/api/smartapi/callback',
     instruments: ins ? { day: ins.day, options: Object.fromEntries(Object.entries(ins.opt || {}).map(([k, v]) => [k, v.length])), lot: ins.lot || {},
-      indices: Object.keys(ins.idx || {}).length, notFound: Object.keys(KITE_IDX_RE).filter(k => !ins.idx?.[k]), indexNames: ins.indexNames || 0 } : null,
-    lastOk: KITE_STATE.lastOk, lastError: KITE_STATE.lastError, lastErrorAt: KITE_STATE.lastErrorAt, calls: KITE_STATE.calls,
+      indices: Object.keys(ins.idx || {}).length, notFound: Object.keys(IDX_RE).filter(k => !ins.idx?.[k]), indexNames: ins.indexNames || 0 } : null,
+    lastOk: ANGEL_STATE.lastOk, lastError: ANGEL_STATE.lastError, lastErrorAt: ANGEL_STATE.lastErrorAt, calls: ANGEL_STATE.calls,
   };
 }
 
@@ -1053,11 +1065,11 @@ const NSE_INDEX_NAME = {
 const NSE_INDEX_PRIMARY = new Set(['NSE:NIFTYFINEXBANK']);   /* Yahoo symbol is an ETF proxy, not the index */
 /* ── NSE requests removed (18 Nov 2026) ──
    NSE refuses Render's address, so every NSE market-data request failed there. Removed: the option chain (now
-   Zerodha Kite only), the index snapshot and previous closes (Kite, else Yahoo), the archive index closes (Fin
-   Ex-Bank ratio: Kite, else the built-in ratio), FII / DII, the announcements feed and the Cloudflare relay. Still
+   Angel One only), the index snapshot and previous closes (Angel One, else Yahoo), the archive index closes (Fin
+   Ex-Bank ratio: the built-in ratio), FII / DII, the announcements feed and the Cloudflare relay. Still
    asked (they feed other checks and fall back to saved / built-in data, retried at most every few hours when
    refused): the results calendar, corporate actions, ASM / GSM, the holiday list and the index member lists.
-   data/nse-snap.json keeps the last option chains (from Kite) and the Fin Ex-Bank ratio. */
+   data/nse-snap.json keeps the last option chains (from Angel One) and the Fin Ex-Bank ratio. */
 const NSE_SNAP_FILE = require('path').join(__dirname, 'data', 'nse-snap.json');
 const NSE_SNAP = { chains: {}, info: {}, ratio: {} };
 try { Object.assign(NSE_SNAP, JSON.parse(require('fs').readFileSync(NSE_SNAP_FILE, 'utf8'))); } catch {}
@@ -1066,17 +1078,17 @@ function nseSnapSave() {
   clearTimeout(NSE_SNAP_SAVE_T);
   NSE_SNAP_SAVE_T = setTimeout(() => { try { require('fs').mkdirSync(require('path').dirname(NSE_SNAP_FILE), { recursive: true }); require('fs').writeFileSync(NSE_SNAP_FILE, JSON.stringify(NSE_SNAP)); } catch (e) { console.warn('NSE snapshot save:', e.message); } }, 500);
 }
-const NSE_PROXY_RATIO = {};   /* Fin Ex-Bank index / ETF price: learned from Zerodha Kite, else the built-in ratio */
+const NSE_PROXY_RATIO = {};   /* Fin Ex-Bank index / ETF price: the built-in ratio (Angel One does not list this index) */
 for (const [sym, o] of Object.entries(NSE_SNAP.ratio || {})) if (o?.k > 0) NSE_PROXY_RATIO[sym] = o.k;
 const FINEXBANK_RATIO_DEFAULT = Number(process.env.FINEXBANK_RATIO) > 100 ? Number(process.env.FINEXBANK_RATIO) : 978.8;
 async function getIndexFallbackPrice(sym, ticker) {
-  /* Zerodha Kite first when connected: live value and previous close of every NSE index (Fin Ex-Bank included). */
-  if (kiteReady() && KITE_IDX_RE[sym]) { try { return await withTimeout(kiteIndexPrice(sym, ticker), 15000, sym + ' Kite'); } catch (e) { console.warn('Kite index ' + sym + ':', e.message); } }
+  /* Angel One first when connected: live value and previous close of the NSE indices it lists. */
+  if (angelReady() && IDX_RE[sym]) { try { return await withTimeout(angelIndexPrice(sym, ticker), 15000, sym + ' Angel One'); } catch (e) { console.warn('Angel One index ' + sym + ':', e.message); } }
   if (NSE_INDEX_PRIMARY.has(sym)) {
     /* The Yahoo symbol is an ETF (~31 for an index at ~31,500): scaled by the index / ETF ratio (learned at the
        10:00 NSE snapshot, else from NSE's archive close), or fail so the last good value is served - a raw ETF
        price fired every "below" alert on this index. */
-    /* Fin Ex-Bank: Yahoo has only the FINIETF ETF. Scaled by the ratio learned from Zerodha Kite, else the built-in
+    /* Fin Ex-Bank: Yahoo has only the FINIETF ETF. Scaled by the ratio learned earlier, else the built-in
        ratio (measured 974-983 over 11-18 Nov 2026, so within about 0.5%). Before 18 Nov a deploy wiped the learned
        ratio and NSE refused to give a new one, so every quote failed with HTTP 500. */
     const learned = NSE_PROXY_RATIO[sym] > 0, k = learned ? NSE_PROXY_RATIO[sym] : FINEXBANK_RATIO_DEFAULT;
@@ -1140,10 +1152,9 @@ async function getRateBasis(force=false) {
 /* ── RESPONSE CACHE + IN-FLIGHT DEDUPE ──
    Keeps the app responsive when the user switches stocks quickly.
    TTLs are intentionally short so prices stay near-live while duplicate Yahoo calls are avoided. */
-/* Kite-context entries get their own keys ('|src:kite'), so a Kite answer never serves a Yahoo request or the other way
-   round. Keys starting 'kite:' are Kite data either way and are shared. */
+/* One key space since the second (Kite) data-source context was removed; kept as a class so callers are unchanged. */
 class SrcMap extends Map {
-  k(key) { return dataSrc() === 'kite' && !String(key).startsWith('kite:') ? key + '|src:kite' : key; }
+  k(key) { return key; }
   get(key) { return super.get(this.k(key)); }
   set(key, v) { return super.set(this.k(key), v); }
   has(key) { return super.has(this.k(key)); }
@@ -2661,7 +2672,7 @@ async function apiStrategy(req, res, p) {
     /* The NSE chain is requested first, in parallel with the spot price: both waits together must stay inside the
        page's 15 s limit (the chain used to wait up to 20 s after the spot, so a cold chain always ended as
        Black-Scholes estimates). */
-    const wantChain = kiteReady();   /* option builder: live premiums from Zerodha Kite when connected; else Black-Scholes only - no NSE call */
+    const wantChain = angelReady();   /* option builder: live premiums from Angel One when connected; else Black-Scholes only - no NSE call */
     const chainP = wantChain
       ? withTimeout(getOptionChain(sym, new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10), { estimate: false }), 11000, 'option chain').catch(() => null)
       : Promise.resolve(null);
@@ -2748,7 +2759,7 @@ async function apiStrategy(req, res, p) {
 
     if (chain) {
       const liveLegs = result.legs.filter(l => l.live).length, optLegs = result.legs.filter(l => l.type !== 'STOCK').length;
-      result.priceSource = liveLegs ? `${chain.source === 'Zerodha Kite' ? 'Zerodha Kite' : 'NSE'} live premiums (${liveLegs}/${optLegs} legs) · expiry ${chain.expiry}${chain.stale ? ' · saved quote' : ''}` : 'Black-Scholes estimate (no NSE quote for these strikes)';
+      result.priceSource = liveLegs ? `${chain.source === 'Angel One' ? 'Angel One' : 'NSE'} live premiums (${liveLegs}/${optLegs} legs) · expiry ${chain.expiry}${chain.stale ? ' · saved quote' : ''}` : 'Black-Scholes estimate (no NSE quote for these strikes)';
       result.oi = { pcr: chain.pcr, maxPain: chain.maxPain, callWalls: chain.callWalls, putWalls: chain.putWalls, expiry: chain.expiry, nseSpot: chain.spot };
     }
     send(res, {
@@ -4527,7 +4538,7 @@ async function runMyTradeScreenerScan() {
     whitelistUsed: false
   };
   const startedAt = Date.now();
-  const maxScanMs = dataSrc() === 'kite' ? 300000 : 85000;   /* Kite: ~3 candle requests a second -> ~100 s for the list */
+  const maxScanMs = 85000;
   const BATCH = 20;
   let timedOut = false;
   let scannedAttempted = 0;
@@ -5045,7 +5056,7 @@ async function getSectorQuoteLight(ticker) {
 }
 const SECTOR_SYM = t => Object.keys(YF_MAP).find(k => k.startsWith('NSE:') && YF_MAP[k] === t);
 async function getSectorPriceAndChange(s) {
-  /* Zerodha Kite when connected (one shared request for all sectors), else the direct Yahoo index ticker; Fin Ex-Bank
+  /* Angel One when connected (one shared request for all sectors), else the direct Yahoo index ticker; Fin Ex-Bank
      ETF x ratio. No synthetic stock basket calculation. */
   const sym = SECTOR_SYM(s.ticker);
   if (sym && NSE_INDEX_NAME[sym]) {
@@ -5230,16 +5241,16 @@ async function nseSwr(key, ttl, maxAge, producer) {
 }
 /* Last option-chain fetch from NSE (shown in /api/health): tells whether NSE is answering this server. */
 const NSE_OC_LAST = { ok: null, error: null, errorAt: null };
-/* Expiry list: Zerodha Kite's instrument list; without Kite the weekly Nifty expiries are worked out (Tuesday, the
-   trading day before when Tuesday is a holiday) - only for the dates shown, premiums need Kite. */
+/* Expiry list: Angel One's instrument list; without Angel One the weekly Nifty expiries are worked out (Tuesday, the
+   trading day before when Tuesday is a holiday) - only for the dates shown, premiums need Angel One. */
 async function ocExpiryList(name, fetch = false) {
-  if (kiteReady()) { try { return await kiteExpiryInfo(name); } catch (e) { console.warn('Kite expiries:', e.message); } }
+  if (angelReady()) { try { return await angelExpiryInfo(name); } catch (e) { console.warn('Angel One expiries:', e.message); } }
   const out = [], ist = new Date(Date.now() + 5.5 * 3600e3);
   let d = new Date(Date.UTC(ist.getUTCFullYear(), ist.getUTCMonth(), ist.getUTCDate()));
   for (let n = 0; n < 70 && out.length < 8; n++, d = new Date(d.getTime() + 86400e3)) {
     if (d.getUTCDay() !== 2) continue;
     let e = d; while (e.getUTCDay() === 0 || e.getUTCDay() === 6 || isNseHoliday(e.toISOString().slice(0, 10))) e = new Date(e.getTime() - 86400e3);
-    out.push(kiteKeyToNse(e.toISOString().slice(0, 10)));
+    out.push(isoToNseDate(e.toISOString().slice(0, 10)));
   }
   return { expiryDates: out, computed: true };
 }
@@ -5272,7 +5283,7 @@ function ocBuild(sym, name, j, pick, exps) {
   };
 }
 const OC_INFLIGHT = new Map();
-/* Option chain estimated with Black-Scholes when Zerodha is not connected: spot from Yahoo, one volatility for every
+/* Option chain estimated with Black-Scholes when Angel One is not connected: spot from Yahoo, one volatility for every
    strike = India VIX (Yahoo), expiries computed from NSE's weekday rule. Real out-of-the-money puts usually trade at a
    higher volatility than VIX, so estimated credits tend to be on the low side. No open interest. Kept 5 minutes. */
 async function estimatedOptionChain(sym, name, want) {
@@ -5292,9 +5303,9 @@ async function estimatedOptionChain(sym, name, want) {
         return { lastPrice: v, buyPrice1: v, sellPrice1: v, openInterest: 0, changeinOpenInterest: 0, impliedVolatility: vx, totalTradedVolume: v > 0 ? 1 : 0 }; };
       data.push({ strikePrice: k, CE: leg('C'), PE: leg('P') });
     }
-    const ist = new Date(Date.now() + 5.5 * 3600e3), ts = `${kiteKeyToNse(ist.toISOString().slice(0, 10))} ${ist.toISOString().slice(11, 19)}`;
+    const ist = new Date(Date.now() + 5.5 * 3600e3), ts = `${isoToNseDate(ist.toISOString().slice(0, 10))} ${ist.toISOString().slice(11, 19)}`;
     return { ...ocBuild(sym, name, { records: { underlyingValue: spot, timestamp: ts, data } }, pick, exps), pcr: null, maxPain: null, callWalls: [], putWalls: [],
-      estimated: true, vix: +vx.toFixed(2), source: `Black-Scholes estimate (India VIX ${vx.toFixed(1)}) - Zerodha not connected` };
+      estimated: true, vix: +vx.toFixed(2), source: `Black-Scholes estimate (India VIX ${vx.toFixed(1)}) - Angel One not connected` };
   })).value;
 }
 /* Option chain of one expiry. opts.fresh (ms): the scheduled jobs pass it - NSE is asked when the saved chain is
@@ -5304,8 +5315,8 @@ async function estimatedOptionChain(sym, name, want) {
 async function getOptionChain(sym, want = '', opts = {}) {
   const name = OC_SYMBOLS[sym];
   if (!name) throw new Error('Option chain only for NSE:NIFTY, NSE:BANKNIFTY, NSE:FINNIFTY');
-  /* Zerodha Kite when connected: live premiums of any expiry, kept 60 s - no NSE call. */
-  if (kiteReady()) { try { return await kiteOptionChain(sym, name, want, opts); } catch (e) { console.warn('Kite option chain:', e.message); } }
+  /* Angel One when connected: live premiums of any expiry, kept 60 s - no NSE call. */
+  if (angelReady()) { try { return await angelOptionChain(sym, name, want, opts); } catch (e) { console.warn('Angel One option chain:', e.message); } }
   /* Not connected: the last saved chain (pages show its time; under 4 days), never for a scheduled check. */
   if (opts.fresh == null) {
     const today = istDateKey(), exps = Object.keys(NSE_SNAP.chains).filter(k => k.startsWith(name + '_')).map(k => k.slice(name.length + 1)).filter(e => e >= today).sort();
@@ -5314,9 +5325,9 @@ async function getOptionChain(sym, want = '', opts = {}) {
     const h = k && NSE_SNAP.chains[k];
     if (h && Date.now() - h.ts < 4 * 86400e3) return { ...h.value, saved: true, stale: true, staleAgeSec: Math.round((Date.now() - h.ts) / 1000) };
   }
-  /* Zerodha not connected and nothing saved: Black-Scholes premiums from India VIX (22 Nov 2026), marked estimated. */
+  /* Angel One not connected and nothing saved: Black-Scholes premiums from India VIX (22 Nov 2026), marked estimated. */
   if (opts.estimate !== false) { try { return await estimatedOptionChain(sym, name, want); } catch (e) { console.warn('Estimated chain:', e.message); } }
-  throw new Error('live premiums need Zerodha connected (Screener -> My trades -> Connect Zerodha)');
+  throw new Error('live premiums need Angel One connected (Screener -> My trades -> Connect Angel One)');
 }
 /* The Nifty rule's expiry: the first one at least 3 days away (same as the page). */
 async function niftyRuleExpiry(fetch) {
@@ -5630,7 +5641,7 @@ async function buildMcxDrivers(sym, set) {
 async function apiVix(req,res){
   try{
     const { value: payload, cached } = await cacheWrap('vix:india', TTL.vix, async () => {
-      if (kiteReady()) { try { return { vix: +(await withTimeout(kiteVix(), 10000, 'Kite VIX')).toFixed(2), updatedAt: new Date().toISOString(), source: 'Zerodha Kite' }; } catch {} }
+      if (angelReady()) { try { return { vix: +(await withTimeout(angelVix(), 10000, 'Angel One VIX')).toFixed(2), updatedAt: new Date().toISOString(), source: 'Angel One' }; } catch {} }
       const {liveRaw}=await withTimeout(getPriceAndChange('^INDIAVIX'), 8000, 'India VIX price');
       return {vix:+liveRaw.toFixed(2),updatedAt:new Date().toISOString()};
     });
@@ -5655,7 +5666,7 @@ const NIFTY50_STOCKS = [
 ];
 
 const GLOBAL_LAST_GOOD = {};
-/* FII / DII: back on 22 Nov 2026 from Moneycontrol (NSE refuses Render's address; Kite has no FII / DII data). */
+/* FII / DII: back on 22 Nov 2026 from Moneycontrol (NSE refuses Render's address). */
 async function apiGlobal(req,res){
   try {
     const { value: payload, cached } = await cacheWrap('global:all', TTL.global, async () => {
@@ -5690,10 +5701,10 @@ async function apiGlobal(req,res){
        loading - and the options idea then had no VIX for the 5 min the result was cached. */
     const vixHistP = withTimeout(safeFetch(() => yfChart('^INDIAVIX', '1d', '1y'), 1), 20000, 'India VIX history');
     vixHistP.catch(() => {});
-    /* Nifty, Bank Nifty and India VIX from Zerodha Kite when connected (exchange previous close), else Yahoo. */
-    const GLOBAL_KITE = { '^NSEI':'NSE:NIFTY', '^NSEBANK':'NSE:BANKNIFTY', '^INDIAVIX':'VIX' };
+    /* Nifty, Bank Nifty and India VIX from Angel One when connected (exchange previous close), else Yahoo. */
+    const GLOBAL_ANGEL = { '^NSEI':'NSE:NIFTY', '^NSEBANK':'NSE:BANKNIFTY', '^INDIAVIX':'VIX' };
     const globalPrice = async s => {
-      if (GLOBAL_KITE[s.ticker] && kiteReady()) { try { return await withTimeout(kiteIndexPrice(GLOBAL_KITE[s.ticker], s.ticker), 15000, s.ticker + ' Kite'); } catch {} }
+      if (GLOBAL_ANGEL[s.ticker] && angelReady()) { try { return await withTimeout(angelIndexPrice(GLOBAL_ANGEL[s.ticker], s.ticker), 15000, s.ticker + ' Angel One'); } catch {} }
       return safeFetch(() => getPriceAndChange(s.ticker), 1);
     };
     const resultsP = Promise.allSettled(
@@ -5867,7 +5878,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){const ks=kiteStatus();send(res,{freeSources:{fiiDii:FREE_CAL.fiiDii?{source:FREE_CAL.fiiDii.source,last:FREE_CAL.fiiDii.days?.[0]?.date,fetchedAt:FREE_CAL.fiiDii.fetchedAt}:null,fiiDiiError:FREE_CAL.fiiErr||null,yahooCalendarStocks:Object.keys(FREE_CAL.earn||{}).length,yahooSplitsAt:FREE_CAL.splitsTs?new Date(FREE_CAL.splitsTs).toISOString():null,resultsSource:RESULTS_CAL_CACHE?.source||null},kite:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,noMarketData:ks.noMarketData,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
+function apiHealth(req,res){const ks=angelStatus();send(res,{freeSources:{fiiDii:FREE_CAL.fiiDii?{source:FREE_CAL.fiiDii.source,last:FREE_CAL.fiiDii.days?.[0]?.date,fetchedAt:FREE_CAL.fiiDii.fetchedAt}:null,fiiDiiError:FREE_CAL.fiiErr||null,yahooCalendarStocks:Object.keys(FREE_CAL.earn||{}).length,yahooSplitsAt:FREE_CAL.splitsTs?new Date(FREE_CAL.splitsTs).toISOString():null,resultsSource:RESULTS_CAL_CACHE?.source||null},angel:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -6593,8 +6604,8 @@ async function assistantTick() {
   ASSIST_RUNNING = true;
   try {
     const at = (min, id) => m >= min && m < min + 20 && flagOnce(`job|${id}|${key}`);
-    /* Zerodha: the token ends at 06:00 every day - a reminder to log in before the market opens. */
-    if (nseDay && KITE.key && KITE.secret && !kiteSession() && at(8 * 60 + 45, 'kite-login')) await pushAll({ title: 'Connect Zerodha for today', body: 'Live option premiums, Fin Services Ex-Bank and index values come from Zerodha Kite. Its login ends at 06:00 daily - tap to connect (TradeDesk -> My trades -> Connect Zerodha).', tag: 'td-kite', url: '/api/kite/login' });
+    /* Angel One: the session ends at midnight every day - a reminder to log in before the market opens. */
+    if (nseDay && ANGEL.key && !angelSession() && at(8 * 60 + 45, 'angel-login')) await pushAll({ title: 'Connect Angel One for today', body: 'Live option premiums, India VIX and index values come from Angel One. Its login ends at midnight - tap to connect (TradeDesk -> My trades -> Connect Angel One).', tag: 'td-angel', url: '/api/smartapi/login' });
     if (nseDay && at(9 * 60 + 30, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
     else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; an MCX alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });
     /* Gold Petal: an alert only when the plan is a trade (BUY with the drivers, or SELL); otherwise the status is
@@ -6633,13 +6644,13 @@ async function assistantTick() {
        after a weekly expiry - the bull-put rule held to expiry (the app's own rule: 95% wins, profit in 8 of 8 years;
        alerting any day with a 2x-credit stop was +Rs 27 a lot, 4 of 8 years), the trend sell and the short strangle (exit on
        a close at 2x). One alert at 15:05 that day (a retry until 15:25 if the premiums were missing), a 10:00 reminder that
-       day when Zerodha is not connected. The Track record is marked at 15:05 and settled at 15:40. */
+       day when Angel One is not connected. The Track record is marked at 15:05 and settled at 15:40. */
     const genExp = (() => { try { return generatedFnoExpiries(key, 40).map(x => x.date); } catch { return []; } })();
     const enGen = nseDay ? SwingPlan.weeklySellEntry(key, genExp.find(e => e >= key), isNseHoliday, genExp) : null;
     if (nseDay && enGen && !enGen.isEntryDay && NIFTY_STATUS?.day !== key) NIFTY_STATUS = { day: key, text: `no entry today - next entry ${enGen.entryDay} at the close (the day after an expiry)` };
-    if (nseDay && enGen?.isEntryDay && KITE.key && !kiteReady() && at(10 * 60, 'nifty-kite-reminder'))
-      await pushAll({ title: 'Nifty options: entry day today', body: "The bull put and the weekly sells are entered at today's close. Connect Zerodha before 15:00 so the 15:05 check has live premiums (My trades -> Connect Zerodha).", tag: 'td-nifty-opt', url: '/?view=trades' });
-    const niftyRetry = nseDay && m >= 15 * 60 + 6 && m < 15 * 60 + 26 && NIFTY_STATUS?.day === key && NIFTY_STATUS.failed && kiteReady() && flagOnce(`job|nifty-retry|${key}|${m}`);
+    if (nseDay && enGen?.isEntryDay && ANGEL.key && !angelReady() && at(10 * 60, 'nifty-angel-reminder'))
+      await pushAll({ title: 'Nifty options: entry day today', body: "The bull put and the weekly sells are entered at today's close. Connect Angel One before 15:00 so the 15:05 check has live premiums (My trades -> Connect Angel One).", tag: 'td-nifty-opt', url: '/?view=trades' });
+    const niftyRetry = nseDay && m >= 15 * 60 + 6 && m < 15 * 60 + 26 && NIFTY_STATUS?.day === key && NIFTY_STATUS.failed && angelReady() && flagOnce(`job|nifty-retry|${key}|${m}`);
     if (nseDay && (at(15 * 60 + 5, 'nse-evening') || niftyRetry)) {
       let chain15 = null;
       try { chain15 = await withTimeout(getOptionChain('NSE:NIFTY', await niftyRuleExpiry(true), { fresh: niftyRetry ? 60e3 : 30 * 60e3, estimate: false }), 25000, 'Nifty chain'); } catch (e) { console.warn('15:05 premiums:', e.message); }
@@ -6655,7 +6666,7 @@ async function assistantTick() {
           const er = SwingPlan.creditSpreadRule(ec, { spot: +ec.spot, trendUp: reg.nifty > reg.ema20 && reg.ema20 > reg.ema50, trendDown: reg.nifty < reg.ema20 && reg.ema20 < reg.ema50, daysToExpiry: days, step: 50, wing: 200, monthly: SwingPlan.isMonthlyExpiry(ec.expiry, ec.expiries) });
           est = er?.pick && !er.pick.none ? ` Estimate (Black-Scholes, India VIX ${ec.vix}): sell ${er.pick.sell} PE / buy ${er.pick.buy} PE, about ${er.pick.credit} pts - ${er.ok ? 'passes' : 'does not pass'} on the estimate; check the real credit in your broker.` : ` Estimate: ${String(er?.verdict || 'no strike').slice(0, 120)}.`;
         } catch (e) { console.warn('Estimated Nifty rule:', e.message); }
-        if (first) await pushAll({ title: 'Nifty options: entry day, premiums missing', body: `${kiteReady() ? 'Option premiums were not available.' : 'Zerodha is not connected (its login ends at 06:00 daily).'}${est} Connect Zerodha before 15:25 - the check runs again - or open Markets -> Nifty.`, tag: 'td-nifty-opt', url: '/?view=trades' });
+        if (first) await pushAll({ title: 'Nifty options: entry day, premiums missing', body: `${angelReady() ? 'Option premiums were not available.' : 'Angel One is not connected (its login ends at midnight).'}${est} Connect Angel One before 15:25 - the check runs again - or open Markets -> Nifty.`, tag: 'td-nifty-opt', url: '/?view=trades' });
       } else if (en?.isEntryDay && flagOnce(`job|nifty-entry|${key}`)) {
         try {
           const reg = await getNiftyRegime(), spot = +chain15.spot || +reg.nifty;
@@ -7069,21 +7080,21 @@ async function handleRequest(req,res){
   if(pn==='/api/global')           return apiGlobal(req,res);
   if(pn==='/api/search')           return apiSearch(req,res,ps);
   if(pn==='/api/health')           return apiHealth(req,res);
-  /* Zerodha Kite: daily login (redirect to Zerodha and back), status, disconnect */
-  if(pn==='/api/kite/status')      return send(res, kiteStatus());
-  if(pn==='/api/assistant-status') return send(res, { day: istDateKey(), mcx: MCX_STATUS, mcxNames: MCX_NAME, nifty: NIFTY_STATUS, kite: kiteReady() });
-  if(pn==='/api/kite/login') {
-    if (!KITE.key || !KITE.secret) return err(res, 'Set KITE_API_KEY and KITE_API_SECRET on Render first', 400);
-    res.writeHead(302, { Location: kiteLoginUrl(), 'Cache-Control': 'no-store' }); return res.end();
+  /* Angel One SmartAPI: daily login (redirect to Angel One and back), status, disconnect */
+  if(pn==='/api/smartapi/status')  return send(res, angelStatus());
+  if(pn==='/api/assistant-status') return send(res, { day: istDateKey(), mcx: MCX_STATUS, mcxNames: MCX_NAME, nifty: NIFTY_STATUS, angel: angelReady() });
+  if(pn==='/api/smartapi/login') {
+    if (!ANGEL.key) return err(res, 'Set SMARTAPI_API_KEY on Render first', 400);
+    res.writeHead(302, { Location: angelLoginUrl(), 'Cache-Control': 'no-store' }); return res.end();
   }
-  if(pn==='/api/kite/callback') {
-    let to = '/?view=trades&kite=ok';
-    try { await kiteCallback(ps); } catch (e) { to = '/?view=trades&kite=' + encodeURIComponent(String(e.message || e).slice(0, 140)); }
+  if(pn==='/api/smartapi/callback') {
+    let to = '/?view=trades&angel=ok';
+    try { await angelCallback(ps); } catch (e) { to = '/?view=trades&angel=' + encodeURIComponent(String(e.message || e).slice(0, 140)); }
     res.writeHead(302, { Location: to, 'Cache-Control': 'no-store' }); return res.end();
   }
-  if(pn==='/api/kite/logout') {
+  if(pn==='/api/smartapi/logout') {
     if (req.method !== 'POST') return err(res, 'POST only', 405);
-    await kiteLogout(); return send(res, { ok: true, connected: false });
+    await angelLogout(); return send(res, { ok: true, connected: false });
   }
   if(pn==='/api/strategy')         return apiStrategy(req,res,ps);
   /* Old screener endpoints are intentionally routed to the new one-scan Ready/Watchlist engine.

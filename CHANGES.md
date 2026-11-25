@@ -1,3 +1,18 @@
+# Angel One SmartAPI replaces Zerodha Kite (25 Nov 2026 · page version 25 Nov 2026 · 1)
+
+- Live option premiums (Nifty, Bank Nifty, FinNifty, every expiry), the NSE index values and India VIX now come from
+  Angel One SmartAPI (free) instead of Zerodha Kite (paid). Same places in the app: trade ideas, the option builder, the
+  10:00 / 15:05 Nifty checks, the Track record, Markets and Sectors.
+- Daily login: Screener -> My trades -> "Connect Angel One" opens Angel One's own login page and comes back connected;
+  Angel One ends the login at midnight (the 08:45 reminder now says Angel One). Render holds only SMARTAPI_API_KEY -
+  never the client code, PIN or TOTP.
+- Angel One's instrument list (~40 MB, public) is read once a day as it downloads and only the Nifty / Bank Nifty /
+  FinNifty options and the index tokens are kept (about 130 KB): peak memory ~66 MB, safe on Render's free plan.
+- 20 of the 27 index symbols are on Angel One. Fin Services Ex-Bank, Consumer Durables, Healthcare, Oil & Gas,
+  Housing, India Digital and India Tourism are not, so they stay on Yahoo (Fin Ex-Bank: FINIETF x the built-in ratio).
+- Removed with Kite: KITE_API_KEY / KITE_API_SECRET, /api/kite/*, KITE-SETUP.txt (now SMARTAPI-SETUP.txt), the unused
+  'kite' data-source store and the Kite candle queue.
+
 # Phone fixes: menu text centred, header clear of the status bar, notifications (24 Nov 2026 · page version 24 Nov 2026 · 4)
 
 - Top menu on a phone: an older rule made all five buttons 66px wide, so "Screener" spilled past its edge and looked
