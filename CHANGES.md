@@ -1,3 +1,36 @@
+# More from Angel One, checked against Yahoo (26 Nov 2026 · page version 26 Nov 2026 · 1)
+
+Everything is read-only and needs Angel One connected; whatever Angel One cannot give falls back to what was used before.
+- **Screener -> Yahoo vs Angel One** (new tab): the same swing screener on Yahoo candles and on Angel One candles - READY /
+  Watchlist found by both, only Yahoo, only Angel One - plus a **candle check** (2 years of daily candles compared day by
+  day for every stock: identical / close / different, missing days on each side, volume ratio, the stocks that differ and
+  from which date, e.g. a split adjusted by one source only) and a **live price check** (Angel One vs Yahoo for the READY /
+  Watchlist stocks, with times). Two switches on that page choose the source the app uses:
+  - *Screener & Overview daily candles*: **Yahoo by default** (the backtests were run on Yahoo's candles); switch to
+    Angel One only if the check shows it identical or better. Stocks / charts Angel One lacks stay on Yahoo.
+  - *Live stock prices*: **Angel One by default** - the exchange's own price (Yahoo when Angel One fails).
+  The candles are loaded once a day in the background (Angel One allows only 40 candle requests a minute: ~7 minutes for
+  the 271 stocks + Nifty, after the 08:40 login and after every login), so the screener never waits for them.
+- **Live stock prices** for open trades, the stock lists, alerts and Overview come from Angel One quotes (50 stocks a
+  request, checked to be the right stock), with the day's volume, previous close and no Yahoo call.
+- **Stock Overview -> Exchange data**: circuit limits (and a warning within 2% of one), the exchange's 52-week range,
+  buy / sell queue, average price; for F&O stocks the option PCR, today's build-up (long / short build-up, short covering,
+  long unwinding) and the 10-day futures open interest change - information only.
+- **Option Builder**: implied volatility and Greeks per strike from Angel One - the at-the-money IV replaces the India
+  VIX guess and every leg is priced at its own IV (the IV note lists them); **margin for 1 lot** of the strategy from
+  Angel One's margin calculator (hedge benefit included) and max profit as % of that margin.
+- **Nifty -> Market Pulse -> F&O activity**: Nifty / Bank Nifty put/call ratio, Nifty futures OI over 10 days, long /
+  short build-up, short covering, long unwinding, top price and OI gainers / losers (near month). Information only -
+  the 19 Nov 2026 test found no edge in PCR, so none of it changes a signal.
+- **MCX**: the real Gold Petal / Crude Oil mini / Natural Gas mini price from Angel One calibrates the proxy levels
+  automatically while MCX is open (the "Your MCX price" box still overrides it); the server's 09:45 / 17:00 plans use it too.
+- **USD/INR**: Angel One has only USD/INR futures (a forward price), so Yahoo's spot rate stays; the future is used only
+  when Yahoo fails, and the comparison page shows both.
+- Fixes: automatic login sent "Bearer Bearer ..." to the profile check (Angel One's token comes with "Bearer "), so the
+  card never showed the account name; Angel One's rate-limit answer (403) no longer counts as a logout.
+- Checked locally against a fake Angel One that answers in the documented formats (real instrument list, Yahoo's candles
+  with three planted differences): every planted difference was found; nothing was checked against the real Angel One yet.
+
 # Angel One automatic login (25 Nov 2026 · page version 25 Nov 2026 · 3)
 
 - No daily OTP: with SMARTAPI_CLIENT_CODE, SMARTAPI_PIN and SMARTAPI_TOTP_SECRET on Render, TradeDesk logs in to Angel

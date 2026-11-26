@@ -5,7 +5,7 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '25 Nov 2026 · 3';
+const TD_UI_VERSION = '26 Nov 2026 · 1';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
 
 
@@ -121,6 +121,7 @@ function tdAfterRender(tab){
   } else {
     delete tc.dataset.ov; const ih = document.getElementById('ih'); if(ih) ih.dataset.verdict = isMcx ? (document.querySelector('[data-cidea] .idea-view')?.textContent || '') : ''; }
   refreshListChips();
+  if(typeof tdAngelAfterRender === 'function') tdAngelAfterRender(tab);
 }
 
 /* (13 Nov 2026: the auto-hiding header, sticky price strip, swipe-to-change-tab and pull-to-refresh were removed at

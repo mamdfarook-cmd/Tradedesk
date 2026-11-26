@@ -1200,7 +1200,7 @@ async function loadOptionStrategy(sym, stratId) {
     if (OPT_STATE.iv)  params.set('iv',  OPT_STATE.iv);
     /* India VIX is NIFTY 50's implied vol — only use it for NIFTY. Other symbols fall back to
        the server's per-symbol default IV (BANKNIFTY 18%, stocks 20%). */
-    else if (sym === 'NSE:NIFTY' && GLOBAL_DATA?.ivRank?.autoIvPct) params.set('iv', GLOBAL_DATA.ivRank.autoIvPct); /* auto from VIX */
+    else if (sym === 'NSE:NIFTY' && GLOBAL_DATA?.ivRank?.autoIvPct) { params.set('iv', GLOBAL_DATA.ivRank.autoIvPct); params.set('ivauto', '1'); } /* auto from VIX (Angel One's IV wins when connected) */
     /* Use already-loaded selected quote as spot to avoid a second slow Yahoo call. */
     if (CUR_DATA?.price && CUR_SYM === sym) params.set('spot', CUR_DATA.price);
     if (OPT_STATE.lot) params.set('lot', OPT_STATE.lot);
@@ -1278,11 +1278,12 @@ async function loadOptionStrategy(sym, stratId) {
 
     const html = `
       <div class="aib" style="margin-bottom:10px">
-        📡 Live spot <strong style="color:var(--acc)">₹${fmt(d.spot)}</strong> · ${escHtml(d.priceSource || 'theoretical Black-Scholes premiums')} · IV <strong style="color:var(--acc)">${d.iv}%</strong>${(sym === 'NSE:NIFTY' && !OPT_STATE?.iv && GLOBAL_DATA?.ivRank?.autoIvPct) ? ` <span style="font-size:.7rem;color:var(--tx3)">(auto from VIX)</span>` : ''} · ${d.expiry}d to expiry · Lot size <strong style="color:var(--acc)">${d.lotSize}</strong>
+        📡 Live spot <strong style="color:var(--acc)">₹${fmt(d.spot)}</strong> · ${escHtml(d.priceSource || 'theoretical Black-Scholes premiums')} · IV <strong style="color:var(--acc)">${d.iv}%</strong>${d.ivSource && d.ivSource !== 'your IV' ? ` <span style="font-size:.7rem;color:var(--tx3)">(${escHtml(d.ivSource)}${(d.legIv || []).some(x => x.iv) ? ' · each leg priced at its own IV: ' + d.legIv.filter(x => x.iv).map(x => `${fmt(x.strike,0)}${x.type === 'C' ? 'CE' : 'PE'} ${x.iv}%`).join(', ') : ''})</span>` : ''} · ${d.expiry}d to expiry · Lot size <strong style="color:var(--acc)">${d.lotSize}</strong>
         <span style="float:right;font-size:.68rem;color:var(--tx3)">Strike interval: ${d.strikeInterval}</span>
       </div>
 
       ${ivPctHtml}
+      ${d.marginLive ? `<div class="aib" style="margin-bottom:10px;font-size:.78rem"><b>Margin for 1 lot (Angel One margin calculator):</b> ₹${fmt(d.marginLive.total,0)}${d.marginLive.benefit ? ` · hedge benefit ₹${fmt(d.marginLive.benefit,0)}` : ''}${d.maxProfit != null && d.marginLive.total > 0 ? ` · max profit = ${fmt(d.maxProfit / d.marginLive.total * 100, 1)}% of the margin` : ''}. Your broker's figure can differ a little; check it before ordering.</div>` : d.marginError ? `<div class="aib" style="margin-bottom:10px;font-size:.72rem;color:var(--tx3)">Margin not available: ${escHtml(d.marginError)}</div>` : ''}
       ${d.oi ? `<div class="aib" style="margin-bottom:10px;font-size:.74rem"><b>NSE open interest (${ideaDate(d.oi.expiry)} expiry):</b> PCR ${d.oi.pcr ?? '--'} · max pain ${fmt(d.oi.maxPain,0)} · biggest call OI (resistance) ${(d.oi.callWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'} · biggest put OI (support) ${(d.oi.putWalls||[]).map(w => fmt(w.k,0)).join(', ') || '--'}. Prices use the NSE expiry closest to your Expiry (days).</div>` : ''}
       ${thetaHtml}
 
@@ -2160,7 +2161,11 @@ const MCX_CAL_KEY = 'td_mcx_cal2_'; /* v2: the proxy now includes the fixed MCX 
 const MCX_ROLLED_AT = {};
 function mcxNoteRoll(sym, at){ if(!(+at > 0)) return; MCX_ROLLED_AT[sym] = Math.max(+MCX_ROLLED_AT[sym] || 0, +at);
   try{ const c = JSON.parse(localStorage.getItem(MCX_CAL_KEY + sym) || 'null'); if(c && +c.ts < +at) localStorage.removeItem(MCX_CAL_KEY + sym); }catch{} }
-function mcxCal(sym){ try{ const c = JSON.parse(localStorage.getItem(MCX_CAL_KEY + sym) || 'null'); if(c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3*86400e3 && !(+c.ts < (+MCX_ROLLED_AT[sym] || 0))) return c; }catch{} return null; }
+const MCX_AUTO = {};   /* sym -> { mcx, proxy, ts, contract } from the server (Angel One's MCX quote), 26 Nov 2026 */
+function mcxCal(sym){ const u = mcxCalUser(sym), a = MCX_AUTO[sym];
+  if(a && a.mcx > 0 && a.proxy > 0 && Date.now() - a.ts < 3*86400e3 && !(+a.ts < (+MCX_ROLLED_AT[sym] || 0)) && !(u && +u.ts > +a.ts)) return a;
+  return u; }
+function mcxCalUser(sym){ try{ const c = JSON.parse(localStorage.getItem(MCX_CAL_KEY + sym) || 'null'); if(c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3*86400e3 && !(+c.ts < (+MCX_ROLLED_AT[sym] || 0))) return c; }catch{} return null; }
 function mcxCalK(sym){ const c = mcxCal(sym), k = c ? c.mcx / c.proxy : 1; return k > 0.8 && k < 1.25 ? k : 1; }
 function mcxCalSet(sym, reset){
   const msg = t => { const el = document.querySelector('[data-mcx-cal-msg]'); if(el){ el.textContent = t; el.style.color = 'var(--bear)'; } };
@@ -2216,8 +2221,10 @@ function mcxCalHtml(sym){
   return `<div class="idea-card mcx-cal" style="border-color:var(--brd)">
     <div class="mcx-cal-row">
       <label><span class="idea-kicker">Your MCX price</span><input data-mcx-cal type="number" min="0" step="any" value="${c ? c.mcx : ''}" placeholder="₹ per ${escHtml(MCX_IDEA[sym]?.unit || 'unit')}"></label>
-      <button class="idea-btn" onclick="mcxCalSet('${sym}')">Calibrate</button>${c ? `<button class="idea-btn ghost" onclick="mcxCalSet('${sym}', true)">Reset</button>` : ''}
-      <span data-mcx-cal-msg class="mcx-cal-msg">${c
+      <button class="idea-btn" onclick="mcxCalSet('${sym}')">Calibrate</button>${mcxCalUser(sym) ? `<button class="idea-btn ghost" onclick="mcxCalSet('${sym}', true)">Reset</button>` : ''}
+      <span data-mcx-cal-msg class="mcx-cal-msg">${c && c.auto
+        ? `Calibrated automatically from Angel One: MCX ${escHtml(c.contract || '')} ₹${fmt(c.mcx)} at ${escHtml(new Date(c.at || c.ts).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit', timeZone:'Asia/Kolkata'}))} IST vs proxy ₹${fmt(c.proxy)} (${c.mcx >= c.proxy ? '+' : ''}${((c.mcx/c.proxy - 1)*100).toFixed(2)}%). Every level on this page is shifted by that gap. Type a price only to override it.`
+        : c
         ? `Calibrated ${escHtml(new Date(c.ts).toLocaleString('en-IN', {day:'2-digit', month:'short', hour:'2-digit', minute:'2-digit'}))}: MCX ₹${fmt(c.mcx)} vs proxy ₹${fmt(c.proxy)} (${c.mcx >= c.proxy ? '+' : ''}${((c.mcx/c.proxy - 1)*100).toFixed(2)}%). Every level on this page is shifted by that gap (kept 3 days).`
         : `Levels use the proxy ₹${fmt(proxy)} (international price × USD/INR${/GOLD|SILVER|COPPER/.test(sym) ? ' × MCX factor' : ''}). Type your broker's live MCX price to shift every level to the real contract.`}</span>
     </div></div>`;
@@ -4080,7 +4087,8 @@ async function tabScreener(mode = CURRENT_SCREENER_MODE, force = false) {
      the old scan's verdicts into the new rows). */
   tcBeginRender();
   if (mode === 'qualified' || mode === 'picklist' || mode === 'stockweek') mode = 'mytrade';   /* one screener list */
-  if (mode === 'backtest' || mode === 'srccmp') mode = 'mytrade';   /* removed 20 Nov 2026 */
+  if (mode === 'backtest') mode = 'mytrade';   /* removed 20 Nov 2026 */
+  if (mode === 'srccmp') { CURRENT_SCREENER_MODE = mode; await tabSrcCompare(force); return; }   /* Yahoo vs Angel One, 26 Nov 2026 */
   if (mode === 'momentum') { CURRENT_SCREENER_MODE = mode; await tabMomentum(force); return; }
   if (mode === 'trades') { CURRENT_SCREENER_MODE = mode; await tabJournal(); return; }
   CURRENT_SCREENER_MODE = mode;
@@ -4482,10 +4490,11 @@ function screenerResultsChip(s) {
 }
 function screenerModeSwitch(active='mytrade') {
   /* Four views of the Screener page; the button on the right refreshes the one that is open. */
-  const tabs = [['mytrade', 'Swing'], ['trades', 'My trades'], ['momentum', 'Monthly momentum'], ['track', 'Track record']];
+  const tabs = [['mytrade', 'Swing'], ['trades', 'My trades'], ['momentum', 'Monthly momentum'], ['track', 'Track record'], ['srccmp', 'Yahoo vs Angel One']];
   const action = active === 'mytrade' ? `<button class="scr-act" onclick="clearMyTradeScreenerCache();tabScreener('mytrade', true)" title="New scan (at most one every 5 minutes)">↻ Refresh</button>`
     : active === 'momentum' ? `<button class="scr-act" onclick="tabScreener('momentum', true)" title="Re-rank with the latest prices">↻ Refresh</button>`
     : active === 'track' ? `<button class="scr-act" onclick="tabScreener('track')">↻ Refresh</button>`
+    : active === 'srccmp' ? `<button class="scr-act" onclick="tabScreener('srccmp', true)" title="New scans on both sources (at most one every 5 minutes)">↻ Rescan</button>`
     : `<button class="scr-act" onclick="tabScreener('trades')">↻ Refresh</button>`;
   return `<div class="scr-tabs-row scr-tabs-v2">
     ${tabs.map(([id, label]) => `<button class="scr-tab${active === id ? ' active' : ''}" onclick="tabScreener('${id}')">${label}</button>`).join('')}
@@ -6121,7 +6130,7 @@ async function tabAnalysis(sym) {
   if (ANALYSIS_VIEW==='pulse' && live()) tc.innerHTML = btnBar + '<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div><div class="lt">Loading VIX, option chain and market breadth…</div></div>';
   /* Only the backtested rule card: the old "Today's options idea" card suggested iron condors, bear calls and
      calendars, which all lost money in the 2019-2026 NSE-price backtest (removed 19 Nov 2026). */
-  if      (ANALYSIS_VIEW==='pulse')      { const ix = await buildIndexOptionsIdea(sym), idea = creditRuleHtml(ix) + weeklySellHtml(ix); if(!live() || CUR_SYM !== sym) return; inner = idea + await tabPulse(sym); }
+  if      (ANALYSIS_VIEW==='pulse')      { const ix = await buildIndexOptionsIdea(sym), idea = creditRuleHtml(ix) + weeklySellHtml(ix); if(!live() || CUR_SYM !== sym) return; inner = idea + await tabPulse(sym) + (typeof fnoActivityHtml === 'function' ? await fnoActivityHtml(sym) : ''); }
   else if (ANALYSIS_VIEW==='technicals') { TECH_SUM = {}; const t = tabTrend(), ind = tabIndicators(), sr = tabSR(); inner = techSummaryHtml() + t + ind + `<div class="td-merged-head">3 · Support &amp; resistance</div>` + sr; }
   else if (ANALYSIS_VIEW==='strategy') {
     tc.innerHTML = btnBar + '<div class="ls" style="display:flex;min-height:100px"><div class="sp"></div></div>';
@@ -6604,6 +6613,7 @@ function applyInstrumentData(sym, name, liveData, opts={}){
   document.body.classList.remove('crypto-mode');
   CUR_DATA=liveData;
   DATA_CACHE[sym]=liveData;
+  if(liveData?.mcxAuto?.mcx > 0) MCX_AUTO[sym] = liveData.mcxAuto;
   if(liveData?.rolledAt && typeof mcxNoteRoll === 'function') mcxNoteRoll(sym, liveData.rolledAt);
 
   const{price,chg,pct,dayOpen,dayHigh,dayLow,dayVol,updatedAt,cached}=liveData;
@@ -6613,7 +6623,7 @@ function applyInstrumentData(sym, name, liveData, opts={}){
   const isMCXSym = sym.startsWith('MCX:');
   document.getElementById('ihx').textContent = isMCXSym
     ? `${sym} · Continuous proxy · US futures × USD/INR${/^MCX:(GOLD|GOLDPETAL|SILVER|COPPER)$/.test(sym)?' × MCX factor':''} · USD/INR: ${liveData.usdInr||'--'}`
-    : `${sym} · Live · Yahoo Finance`;
+    : `${sym} · Live · ${liveData.priceSource === 'Angel One' ? `Angel One${liveData.candleSource === 'Angel One' ? '' : ' · chart Yahoo'}` : 'Yahoo Finance'}`;
   document.getElementById('ihp').textContent=fmt(price);
   const ce=document.getElementById('ihc');
   ce.textContent=`${isUp?'▲':'▼'} ${fmt(Math.abs(chg))} (${isUp?'+':''}${pct.toFixed(2)}%)`;

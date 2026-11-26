@@ -48,6 +48,16 @@ Angel One once before the market opens;
 at 08:45 on trading days a phone / browser notification reminds you when it is not connected. Also press it again
 after an upload (a deploy wipes the saved login).
 
+What else comes from Angel One once connected (26 Nov 2026; nothing to set up):
+  - live stock prices (the exchange's price, circuit limits, 52-week range) - switch on Screener -> Yahoo vs Angel One;
+  - 2 years of daily candles, loaded once a day in the background (~7 minutes: Angel One allows 40 candle requests a
+    minute). Screener -> Yahoo vs Angel One compares them with Yahoo's; the screener keeps Yahoo's candles unless you
+    switch "Screener & Overview daily candles" to Angel One there;
+  - option IV / Greeks per strike and the margin of a strategy (Option Builder), F&O activity (Nifty -> Market Pulse),
+    real MCX prices for the Gold Petal / Crude / Natural Gas calibration, USD/INR futures if Yahoo fails.
+  An upload resets the two switches to: candles Yahoo, live prices Angel One. To keep another choice across uploads,
+  set TD_SCREENER_CANDLES = angel (or TD_LIVE_PRICES = yahoo) on Render.
+
 Check: /api/health -> "angel": connected true, ready true, "indices" = how many NSE indices were matched,
 "notFound" = indices Angel One's list does not have (those stay on Yahoo). /api/smartapi/status has the details and the
 last error. Not connected -> everything works as before (Yahoo values, Black-Scholes premium estimates).

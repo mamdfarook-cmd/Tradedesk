@@ -132,6 +132,11 @@ SMARTAPI_API_KEY on Render and the daily "Connect Angel One" login (Screener -> 
 midnight), option premiums of every expiry, the NSE indices Angel One lists and India VIX come live from Angel One - no
 NSE call. Read-only, no orders, so no static IP. Setup in SMARTAPI-SETUP.txt; /api/health -> angel,
 /api/smartapi/status.
+Since 26 Nov 2026 also: live stock prices (exchange quotes, circuit limits, 52-week range), daily candles (loaded once a
+day; used by the screener / Overview only after "Screener candles" is switched to Angel One on Screener -> Yahoo vs Angel
+One, where both sources are compared), option IV / Greeks per strike and strategy margin in the Option Builder, F&O
+activity (PCR, OI build-up, gainers / losers, futures OI - information only), MCX contract prices for the calibration,
+and USD/INR futures as a fallback. /api/screener-compare, /api/fno, /api/smartapi/prefs.
 Layout (20 Nov 2026): Indices = Nifty 50 / Next 50 / Midcap 150 (sectors are on Markets -> Sectors); MCX = Gold Petal,
 Crude Oil, Natural Gas (the backtested ones). The list folds after a pick. Stock / MCX: Overview · Analysis (one
 Technicals page) · News. Nifty: Market Pulse · Technicals · Option Builder. Removed: Decision, the stock Strategy page,
