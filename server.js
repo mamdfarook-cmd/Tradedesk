@@ -19,19 +19,18 @@ const url   = require('url');
 const zlib  = require('zlib');
 const PORT  = process.env.PORT || 3000;
 /* ── Data-source context ──
-   'yahoo' = the normal app: stock charts from Yahoo, or daily candles from Angel One once the user switches "Screener
-   candles" to Angel One (26 Nov 2026). The "Yahoo vs Angel One" screener comparison runs a second scan in the 'angel'
-   context (Angel One candles) - or, when the app already uses Angel One, in 'yonly' (Yahoo only). Each context has its
-   own store, so a comparison run never changes the normal screener, Overview, Track record or alerts. */
+   Stock charts come from Yahoo. The source comparisons (Yahoo vs Kite, 19-20 Nov 2026; Yahoo vs Angel One, 26 Nov 2026)
+   that ran a second scan in their own context were removed; the per-source store below stays (always 'yahoo') so the
+   screener code is unchanged. */
 const SRC_ALS = new (require('async_hooks').AsyncLocalStorage)();
 const dataSrc = () => (SRC_ALS.getStore() && SRC_ALS.getStore().src) || 'yahoo';
 const srcStoreInit = () => ({ MY_TRADE_SCREENER_CACHE: null, MY_TRADE_SCREENER_TS: 0, MY_TRADE_SCREENER_INFLIGHT: null, NIFTY_REGIME_CACHE: null, NIFTY_REGIME_TS: 0,
-  NIFTY_CLOSES: null, LAST_BREADTH: null, LAST_SECTOR_STRENGTH: null, LAST_SCAN_DIAG: { ts: 0, rows: [] } });
-const SRCV = { yahoo: srcStoreInit(), angel: srcStoreInit(), yonly: srcStoreInit() };
+  NIFTY_CLOSES: null, LAST_BREADTH: null, LAST_SECTOR_STRENGTH: null });
+const SRCV = { yahoo: srcStoreInit() };
 const SV = () => SRCV[dataSrc()];
 /* Chart requests, shown on the Data source card: served, failed, average time. */
-const srcStatInit = () => ({ charts: 0, ok: 0, failed: 0, ms: 0, fallbacks: 0, notOnAngel: 0, quoteCalls: 0, histCalls: 0, lastFallbacks: [] });
-const SRC_STATS = { since: new Date().toISOString(), yahoo: srcStatInit(), angel: srcStatInit() };
+const srcStatInit = () => ({ charts: 0, ok: 0, failed: 0, ms: 0, fallbacks: 0, quoteCalls: 0, histCalls: 0, lastFallbacks: [] });
+const SRC_STATS = { since: new Date().toISOString(), yahoo: srcStatInit() };
 /* Shared with the browser (public/swing-plan.js): S/R levels, setup stop/target, setup choice, R:R,
    pullback volume rule and relative strength are computed by the same code in the screener and Overview. */
 /* Start-up check: a GitHub web upload that misses the public/ sub-folders (picking files instead of dragging
@@ -239,7 +238,7 @@ const HOST_LIMITS = [
   { re: /(^|\.)finance\.yahoo\.com$/i,   max: 4, gapMs: 150, key: 'yahoo' },
   /* Angel One SmartAPI: 1 quote request a second (Angel One's limit), one at a time */
   { re: { test: h => { try { return h === new URL(ANGEL.api).hostname; } catch { return false; } } }, max: 1, gapMs: 1100, key: 'angel' },
-  /* Angel One candles / OI history: 40 requests a minute (and 2,000 an hour) - one every 1.6 s */
+  /* Angel One historical API (futures OI history): 40 requests a minute - one every 1.6 s */
   { re: /^angel-hist$/, max: 1, gapMs: Number(process.env.TD_ANGEL_HIST_GAP_MS) > 0 ? Number(process.env.TD_ANGEL_HIST_GAP_MS) : 1600, key: 'angelhist' },
   /* All NSE addresses share one queue: NSE moved www.nseindia.com to www.nseindia.in on 14 Nov 2026, and the .in
      host had fallen into the generic bucket (2 at a time, 0.5 s apart) - the bursts NSE's bot protection blocks. */
@@ -397,8 +396,6 @@ function chartTtlMs(interval, range) {
   return 30e3; /* live price series: 2m/1d, 1d/5d, 1d/1d */
 }
 async function yfChart(ticker, interval, range) {
-  const src = dataSrc();
-  if ((src === 'angel' || (src === 'yahoo' && ANGEL_PREFS.candles === 'angel' && angelReady())) && angelChartable(ticker, interval, range)) return angelChartOrYahoo(ticker, interval, range);
   const st = SRC_STATS.yahoo, t0 = Date.now(); st.charts++;
   try { const v = await yfChartYahoo(ticker, interval, range); st.ok++; st.ms += Date.now() - t0; return v; }
   catch (e) { st.failed++; throw e; }
@@ -672,7 +669,7 @@ function noteFutRoll(ticker, roll, marketTime) {
     if (Math.abs(same.ratio / roll.ratio - 1) < 0.003) { if (!same.ok && Date.now() - same.seen >= 10 * 60e3) same.ok = true; }
     else Object.assign(same, { ratio: roll.ratio, seen: Date.now(), ok: false });   /* a different size: start again */
     Object.assign(same, { oldPrev: roll.oldPrev || same.oldPrev, newPrev: roll.newPrev || same.newPrev, dayT });
-  } else list.push(same = { at, dayT, ratio: roll.ratio, oldPrev: roll.oldPrev || null, newPrev: roll.newPrev || null, seen: Date.now(), ok: false });
+  } else list.push(same = { at, dayT, ratio: roll.ratio, oldPrev: roll.oldPrev || null, newPrev: roll.newPrev || null, seen: Date.now(), firstSeen: Date.now(), ok: false });
   FUT_ROLLS[ticker] = list; saveFutRolls();
   return same.ok ? same : null;
 }
@@ -889,7 +886,7 @@ async function angelAutoLogin(why) {
     ANGEL_SESSION = { token: String(tok).replace(/^Bearer\s+/i, ''), user: prof?.clientcode || ANGEL.clientCode, name: prof?.name || null, at: Date.now(), until: angelTokenEnd(Date.now()), auto: true };
     ANGEL_SESSION_LOADED = true; angelSaveSession(); API_CACHE.delete('angel:idx');
     console.log('Angel One: automatic login ok (' + (why || 'on demand') + ')');
-    angelInstruments().then(() => angelHistWarm('login')).catch(e => console.warn('Angel One instruments:', e.message));
+    angelInstruments().catch(e => console.warn('Angel One instruments:', e.message));
     return ANGEL_SESSION;
   })().finally(() => { ANGEL_AUTO.inflight = null; });
   return ANGEL_AUTO.inflight;
@@ -922,8 +919,10 @@ async function angelCall(path, body = null, opts = {}) {
   const code = j?.errorcode || j?.errorCode || '', msg = j?.message || ('HTTP ' + r.status);
   /* logged out / expired / bad token: login again (AG8001 invalid token, AG8002 expired, AG8003 missing) */
   /* (a 403 "access denied because of exceeding access rate" is Angel One's rate limit, not a logout - 26 Nov 2026) */
-  const rateLimited = /rate|exceed/i.test(msg) || /rate|exceed/i.test(String(r.body || '').slice(0, 300));
-  if (!opts.token && !rateLimited && (r.status === 401 || r.status === 403 || /^AG800[123]$/.test(code) || /token/i.test(msg) && /invalid|expired/i.test(msg))) { ANGEL_SESSION = null; angelSaveSession(); }
+  /* Only a token problem ends the session: a 403 can also be the rate limit or an API without permission (margin, OI), and
+     wiping a good session there forced a new login on every call. */
+  const rateLimited = /access rate|exceed/i.test(msg) || (r.status === 403 && /access rate|exceed/i.test(String(r.body || '').slice(0, 300)));
+  if (!opts.token && !rateLimited && (r.status === 401 || /^AG800[123]$/.test(code) || /token/i.test(msg) && /invalid|expired/i.test(msg))) { ANGEL_SESSION = null; angelSaveSession(); }
   ANGEL_STATE.lastError = `${path}: ${code || 'HTTP ' + r.status} - ${msg}`; ANGEL_STATE.lastErrorAt = new Date().toISOString();
   const er = new Error('Angel One: ' + (rateLimited ? 'rate limit - ' : '') + msg + (code ? ' (' + code + ')' : '')); er.angelCode = code; er.rateLimited = rateLimited; throw er;
 }
@@ -950,7 +949,7 @@ async function angelCallback(p) {
   ANGEL_SESSION = { token: tok, user: prof?.clientcode || null, name: prof?.name || null, at: Date.now(), until: angelTokenEnd(Date.now()) };
   ANGEL_SESSION_LOADED = true; angelSaveSession();
   API_CACHE.delete('angel:idx');
-  angelInstruments().then(() => angelIndexQuotes()).then(() => angelHistWarm('login')).catch(e => console.warn('Angel One after login:', e.message));
+  angelInstruments().then(() => angelIndexQuotes()).catch(e => console.warn('Angel One after login:', e.message));
   return ANGEL_SESSION;
 }
 async function angelLogout() {
@@ -1117,29 +1116,33 @@ async function angelOptionChain(sym, name, want, opts) {
     return value;
   })().finally(() => OC_INFLIGHT.delete(fk)));
   try { return { ...(await OC_INFLIGHT.get(fk)), saved: false }; }
-  catch (e) { if (hit && age < 4 * 86400e3) return served(hit); throw e; }
+  /* a scheduled check (opts.fresh: the 15:05 alert, the Track record) never gets an old chain as if live - it fails and
+     retries until 15:25 instead (27 Nov 2026: a failed quote served the morning's or yesterday's premiums) */
+  catch (e) { if (hit && age < 4 * 86400e3 && opts.fresh == null) return served(hit); throw e; }
 }
 /* ══ ANGEL ONE: MORE MARKET DATA (26 Nov 2026, page version 26 Nov 2026 · 1) ══
    Everything below only READS market data and works only while Angel One is connected; anything it cannot give falls
    back to what was used before (Yahoo / the estimates), so a failed Angel One call never breaks a page.
      - live stock prices (quotes, 50 stocks a request): price, day open / high / low / volume, previous close, plus the
        exchange's 52-week high / low and circuit limits;
-     - 2 years of daily candles per screener stock, loaded ONCE a day in the background (Angel One allows only 40 candle
-       requests a minute, so ~7 minutes for the list) - used by the "Yahoo vs Angel One" comparison, and by the screener
-       and Overview only after the user switches "Screener candles" to Angel One there (default: Yahoo);
      - option Greeks and implied volatility per strike (Option Builder), the margin of a strategy (margin calculator);
      - F&O activity: put/call ratio, OI build-up, top gainers / losers and futures open interest history (information
        only - the 19 Nov 2026 backtest found no edge in PCR, so none of it changes a signal);
      - MCX futures quotes: the real Gold Petal / Crude Oil mini / Natural Gas mini price calibrates the proxy levels;
-     - USD/INR futures: used only when Yahoo's spot USD/INR fails (Yahoo's spot rate is the better number). */
-const ANGEL_PREFS_FILE = require('path').join(__dirname, 'data', 'angel-prefs.json');
-/* candles: where the screener / Overview daily candles come from; live: where live stock prices come from. */
-const ANGEL_PREFS = { candles: /^angel$/i.test(process.env.TD_SCREENER_CANDLES || '') ? 'angel' : 'yahoo', live: /^yahoo$/i.test(process.env.TD_LIVE_PRICES || '') ? 'yahoo' : 'angel' };
-try { const o = JSON.parse(require('fs').readFileSync(ANGEL_PREFS_FILE, 'utf8')); for (const k of ['candles', 'live']) if (o?.[k] === 'angel' || o?.[k] === 'yahoo') ANGEL_PREFS[k] = o[k]; } catch {}
-function angelPrefsSave() { try { const fs = require('fs'); fs.mkdirSync(require('path').dirname(ANGEL_PREFS_FILE), { recursive: true }); fs.writeFileSync(ANGEL_PREFS_FILE, JSON.stringify(ANGEL_PREFS)); } catch (e) { console.warn('Angel prefs save:', e.message); } }
-const angelLiveOn = () => ANGEL_PREFS.live === 'angel' && angelReady() && dataSrc() !== 'yonly';
-const ANGEL_STATS = { quoteCalls: 0, quotes: 0, liveServed: 0, liveFallbacks: 0, lastLiveFallback: null, histCalls: 0, histFailed: 0 };
-const angelSleep = ms => new Promise(r => setTimeout(r, ms));
+     - USD/INR futures: used only when Yahoo's spot USD/INR fails (Yahoo's spot rate is the better number).
+   Daily / weekly / monthly candles stay on Yahoo: checked 26 Nov 2026 against NSE's own bhavcopy, Yahoo's daily close and
+   volume were NSE's official figures in 804 of 804 cases, while Angel One's candle closes differed by 0.25%+ on some days
+   for 264 of 272 stocks (the "Yahoo vs Angel One" comparison that showed this was removed the same day). */
+/* Live stock prices from Angel One unless TD_LIVE_PRICES = yahoo on Render (an emergency switch). */
+/* Only in the NSE session (09:15-15:30 IST): after the close Angel One's price is the LAST TRADE, while Yahoo shows NSE's
+   official closing price (checked 804/804 against NSE's bhavcopy) - the one the screener, the stops and the backtests use.
+   So outside the session the stock price is Yahoo's and the Overview agrees with the screener (27 Nov 2026). */
+const angelLiveOn = () => {
+  if (/^yahoo$/i.test(process.env.TD_LIVE_PRICES || '') || !angelReady()) return false;
+  const t = new Date(Date.now() + 5.5 * 3600e3), m = t.getUTCHours() * 60 + t.getUTCMinutes(), wd = t.getUTCDay();
+  return wd >= 1 && wd <= 5 && !isNseHoliday(t.toISOString().slice(0, 10)) && m >= 9 * 60 + 15 && m < 15 * 60 + 30;
+};
+const ANGEL_STATS = { quoteCalls: 0, quotes: 0, liveServed: 0, liveFallbacks: 0, lastLiveFallback: null, oiCalls: 0 };
 /* "21-Jun-2023 10:46:10" (IST) -> ms */
 const angelTs = s => { const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4}) (\d{2}):(\d{2}):(\d{2})$/.exec(String(s || '').trim()), mo = m && ANGEL_MON[m[2].toUpperCase()];
   return mo ? Date.parse(`${m[3]}-${mo}-${m[1].padStart(2, '0')}T${m[4]}:${m[5]}:${m[6]}+05:30`) : NaN; };
@@ -1149,11 +1152,14 @@ const angelExchInfo = q => q ? { w52h: +q['52WeekHigh'] || null, w52l: +q['52Wee
   buyQty: +q.totBuyQuan || 0, sellQty: +q.totSellQuan || 0, avg: +q.avgPrice || null, at: q.exchFeedTime || q.exchTradeTime || null, src: 'Angel One' } : null;
 
 /* ── quotes for single instruments, collected for 150 ms and sent 50 a request ── */
-const AQ = { wait: new Map(), timer: null, cache: new Map() };
+/* inflight: keys already sent in a batch that has not answered yet - a second caller shares that answer instead of
+   queueing a duplicate request */
+const AQ = { wait: new Map(), inflight: new Map(), timer: null, cache: new Map() };
 function angelQuoteOne(exch, token) {
   const key = exch + '|' + token, hit = AQ.cache.get(key), ttl = istMarketHoursS() || exch === 'MCX' || exch === 'CDS' ? 15e3 : 5 * 60e3;
   if (hit && Date.now() - hit.ts < ttl) return Promise.resolve(hit.q);
   if (AQ.wait.has(key)) return AQ.wait.get(key).p;
+  if (AQ.inflight.has(key)) return AQ.inflight.get(key);
   let res, rej; const p = new Promise((a, b) => { res = a; rej = b; });
   AQ.wait.set(key, { p, res, rej });
   if (!AQ.timer) AQ.timer = setTimeout(angelQuoteFlush, 150);
@@ -1162,34 +1168,33 @@ function angelQuoteOne(exch, token) {
 async function angelQuoteFlush() {
   AQ.timer = null;
   const batch = [...AQ.wait.entries()].slice(0, 50);
-  batch.forEach(([k]) => AQ.wait.delete(k));
+  batch.forEach(([k, w]) => { AQ.wait.delete(k); AQ.inflight.set(k, w.p); });
   if (AQ.wait.size) AQ.timer = setTimeout(angelQuoteFlush, 150);
   const ex = {}; for (const [k] of batch) { const [e, t] = k.split('|'); (ex[e] = ex[e] || []).push(t); }
   ANGEL_STATS.quoteCalls++;
   try {
     const d = await angelCall('/rest/secure/angelbroking/market/v1/quote/', { mode: 'FULL', exchangeTokens: ex });
     const got = new Map();
-    for (const q of d?.fetched || []) { got.set(String(q.exchange || '').toUpperCase() + '|' + String(q.symbolToken), q); if (!got.has('*|' + q.symbolToken)) got.set('*|' + q.symbolToken, q); }
+    /* matched by exchange + token; a row without an exchange by token only (an MCX token can equal an NSE one) */
+    for (const q of d?.fetched || []) { if (q.exchange) got.set(String(q.exchange).toUpperCase() + '|' + String(q.symbolToken), q); else if (!got.has('*|' + q.symbolToken)) got.set('*|' + q.symbolToken, q); }
     for (const [k, w] of batch) {
       const q = got.get(k) || got.get('*|' + k.split('|')[1]);
       if (q && +q.ltp > 0) { AQ.cache.set(k, { q, ts: Date.now() }); ANGEL_STATS.quotes++; w.res(q); } else w.rej(new Error('Angel One gave no quote for ' + k));
     }
   } catch (e) { batch.forEach(([, w]) => w.rej(e)); }
+  finally { batch.forEach(([k]) => AQ.inflight.delete(k)); }
   if (AQ.cache.size > 3000) [...AQ.cache.keys()].slice(0, 1000).forEach(k => AQ.cache.delete(k));
 }
 
 /* ── live stock price (#2, #7) in the shape of getPriceAndChange() ── */
-let ANGEL_YF_REV = null;
 function angelStockCode(sym) {
   if (!/^NSE:/.test(sym || '')) return null;
   const code = sym.slice(4);
   if (NSE_INDEX_CODES.has(code) || YF_MAP[sym]) return null;   /* indices have their own path; YF_MAP overrides are BSE-only names */
   return code;
 }
-/* Daily closes already in memory (Angel One history or Yahoo's cached chart): the mini chart costs no request. */
-function angelCachedCloses(token, ticker) {
-  const h = ANGEL_HIST.bars.get(String(token));
-  if (h?.bars?.length) return h.bars.slice(-6).map(b => b[4]);
+/* Daily closes already in memory (Yahoo's cached chart): the mini chart costs no request. */
+function angelCachedCloses(ticker) {
   for (const r of ['2y', '1y', '6mo', '5d']) {
     const hit = CHART_CACHE.get(`${ticker}|1d|${r}`); if (!hit) continue;
     try { const b = parseBars(hit.value), today = istDateKey(); const out = []; for (let i = 0; i < b.n; i++) if (istDateKeyS(b.T[i]) < today) out.push(b.C[i]); if (out.length) return out.slice(-6); } catch {}
@@ -1204,229 +1209,13 @@ async function angelStockPrice(sym, ticker) {
   /* the token must be this stock's (a wrong token would show another company's price) */
   if (q.tradingSymbol && String(q.tradingSymbol).toUpperCase() !== code + '-EQ') throw new Error(`Angel One token ${tok} is ${q.tradingSymbol}, not ${code}`);
   const live = +q.ltp, prev = +q.close > 0 ? +q.close : live, tms = angelTs(q.exchFeedTime) || angelTs(q.exchTradeTime) || Date.now();
-  const spark = angelCachedCloses(tok, ticker).slice(-5); spark.push(live);
+  const spark = angelCachedCloses(ticker).slice(-5); spark.push(live);
   return { liveRaw: live, prevRaw: prev, rawChg: live - prev, rawPct: prev > 0 ? (live - prev) / prev * 100 : 0,
     todayOpen: +q.open || live, todayHigh: Math.max(+q.high || live, live), todayLow: Math.min(+q.low || live, live), todayVol: +q.tradeVolume || 0,
     changeBasis: 'previousClose', basisTime: null, marketTime: Math.round(tms / 1000), spark, source: 'Angel One', exch: angelExchInfo(q) };
 }
 
-/* ── daily candle history (#1): 2 years per stock, once a day ──
-   Candles up to YESTERDAY are final, so one load serves the whole day; today's bar comes from the live quote. Kept in
-   memory and in data/angel-hist.json (a restart reuses it the same day; a deploy wipes it and it is loaded again). */
-const ANGEL_HIST_FILE = require('path').join(__dirname, 'data', 'angel-hist.json');
-const ANGEL_HIST = { bars: new Map(), run: null, done: 0, failed: 0, total: 0, started: null, finished: null, lastError: null, day: null };
-try {
-  const o = JSON.parse(require('fs').readFileSync(ANGEL_HIST_FILE, 'utf8'));
-  if (o?.v === 1 && o.bars) { for (const [t, v] of Object.entries(o.bars)) ANGEL_HIST.bars.set(t, v); ANGEL_HIST.day = o.day || null; ANGEL_HIST.finished = o.finished || null; }
-} catch {}
-function angelHistSave() {
-  try { const fs = require('fs'); fs.mkdirSync(require('path').dirname(ANGEL_HIST_FILE), { recursive: true });
-    fs.writeFileSync(ANGEL_HIST_FILE, JSON.stringify({ v: 1, day: ANGEL_HIST.day, finished: ANGEL_HIST.finished, bars: Object.fromEntries(ANGEL_HIST.bars) })); } catch (e) { console.warn('Angel history save:', e.message); }
-}
 const angelFmtTime = ms => new Date(ms + 5.5 * 3600e3).toISOString().slice(0, 16).replace('T', ' ');   /* "2026-11-25 15:30" IST */
-async function angelCandles(exch, token, interval, fromMs, toMs) {
-  ANGEL_STATS.histCalls++;
-  const d = await angelCall('/rest/secure/angelbroking/historical/v1/getCandleData',
-    { exchange: exch, symboltoken: String(token), interval, fromdate: angelFmtTime(fromMs), todate: angelFmtTime(toMs) }, { queue: 'angel-hist' });
-  /* [timestamp, open, high, low, close, volume]; daily timestamps are the IST date */
-  return (Array.isArray(d) ? d : []).map(c => [String(c[0]).slice(0, 10), +c[1], +c[2], +c[3], +c[4], +c[5] || 0]).filter(b => b[1] > 0 && b[2] > 0 && b[3] > 0 && b[4] > 0);
-}
-function angelHistTargets(ins) {
-  const out = [], seen = new Set(), add = (ticker, token) => { if (token && !seen.has(token)) { seen.add(token); out.push({ ticker, token: String(token) }); } };
-  add('^NSEI', ins.idx?.['NSE:NIFTY']);   /* Nifty first: the screener's market trend and relative strength */
-  for (const t of screenerEligibleUniverseS()) { const m = /^(.+)\.NS$/i.exec(t); if (m) add(t, ins.eq?.[m[1].toUpperCase()]); }
-  return out;
-}
-async function angelPrefetchQuotes(tickers) {
-  const ins = await angelInstruments(), toks = [];
-  for (const t of tickers) { const m = /^(.+)\.NS$/i.exec(t), tok = m && ins.eq?.[m[1].toUpperCase()]; if (tok && angelHistFresh(tok)) toks.push(tok); }
-  if (ins.idx?.['NSE:NIFTY']) toks.push(String(ins.idx['NSE:NIFTY']));
-  await Promise.allSettled(toks.map(t => angelQuoteOne('NSE', t)));
-}
-function angelHistFresh(token) { const h = ANGEL_HIST.bars.get(String(token)); return !!(h && h.day === istDateKey()); }
-function angelHistWarm(why) {
-  if (ANGEL_HIST.run) return ANGEL_HIST.run;
-  if (!angelReady()) return Promise.resolve(null);
-  const day = istDateKey();
-  ANGEL_HIST.run = (async () => {
-    const ins = await angelInstruments(), list = angelHistTargets(ins), need = list.filter(x => !angelHistFresh(x.token));
-    Object.assign(ANGEL_HIST, { total: list.length, done: list.length - need.length, failed: 0, started: new Date().toISOString(), lastError: null });
-    if (!need.length) return;
-    console.log(`Angel One history: loading ${need.length} of ${list.length} (${why || ''})`);
-    const toMs = Date.parse(day + 'T00:00:00+05:30') - 60e3, fromMs = toMs - 740 * 86400e3;   /* up to yesterday, ~2 years */
-    let fails = 0, saved = Date.now();
-    for (const x of need) {
-      if (!angelReady() || istDateKey() !== day) break;
-      for (let attempt = 0; attempt < 2; attempt++) {
-        try { ANGEL_HIST.bars.set(x.token, { day, ticker: x.ticker, bars: await angelCandles('NSE', x.token, 'ONE_DAY', fromMs, toMs) }); ANGEL_HIST.done++; break; }
-        catch (e) {
-          ANGEL_HIST.lastError = `${x.ticker}: ${String(e.message).slice(0, 120)}`;
-          if (attempt === 0 && /rate|exceed|access denied|too many/i.test(e.message)) { await angelSleep(65e3); continue; }   /* over the per-minute limit: wait a minute */
-          ANGEL_HIST.failed++; ANGEL_STATS.histFailed++; fails++; break;
-        }
-      }
-      if (fails >= 25) { ANGEL_HIST.lastError = 'stopped after 25 failed stocks - ' + ANGEL_HIST.lastError; break; }
-      if (Date.now() - saved > 120e3) { saved = Date.now(); ANGEL_HIST.day = day; angelHistSave(); }
-    }
-    ANGEL_HIST.finished = new Date().toISOString(); ANGEL_HIST.day = day; angelHistSave();
-    console.log(`Angel One history: ${ANGEL_HIST.done}/${ANGEL_HIST.total} loaded, ${ANGEL_HIST.failed} failed`);
-  })().catch(e => { ANGEL_HIST.lastError = e.message; console.warn('Angel One history:', e.message); }).finally(() => { ANGEL_HIST.run = null; });
-  return ANGEL_HIST.run;
-}
-function angelHistInfo() {
-  const day = istDateKey(); let fresh = 0; for (const v of ANGEL_HIST.bars.values()) if (v.day === day) fresh++;
-  return { loading: !!ANGEL_HIST.run, fresh, total: ANGEL_HIST.total || null, done: ANGEL_HIST.done, failed: ANGEL_HIST.failed, started: ANGEL_HIST.started, finished: ANGEL_HIST.finished, lastError: ANGEL_HIST.lastError,
-    minutesLeft: ANGEL_HIST.run && ANGEL_HIST.total ? Math.ceil(Math.max(0, ANGEL_HIST.total - ANGEL_HIST.done - ANGEL_HIST.failed) * 1.6 / 60) : null };
-}
-
-/* ── Angel One candles in Yahoo's chart shape, so the screener / Overview code runs unchanged ── */
-const ANGEL_RANGE_DAYS = { '1mo': 31, '3mo': 92, '6mo': 183, '1y': 366, '2y': 731 };
-function angelChartable(ticker, interval, range) {
-  if (!/^(1d|1wk)$/.test(interval) || !ANGEL_RANGE_DAYS[range]) return false;   /* live price charts (1d/5d, 2m) and 5-year monthly stay on Yahoo */
-  return ticker === '^NSEI' || /^[A-Z0-9&_-]+\.NS$/i.test(ticker);
-}
-async function angelInstFor(ticker) {
-  const ins = await angelInstruments();
-  if (ticker === '^NSEI') return ins.idx?.['NSE:NIFTY'] ? { token: String(ins.idx['NSE:NIFTY']), index: true, name: 'NIFTY 50' } : null;
-  if (!ANGEL_YF_REV) ANGEL_YF_REV = Object.fromEntries(Object.entries(YF_MAP).map(([s, t]) => [t, s]));
-  if (ANGEL_YF_REV[ticker]) return null;   /* an index / ETF proxy ticker */
-  const code = String(ticker).replace(/\.NS$/i, '').toUpperCase();
-  return ins.eq?.[code] ? { token: String(ins.eq[code]), code, name: code } : null;
-}
-const angelDayTs = d => Math.round(Date.parse(d + 'T09:15:00+05:30') / 1000);   /* daily bars stamped 09:15 IST, like Yahoo's */
-const angelWeekKey = d => { const x = new Date(d + 'T00:00:00Z'); x.setUTCDate(x.getUTCDate() - (x.getUTCDay() + 6) % 7); return x.toISOString().slice(0, 10); };
-function istSessionOpenNow() { const p = new Date(Date.now() + 5.5 * 3600e3), m = p.getUTCHours() * 60 + p.getUTCMinutes(), wd = p.getUTCDay(); return wd > 0 && wd < 6 && !isNseHoliday(istDateKey()) && m >= 9 * 60 + 15; }
-async function angelChart(inst, ticker, interval, range) {
-  const h = ANGEL_HIST.bars.get(inst.token);
-  if (!h || h.day !== istDateKey()) { angelHistWarm('chart'); throw new Error('Angel One history not loaded yet today'); }
-  if (h.bars.length < 30) throw new Error('Angel One history too short (' + h.bars.length + ' days)');
-  const q = await angelQuoteOne('NSE', inst.token), last = +q.ltp;
-  let tradeMs = angelTs(q.exchFeedTime) || angelTs(q.exchTradeTime);
-  if (!Number.isFinite(tradeMs)) tradeMs = istSessionOpenNow() ? Date.now() : NaN;
-  const lastDay = h.bars[h.bars.length - 1][0];
-  const tradeDay = Number.isFinite(tradeMs) ? istDateKey(tradeMs) : lastDay;
-  let bars = h.bars.map(b => ({ d: b[0], t: angelDayTs(b[0]), o: b[1], h: b[2], l: b[3], c: b[4], v: b[5] }));
-  if (tradeDay > lastDay) bars.push({ d: tradeDay, t: angelDayTs(tradeDay), o: +q.open > 0 ? +q.open : last, h: Math.max(+q.high || last, last), l: Math.min(+q.low || last, last), c: last, v: +q.tradeVolume || 0 });
-  else if (tradeDay === lastDay) { const b = bars[bars.length - 1]; bars[bars.length - 1] = { ...b, c: last, h: Math.max(b.h, last), l: Math.min(b.l, last) }; }
-  let prev = null; for (let i = bars.length - 1; i >= 0; i--) if (bars[i].d < tradeDay) { prev = bars[i].c; break; }
-  if (!(prev > 0)) prev = +q.close > 0 ? +q.close : last;
-  const cut = istDateKey(Date.now() - ANGEL_RANGE_DAYS[range] * 86400e3), yr = bars.filter(b => b.d >= istDateKey(Date.now() - 365 * 86400e3));
-  let out = bars.filter(b => b.d >= cut);
-  if (interval === '1wk') {
-    const g = []; for (const b of out) { const k = angelWeekKey(b.d), x = g[g.length - 1];
-      if (x && x.k === k) { x.h = Math.max(x.h, b.h); x.l = Math.min(x.l, b.l); x.c = b.c; x.v += b.v; } else g.push({ k, t: b.t, o: b.o, h: b.h, l: b.l, c: b.c, v: b.v }); }
-    out = g;
-  }
-  const lastBar = bars[bars.length - 1];
-  const meta = { symbol: ticker, currency: 'INR', exchangeName: 'NSI', exchangeTimezoneName: 'Asia/Kolkata', timezone: 'IST', gmtoffset: 19800, instrumentType: inst.index ? 'INDEX' : 'EQUITY',
-    longName: inst.name || null, shortName: inst.name || null, regularMarketPrice: last, regularMarketTime: Math.round((Number.isFinite(tradeMs) ? tradeMs : lastBar.t * 1000) / 1000),
-    regularMarketOpen: lastBar.o, regularMarketDayHigh: lastBar.h, regularMarketDayLow: lastBar.l, regularMarketVolume: lastBar.v,
-    regularMarketPreviousClose: prev, previousClose: prev, chartPreviousClose: prev,
-    fiftyTwoWeekHigh: +q['52WeekHigh'] || (yr.length ? Math.max(...yr.map(b => b.h)) : null), fiftyTwoWeekLow: +q['52WeekLow'] || (yr.length ? Math.min(...yr.map(b => b.l)) : null), tdSource: 'Angel One' };
-  return { meta, timestamp: out.map(b => b.t), indicators: { quote: [{ open: out.map(b => b.o), high: out.map(b => b.h), low: out.map(b => b.l), close: out.map(b => b.c), volume: out.map(b => b.v) }] } };
-}
-async function angelChartOrYahoo(ticker, interval, range) {
-  const st = SRC_STATS.angel, used = SRC_ALS.getStore()?.used, t0 = Date.now(); st.charts++;
-  let inst = null;
-  try { inst = await angelInstFor(ticker); } catch {}
-  if (inst) {
-    try { const v = await angelChart(inst, ticker, interval, range); st.ok++; st.ms += Date.now() - t0; if (used) used.angel++; return v; }
-    catch (e) { st.fallbacks++; st.lastFallbacks.unshift(`${ticker} ${interval}/${range}: ${String(e.message).slice(0, 90)}`); st.lastFallbacks.length = Math.min(st.lastFallbacks.length, 8); }
-  } else st.notOnAngel++;
-  if (used) used.yahoo++;
-  return yfChartYahoo(ticker, interval, range);
-}
-
-/* ── /api/screener-compare: the same screener on Yahoo candles and on Angel One candles, side by side ──
-   Plus a candle-by-candle check of the two sources (same dates? same closes / volumes?) and a live-price check. The
-   comparison run is kept apart (its own store): it never changes the normal screener, Overview, Track record or alerts. */
-const SCREENER_CMP = { inflight: null };
-function angelCandleCheck() {
-  const today = istDateKey(), rows = [];
-  let noYahoo = 0;
-  for (const [tok, h] of ANGEL_HIST.bars) {
-    if (h.day !== today || !h.ticker || !h.bars?.length) continue;
-    const hit = CHART_CACHE.get(`${h.ticker}|1d|2y`);
-    if (!hit) { noYahoo++; continue; }
-    let y; try { y = parseBars(hit.value); } catch { noYahoo++; continue; }
-    const Y = new Map(); for (let i = 0; i < y.n; i++) { const d = istDateKeyS(y.T[i]); if (d < today) Y.set(d, { c: y.C[i], v: y.V[i] }); }
-    const A = new Map(h.bars.map(b => [b[0], { c: b[4], v: b[5] }]));
-    const yd = [...Y.keys()].sort(), ad = [...A.keys()].sort();
-    if (!yd.length || !ad.length) continue;
-    const from = yd[0] > ad[0] ? yd[0] : ad[0], to = yd[yd.length - 1] < ad[ad.length - 1] ? yd[yd.length - 1] : ad[ad.length - 1];
-    let common = 0, onlyY = [], onlyA = [], maxDiff = 0, maxDay = null, over01 = 0, over1 = 0, firstBig = null; const vr = [];
-    for (const d of yd) if (d >= from && d <= to && !A.has(d)) onlyY.push(d);
-    for (const d of ad) if (d >= from && d <= to && !Y.has(d)) onlyA.push(d);
-    for (const d of yd) {
-      if (d < from || d > to || !A.has(d)) continue;
-      const a = A.get(d), b = Y.get(d), diff = Math.abs(a.c / b.c - 1) * 100; common++;
-      if (diff > maxDiff) { maxDiff = diff; maxDay = d; }
-      if (diff > 0.1) over01++;
-      if (diff > 1) { over1++; if (!firstBig) firstBig = d; }
-      if (a.v > 0 && b.v > 0) vr.push(a.v / b.v);
-    }
-    vr.sort((p, q) => p - q);
-    const status = !onlyY.length && !onlyA.length && maxDiff < 0.05 ? 'same' : maxDiff < 0.25 && onlyY.length + onlyA.length <= 2 ? 'close' : 'different';
-    rows.push({ sym: h.ticker.replace(/\.NS$/, ''), status, common, onlyYahoo: onlyY.length, onlyAngel: onlyA.length, onlyYahooDays: onlyY.slice(-3), onlyAngelDays: onlyA.slice(-3),
-      maxDiff: +maxDiff.toFixed(3), maxDay, over01, over1, firstBig, volRatio: vr.length ? +vr[Math.floor(vr.length / 2)].toFixed(3) : null,
-      yLast: yd[yd.length - 1], aLast: ad[ad.length - 1], yFirst: yd[0], aFirst: ad[0] });
-  }
-  const cnt = s => rows.filter(r => r.status === s).length;
-  rows.sort((a, b) => (b.over1 - a.over1) || (b.maxDiff - a.maxDiff));
-  const sumY = rows.reduce((a, r) => a + r.onlyYahoo, 0), sumA = rows.reduce((a, r) => a + r.onlyAngel, 0);
-  const vrs = rows.map(r => r.volRatio).filter(v => v > 0).sort((a, b) => a - b);
-  return { checked: rows.length, same: cnt('same'), close: cnt('close'), different: cnt('different'), noYahooCopy: noYahoo,
-    missingInAngel: sumY, missingInYahoo: sumA, volRatioMedian: vrs.length ? vrs[Math.floor(vrs.length / 2)] : null, worst: rows.filter(r => r.status !== 'same').slice(0, 15) };
-}
-async function angelLiveCheck(syms) {
-  const ins = await angelInstruments(), out = [];
-  await Promise.all(syms.slice(0, 40).map(async s => {
-    const tok = ins.eq?.[s]; if (!tok) return;
-    const hit = CHART_CACHE.get(`${s}.NS|1d|2y`), ym = hit?.value?.meta;   /* Yahoo's price from the scan just made: no extra Yahoo request */
-    let q = null; try { q = await angelQuoteOne('NSE', tok); } catch { return; }
-    const a = +q.ltp, y = +ym?.regularMarketPrice, aT = angelTs(q.exchFeedTime), yT = +ym?.regularMarketTime * 1000;
-    out.push({ sym: s, angel: a, yahoo: y > 0 ? y : null, diffPct: y > 0 && a > 0 ? +((a / y - 1) * 100).toFixed(3) : null, angelAt: Number.isFinite(aT) ? new Date(aT).toISOString() : null,
-      yahooAt: yT > 0 ? new Date(yT).toISOString() : null, uc: +q.upperCircuit || null, lc: +q.lowerCircuit || null, w52h: +q['52WeekHigh'] || null, w52l: +q['52WeekLow'] || null, vol: +q.tradeVolume || 0, yVol: +ym?.regularMarketVolume || null });
-  }));
-  return out.sort((p, q) => Math.abs(q.diffPct || 0) - Math.abs(p.diffPct || 0));
-}
-async function apiScreenerCompare(req, res, p) {
-  if (!angelReady()) { const s = angelStatus(); return send(res, { ready: false, configured: s.configured, connected: s.connected,
-    note: !s.configured ? 'Angel One is not set up on the server (SMARTAPI_API_KEY).' : 'Connect Angel One first (Screener -> My trades), then run the comparison.' }); }
-  const hi = angelHistInfo();
-  if (hi.fresh < 50 || ANGEL_HIST.run) { angelHistWarm('compare');
-    return send(res, { ready: false, loading: true, hist: angelHistInfo(), prefs: ANGEL_PREFS,
-      note: `Loading 2 years of daily candles from Angel One: ${angelHistInfo().done} of ${angelHistInfo().total || '~270'} stocks so far. Angel One allows 40 candle requests a minute, so this takes about 7 minutes once a day. Open this page again then.` }); }
-  const force = p.get('refresh') === '1', mainAngel = ANGEL_PREFS.candles === 'angel';
-  const yCtx = mainAngel ? 'yonly' : 'yahoo', aCtx = mainAngel ? 'yahoo' : 'angel';
-  const run = src => SRC_ALS.run({ src, used: { angel: 0, yahoo: 0 } }, async () => {
-    const st = SV(), t0 = Date.now(), used = SRC_ALS.getStore().used;
-    const fresh = st.MY_TRADE_SCREENER_CACHE && !scanPredatesCloseS(st.MY_TRADE_SCREENER_CACHE.generatedAt) && Date.now() - st.MY_TRADE_SCREENER_TS < (force ? 5 * 60e3 : MY_TRADE_SCREENER_TTL);
-    let r, reused = false;
-    if (fresh) { r = st.MY_TRADE_SCREENER_CACHE; reused = true; }
-    else {
-      if (!st.MY_TRADE_SCREENER_INFLIGHT) st.MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { st.MY_TRADE_SCREENER_INFLIGHT = null; });
-      r = await st.MY_TRADE_SCREENER_INFLIGHT;
-      if (used.angel + used.yahoo > 0) st.CMP_USED = { ...used, ms: Date.now() - t0 };
-    }
-    return { r, reused, ms: reused ? (st.CMP_USED?.ms ?? null) : Date.now() - t0, used: reused && st.CMP_USED ? st.CMP_USED : { ...used } };
-  });
-  /* Yahoo first (it fills Yahoo's chart cache that the candle check reads), then Angel One */
-  if (!SCREENER_CMP.inflight) SCREENER_CMP.inflight = (async () => { const y = await run(yCtx); const a = await run(aCtx); return [y, a]; })().finally(() => { SCREENER_CMP.inflight = null; });
-  let both;
-  try { both = await SCREENER_CMP.inflight; } catch (e) { return err(res, 'Comparison failed: ' + e.message); }
-  const pick = x => ({ sym: x.sym || String(x.ticker || '').replace(/\.(NS|BO)$/, ''), price: x.price ?? x.currentPrice ?? null, setup: x.selectedStrategy || x.setup || x.picked || null,
-    score: x.fresh ?? x.selectedStrategyScore ?? x.decisionScore ?? null, rr: x.rr ?? x.rrBull ?? null, sl: x.plan?.stop ?? x.sl ?? x.stopLoss ?? null });
-  const side = (o, src) => ({ ready: (o.r.picks || []).map(pick), watch: (o.r.watchlist || []).map(pick),
-    stats: { generatedAt: o.r.generatedAt, reused: o.reused, ms: o.ms, partial: !!o.r.partial, attempted: o.r.scannedAttempted,
-      dataOk: o.r.universeStats?.dataOk, dataFailed: o.r.universeStats?.dataFailed, dataFailedSample: o.r.universeStats?.dataFailedSample || [],
-      shortHistory: (o.r.universeStats?.shortHistory || []).length, chartsFromAngel: src === 'angel' ? o.used.angel : 0, chartsFromYahoo: src === 'angel' ? o.used.yahoo : null } });
-  const Y = side(both[0], 'yahoo'), A = side(both[1], 'angel');
-  const syms = [...new Set([...Y.ready, ...Y.watch, ...A.ready, ...A.watch].map(x => x.sym))];
-  let live = []; try { live = await angelLiveCheck(syms); } catch {}
-  let fx = null; try { fx = await angelUsdInrCheck(); } catch {}
-  send(res, { ready: true, yahoo: Y, angel: A, candles: angelCandleCheck(), live, fx, prefs: ANGEL_PREFS, hist: angelHistInfo(), sourceStats: { angel: SRC_STATS.angel, live: ANGEL_STATS } });
-}
 
 /* ── option Greeks and implied volatility per strike (#3) ── */
 async function angelGreeks(name, expIso) {
@@ -1452,6 +1241,14 @@ function chainAtmIv(chain) {
 function chainLegIv(chain, k, type) {
   const r = (chain?.strikes || []).find(x => x.k === +k), o = r && (type === 'C' ? r.ce : r.pe);
   return o?.iv > 0 ? o.iv / 100 : null;
+}
+/* The market IV of the nearest strike (same side) that has one - to estimate a leg that has no live price on the same
+   footing as the live legs. A far wing outside the loaded strikes was priced at the typed / default IV, so with IV 25% a
+   wing cost more than a nearer live strike and an iron condor showed a debit and 0% probability (26 Nov 2026). */
+function chainNearestIv(chain, k, type) {
+  const side = type === 'C' ? 'ce' : 'pe';
+  const r = (chain?.strikes || []).filter(x => x[side]?.iv > 0).sort((a, b) => Math.abs(a.k - k) - Math.abs(b.k - k))[0];
+  return r ? r[side].iv / 100 : null;
 }
 
 /* ── margin of a strategy (#12): Angel One's margin calculator for the basket of legs ── */
@@ -1502,7 +1299,7 @@ async function angelOiHistory(name) {
     const ins = await angelInstruments(), today = istDateKey();
     const f = (ins.fut?.[name] || []).filter(r => r[0] >= today).sort((a, b) => a[0] < b[0] ? -1 : 1)[0];
     if (!f) throw new Error(name + ' has no future in Angel One\'s list');
-    ANGEL_STATS.histCalls++;
+    ANGEL_STATS.oiCalls++;
     const d = await angelCall('/rest/secure/angelbroking/historical/v1/getOIData',
       { exchange: 'NFO', symboltoken: f[1], interval: 'ONE_DAY', fromdate: angelFmtTime(Date.now() - 45 * 86400e3), todate: angelFmtTime(Date.now()) }, { queue: 'angel-hist' });
     const rows = (Array.isArray(d) ? d : []).map(x => ({ day: String(x.time).slice(0, 10), oi: +x.oi })).filter(x => x.oi > 0);
@@ -1544,7 +1341,8 @@ async function angelMcxQuote(sym) {
 }
 /* Called with the proxy price just computed: keeps a calibration only when the MCX trade is recent (MCX is open). */
 async function mcxAutoCalFor(sym, proxy) {
-  if (!angelReady() || !MCX_ANGEL_NAME[sym] || !(proxy > 0)) return MCX_AUTO_CAL[sym] || null;
+  const keep = c => c && Date.now() - c.ts < 3 * 86400e3 ? c : null;   /* same 3-day limit on every path */
+  if (!angelReady() || !MCX_ANGEL_NAME[sym] || !(proxy > 0)) return keep(MCX_AUTO_CAL[sym]);
   try {
     const m = await withTimeout(angelMcxQuote(sym), 6000, sym + ' Angel One MCX');
     const fresh = m.price > 0 && m.at && Date.now() - m.at < 15 * 60e3, k = m.price / proxy;
@@ -1552,12 +1350,11 @@ async function mcxAutoCalFor(sym, proxy) {
     else if (MCX_AUTO_CAL[sym]) MCX_AUTO_CAL[sym] = { ...MCX_AUTO_CAL[sym], lastSeen: { price: m.price, at: m.at, contract: m.contract } };
     else MCX_AUTO_CAL[sym] = null;
   } catch (e) { /* keep the last one */ }
-  const c = MCX_AUTO_CAL[sym];
-  return c && Date.now() - c.ts < 3 * 86400e3 ? c : null;
+  return keep(MCX_AUTO_CAL[sym]);
 }
 
 /* ── USD/INR (#16): Angel One has only USD/INR futures (a forward price, ~0.1-0.5% above spot), so Yahoo's spot rate stays
-   the one used; the future is the fallback when Yahoo fails, and the comparison page shows both. ── */
+   the one used; the future is the fallback when Yahoo fails. ── */
 async function angelUsdInr() {
   const ins = await angelInstruments(), today = istDateKey();
   const f = (ins.cds?.USDINR || []).filter(r => r[0] >= today).sort((a, b) => a[0] < b[0] ? -1 : 1)[0];
@@ -1566,31 +1363,8 @@ async function angelUsdInr() {
   if (!(live > 50)) throw new Error('Angel One gave no USD/INR');
   return { live, prev: +q.close > 50 ? +q.close : live, contract: q.tradingSymbol || 'USDINR ' + f[0], expiry: f[0], at: q.exchFeedTime || null };
 }
-async function angelUsdInrCheck() {
-  const a = await withTimeout(angelUsdInr(), 6000, 'Angel One USD/INR');
-  return { angel: a.live, angelPrev: a.prev, contract: a.contract, angelAt: a.at, yahoo: usdInrCache.ts ? usdInrCache.rate : null, yahooAt: usdInrCache.ts ? new Date(usdInrCache.ts).toISOString() : null,
-    diffPct: usdInrCache.ts ? +((a.live / usdInrCache.rate - 1) * 100).toFixed(3) : null };
-}
-
-/* settings shown on the comparison page */
-async function apiAngelPrefs(req, res) {
-  if (req.method !== 'POST') return send(res, { prefs: ANGEL_PREFS });
-  let b; try { b = await readJsonBody(req, 2000); } catch (e) { return err(res, e.message, 400); }
-  let changed = false;
-  for (const k of ['candles', 'live']) if ((b?.[k] === 'angel' || b?.[k] === 'yahoo') && ANGEL_PREFS[k] !== b[k]) { ANGEL_PREFS[k] = b[k]; changed = true; }
-  if (changed) {
-    angelPrefsSave();
-    /* the normal scan / Nifty trend / quotes were made with the other source: start again */
-    Object.assign(SRCV.yahoo, { MY_TRADE_SCREENER_CACHE: null, MY_TRADE_SCREENER_TS: 0, NIFTY_REGIME_CACHE: null, NIFTY_REGIME_TS: 0 });
-    API_CACHE.clear();
-    if (ANGEL_PREFS.candles === 'angel') angelHistWarm('prefs');
-  }
-  send(res, { ok: true, prefs: ANGEL_PREFS });
-}
 
 if (angelAutoSet()) setTimeout(() => { if (!angelSession()) angelAutoLogin('start-up').catch(e => console.warn(e.message)); }, 60e3);
-/* still logged in after a restart (same day): load the day's candles */
-setTimeout(() => { if (angelSession()) angelHistWarm('start-up'); }, 90e3);
 function angelStatus() {
   const s = angelSession(), ins = ANGEL_INSTR;
   return {
@@ -1605,8 +1379,7 @@ function angelStatus() {
     instruments: ins ? { day: ins.day, options: Object.fromEntries(Object.entries(ins.opt || {}).map(([k, v]) => [k, v.length])), lot: ins.lot || {},
       indices: Object.keys(ins.idx || {}).length, notFound: Object.keys(IDX_RE).filter(k => !ins.idx?.[k]), indexNames: ins.indexNames || 0 } : null,
     lastOk: ANGEL_STATE.lastOk, lastError: ANGEL_STATE.lastError, lastErrorAt: ANGEL_STATE.lastErrorAt, calls: ANGEL_STATE.calls,
-    prefs: ANGEL_PREFS, history: angelHistInfo(), stats: ANGEL_STATS,
-    charts: { since: SRC_STATS.since, yahoo: SRC_STATS.yahoo.charts, angel: SRC_STATS.angel.ok, angelFellBack: SRC_STATS.angel.fallbacks, notOnAngel: SRC_STATS.angel.notOnAngel, lastFallbacks: SRC_STATS.angel.lastFallbacks },
+    livePrices: angelLiveOn() ? 'Angel One' : 'Yahoo', stats: ANGEL_STATS, yahooCharts: SRC_STATS.yahoo.charts,
     lists: ins ? { stocks: Object.keys(ins.eq || {}).length, futures: Object.keys(ins.fut || {}).length, mcx: Object.keys(ins.mcx || {}), usdinr: (ins.cds?.USDINR || []).length } : null,
   };
 }
@@ -1647,8 +1420,20 @@ async function getIndexFallbackPrice(sym, ticker) {
     try { const v = await withTimeout(angelStockPrice(sym, ticker), 12000, sym + ' Angel One'); ANGEL_STATS.liveServed++; return v; }
     catch (e) { ANGEL_STATS.liveFallbacks++; ANGEL_STATS.lastLiveFallback = sym + ': ' + String(e.message).slice(0, 120); }
   }
+  /* Outside the session: Yahoo's price (NSE's official close), with the exchange data (circuit limits, 52-week range) from
+     Angel One's last quote - the Overview's Exchange data card disappeared every evening otherwise (27 Nov 2026) */
+  else if (angelStockCode(sym) && angelReady() && !/^yahoo$/i.test(process.env.TD_LIVE_PRICES || '')) {
+    const y = await getPriceAndChange(ticker, sym);
+    try {
+      const ins = await angelInstruments(), code = angelStockCode(sym), tok = ins.eq?.[code];
+      if (tok) { const q = await withTimeout(angelQuoteOne('NSE', tok), 5000, sym + ' Angel One exchange data');
+        if (!q.tradingSymbol || String(q.tradingSymbol).toUpperCase() === code + '-EQ') return { ...y, exch: angelExchInfo(q) }; }
+    } catch {}
+    return y;
+  }
   /* Angel One first when connected: live value and previous close of the NSE indices it lists. */
-  if (angelReady() && IDX_RE[sym]) { try { return await withTimeout(angelIndexPrice(sym, ticker), 15000, sym + ' Angel One'); } catch (e) { console.warn('Angel One index ' + sym + ':', e.message); } }
+  /* (only the indices Angel One lists: the 7 others went through here and logged a warning on every price request) */
+  if (angelReady() && IDX_RE[sym] && (!ANGEL_INSTR?.idx || ANGEL_INSTR.idx[sym])) { try { return await withTimeout(angelIndexPrice(sym, ticker), 15000, sym + ' Angel One'); } catch (e) { console.warn('Angel One index ' + sym + ':', e.message); } }
   if (NSE_INDEX_PRIMARY.has(sym)) {
     /* The Yahoo symbol is an ETF (~31 for an index at ~31,500): scaled by the index / ETF ratio (learned at the
        10:00 NSE snapshot, else from NSE's archive close), or fail so the last good value is served - a raw ETF
@@ -1707,7 +1492,8 @@ async function getRateBasis(force=false) {
       /* No live rate has ever been fetched: refuse rather than price MCX at the built-in 84.5 (about 11% low
          against ~94.7 in Nov 2026). The quote then errors or serves its last good value. */
       /* Yahoo failed: Angel One's USD/INR future (a forward price, slightly above spot) rather than nothing (26 Nov 2026) */
-      if (angelReady()) { try { const a = await angelUsdInr(); if (!usdInrCache.ts) usdInrCache = { rate: a.live, ts: Date.now() };
+      /* only when there is no Yahoo rate from the last 30 minutes, and at most 4 s (every MCX quote waits on this) */
+      if (angelReady() && (!fxBasisCache || Date.now() - fxBasisTs > 30 * 60e3)) { try { const a = await withTimeout(angelUsdInr(), 4000, 'Angel One USD/INR'); if (!usdInrCache.ts) usdInrCache = { rate: a.live, ts: Date.now() };
         fxBasisCache = { live: a.live, prev: a.prev, src: 'Angel One ' + a.contract }; fxBasisTs = Date.now(); return fxBasisCache; } catch {} }
       if (!fxBasisCache && !usdInrCache.ts) throw new Error('USD/INR rate not available yet - MCX prices need it');
       console.warn('USDINR basis fetch failed, using cached:', e.message);
@@ -1722,7 +1508,7 @@ async function getRateBasis(force=false) {
    TTLs are intentionally short so prices stay near-live while duplicate Yahoo calls are avoided. */
 /* One key space since the second (Kite) data-source context was removed; kept as a class so callers are unchanged. */
 class SrcMap extends Map {
-  k(key) { const s = dataSrc(); return s !== 'yahoo' && !String(key).startsWith('angel:') ? key + '|src:' + s : key; }
+  k(key) { return key; }
   get(key) { return super.get(this.k(key)); }
   set(key, v) { return super.set(this.k(key), v); }
   has(key) { return super.has(this.k(key)); }
@@ -2271,8 +2057,6 @@ async function fetchFinnhubLayer(ctx) {
   /* Finnhub is best here for global/gold/macro. It is weak for Indian small stocks, so only use when gold/index/global-like. */
   if (!ctx.isMacro && !ctx.isIndex) return [];
   try {
-    const from = new Date(Date.now() - 7*24*60*60*1000).toISOString().slice(0,10);
-    const to = new Date().toISOString().slice(0,10);
     const u = `https://finnhub.io/api/v1/news?category=general&minId=0&token=${encodeURIComponent(FINNHUB_KEY)}`;
     const r = await Promise.race([get(u, {'Accept':'application/json'}), new Promise((_,rej)=>setTimeout(()=>rej(new Error('timeout')),5000))]);
     if (r.status !== 200) return [];
@@ -2363,7 +2147,8 @@ async function apiNews(req, res, p) {
       pending = gatherAllNews(ctx).then(all => {
         const fresh24 = finalizeNews(filterNewsAge(all.items, 24), ctx, { maxAgeHrs: 24 });
         const week = finalizeNews(filterNewsAge(all.items, 168), ctx, { maxAgeHrs: 168 });
-        const useFresh = fresh24.length >= 2;
+        /* the last 24 hours only when they hold 5+ headlines; otherwise the week (2 fresh items used to hide up to 10 others) */
+        const useFresh = fresh24.length >= 5;
         const finalItems = useFresh ? fresh24 : week;
         const sourceUsed = all.sourceUsed === 'none' && finalItems.length ? 'mixed' : all.sourceUsed;
         const payload = { items: finalItems, sym, source: sourceUsed, window: useFresh ? '24h' : '7d fallback', summary: newsSummary(finalItems, all.health, sourceUsed) };
@@ -2699,18 +2484,19 @@ async function searchStocks(q) {
     ]);
     if (r.status === 200) {
       const d = JSON.parse(r.body);
+      /* NSE listings only: every result opens as NSE:<symbol>, so a BSE-only row (often a numeric scrip code)
+         used to open a symbol that does not exist. */
       const yf = (d.quotes||[])
-        .filter(s => (s.exchange==='NSI'||s.exchange==='BSI'||(s.symbol&&s.symbol.endsWith('.NS'))) && s.quoteType==='EQUITY')
-        .slice(0,6)
+        .filter(s => (s.exchange==='NSI'||(s.symbol&&s.symbol.endsWith('.NS'))) && s.quoteType==='EQUITY')
         .map(s => ({
-          symbol: (s.symbol||'').replace('.NS','').replace('.BO',''),
+          symbol: (s.symbol||'').replace(/\.NS$/,''),
           name: s.shortname||s.longname||s.symbol||'',
-          exchange: s.exchange==='BSI'?'BSE':'NSE',
+          exchange: 'NSE',
           type: 'EQUITY',
         }))
         .filter(s => s.symbol && s.name);
       const seen = new Set(local.map(s => s.symbol));
-      return [...local, ...yf.filter(s => !seen.has(s.symbol))].slice(0,8);
+      return [...local, ...yf.filter(s => !seen.has(s.symbol) && seen.add(s.symbol))].slice(0,8);
     }
   } catch { /* Yahoo blocked or timed out — use local only */ }
 
@@ -3225,6 +3011,7 @@ async function apiStrategy(req, res, p) {
   const expiryIn = +(p.get('expiry') || 30);
   let expiry     = Math.max(1, Math.min(90, Number.isFinite(expiryIn) ? expiryIn : 30));
   const ivParam  = p.get('iv')  ? +p.get('iv')  / 100 : null;
+  const expParam = /^\d{4}-\d{2}-\d{2}$/.test(p.get('exp') || '') ? p.get('exp') : null;   /* a chosen expiry date (26 Nov 2026), else the expiry nearest 'expiry' days */
   const ivAuto   = !ivParam || p.get('ivauto') === '1';   /* the page's VIX-based default: replaced by Angel One's at-the-money IV */
   const spotParam= p.get('spot') && +p.get('spot') > 0 ? +p.get('spot') : null;
   const lotParam = p.get('lot') ? +p.get('lot')  : null;   /* user-overridden lot size */
@@ -3243,7 +3030,7 @@ async function apiStrategy(req, res, p) {
        Black-Scholes estimates). */
     const wantChain = angelReady();   /* option builder: live premiums from Angel One when connected; else Black-Scholes only - no NSE call */
     const chainP = wantChain
-      ? withTimeout(getOptionChain(sym, new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10), { estimate: false }), 11000, 'option chain').catch(() => null)
+      ? withTimeout(getOptionChain(sym, expParam || new Date(Date.now() + 5.5 * 3600000 + expiry * 86400000).toISOString().slice(0, 10), { estimate: false }), 11000, 'option chain').catch(() => null)
       : Promise.resolve(null);
     /* Fetch live spot if not provided */
     let spot = spotParam;
@@ -3273,8 +3060,11 @@ async function apiStrategy(req, res, p) {
     /* Angel One's implied volatility (26 Nov 2026): at-the-money IV instead of the VIX / default guess, and each leg's own IV */
     let ivSource = ivParam && !ivAuto ? 'your IV' : ivAuto && ivParam ? 'India VIX' : 'default';
     if (ivAuto && chain) { const a = chainAtmIv(chain); if (a) { iv = a; ivSource = 'Angel One at-the-money IV'; } }
-    const legIv = l => (chain && chainLegIv(chain, l.strike, l.type)) || iv;
-    const T   = expiry / 365;
+    /* each leg at its own IV only when the IV is automatic - an IV the user typed is used for every leg */
+    const legIv = l => (ivAuto && chain && chainLegIv(chain, l.strike, l.type)) || iv;
+    /* time to the real expiry in fractional days (15:30 IST): on expiry morning 0.2 day was priced as a full day, so the
+       estimated legs' time value, theta and the probability were off; the shown day count stays a whole number */
+    const T   = chain?.expiry ? Math.max(0.25 / 365, (Date.parse(chain.expiry + 'T15:30:00+05:30') - Date.now()) / (365 * 86400000)) : expiry / 365;
     const si  = getStrikeInterval(sym, spot);
     /* Never guess a lot size: a silent default of 50 made every ₹ figure wrong for unknown symbols. */
     const lot = (lotParam > 0 ? lotParam : null) || getLotSize(sym);
@@ -3298,7 +3088,8 @@ async function apiStrategy(req, res, p) {
         }
         const newStrike = useStrikes ? strikesParam[i] : leg.strike;
         const lp = livePrem(newStrike, leg.type);
-        const newPrem   = lp != null ? lp : +estimatePremium(spot, newStrike, T, legIv({ strike: newStrike, type: leg.type }), leg.type).toFixed(2);
+        /* no live price: the market IV of the nearest strike when the IV is automatic, the typed IV otherwise */
+        const newPrem   = lp != null ? lp : +estimatePremium(spot, newStrike, T, (ivAuto && chain && chainNearestIv(chain, newStrike, leg.type)) || legIv({ strike: newStrike, type: leg.type }), leg.type).toFixed(2);
         return { ...leg, strike: newStrike, premium: newPrem, live: lp != null,
                  label: `${leg.action==='BUY'?'Buy ':'Sell'} ${newStrike} ${leg.type==='C'?'CE':'PE'}` };
       });
@@ -3337,13 +3128,14 @@ async function apiStrategy(req, res, p) {
       result.legIv = result.legs.filter(l => l.type !== 'STOCK').map(l => ({ strike: l.strike, type: l.type, iv: chainLegIv(chain, l.strike, l.type) ? +(chainLegIv(chain, l.strike, l.type) * 100).toFixed(2) : null }));
       /* margin for one lot of the whole strategy, hedges included (Angel One's margin calculator) */
       if (chain.source === 'Angel One' && result.legs.length && result.legs.every(l => l.type !== 'STOCK')) {
-        try { result.marginLive = await withTimeout(angelStrategyMargin(chain.name, chain.expiry, result.legs, lot), 6000, 'Angel One margin'); }
+        /* the exchange's contract lot (a lot size typed on the page is only for the ₹ figures) */
+        try { result.marginLive = await withTimeout(angelStrategyMargin(chain.name, chain.expiry, result.legs, chain.lotSize || lot), 6000, 'Angel One margin'); }
         catch (e) { result.marginError = String(e.message).slice(0, 140); }
       }
     }
     result.ivSource = ivSource;
     send(res, {
-      sym, spot:+spot.toFixed(2), expiry, expiryAsked, iv:+(iv*100).toFixed(1),
+      sym, spot:+spot.toFixed(2), expiry, expiryAsked, iv:+(iv*100).toFixed(1), expiryDate: chain?.expiry || null, expiries: chain?.expiries || null,
       strikeInterval:si, lotSize:lot, ...result,
       updatedAt: new Date().toISOString(),
     });
@@ -3740,6 +3532,8 @@ function saveUniverseToDisk() {
    sector indices used in scoring. Banks are split out of Financial Services by name. */
 function industryToSector(industry, sym, name) {
   const ind = String(industry || '').toLowerCase(), txt = `${sym} ${name}`.toUpperCase();
+  /* "AU Small Finance Bank" etc. are banks (they sit in Nifty Bank); the FINANCE test below used to class them Finance */
+  if (ind.includes('financial') && /SMALL FINANCE BANK|SMALL FIN\.? BANK/.test(txt)) return 'Banking';
   if (ind.includes('financial')) return /BANK|\bBNK\b/.test(txt) && !/BANKING FIN|FINSERV|FINANCE/.test(txt) ? 'Banking' : 'Finance';
   if (ind.includes('information technology')) return 'IT';
   if (ind.includes('automobile')) return 'Auto';
@@ -4328,7 +4122,7 @@ function scoreMomentumS({price,e20,e50,e200,rsi,volBlend,rrBull,macd,C,H,L,atr,r
 function readyGateStrategyS(name, obj, ctx){
   const reasons=[];
   const add=t=>{ if(t && !reasons.includes(t)) reasons.push(t); };
-  const {price,e20,e50,e200,rsi,volBlend,rrBull,adx,r1,s1,s2,macd,C=[],L=[]} = ctx;
+  const {price,e20,e50,e200,rsi,volBlend,rrBull,adx,r1,s1,s2,C=[],L=[]} = ctx;
   const distE20 = pctDistS(price, e20);
   const adxVal = Number(adx?.adx || adx || 0);
   const nm = String(name || obj?.name || '').toLowerCase();
@@ -4451,8 +4245,6 @@ function qualifiedMetricsS({C,H,L,V,weekly,marketCapCr,prevIdx}){
   const avgVol3=volBase3.reduce((a,b)=>a+(Number(b)||0),0)/Math.max(1,volBase3.length);
   const volRatio=avgVol?(Number(V[n-1])||0)/avgVol:1;
   const volBlend=(volRatio||0)*0.6 + ((avgVol&&volBase3.length?avgVol3/avgVol:volRatio)||0)*0.4;
-  const ph=H[n-2]||H[n-1], pl=L[n-2]||L[n-1], pc=C[n-2]||C[n-1];
-  const pp=(ph+pl+pc)/3;
   /* Levels from the shared engine (same completed-session S/R as the Overview). */
   const spSr = SwingPlan.srLevels({ H, L, C, i: Number.isInteger(prevIdx) ? prevIdx : n - 2, price });
   const {r1, s1, r2, s2} = spSr;
@@ -4485,9 +4277,6 @@ function qualifiedMetricsS({C,H,L,V,weekly,marketCapCr,prevIdx}){
   else if(price<e50 && e50<e200) trendPts=9;
 
   let setup='No Clear Setup', setupPts=5;
-  const distE20=e20?Math.abs(price-e20)/e20*100:99;
-  const distE50=e50?Math.abs(price-e50)/e50*100:99;
-  const macdBull=!!(macd && macd.macd>macd.signal && macd.hist>0);
   const strategyScores = scoreFourStrategiesS({price,e20,e50,e200,rsi,adx,volBlend,rrBull,rrBy,pv,macd,C,H,L,atr,r1,r2,s1,s2});
   if(bias==='Bullish'){
     const candidates = [
@@ -4551,7 +4340,7 @@ function qualifiedMetricsS({C,H,L,V,weekly,marketCapCr,prevIdx}){
    Screener 2: Need Confirmation = near-ready names only, never buy-now.
    A symbol can be in only one screen. Ready wins; confirmation screen excludes all Screener Match symbols.
    No second Yahoo scan is needed for the confirmation screen. */
-/* MY_TRADE_SCREENER_CACHE / _TS / _INFLIGHT, LAST_SCAN_DIAG: kept per data source in SRCV (top of file) */
+/* MY_TRADE_SCREENER_CACHE / _TS / _INFLIGHT: kept per data source in SRCV (top of file) */
 const MY_TRADE_SCREENER_TTL = 30 * 60 * 1000; /* 30 min server cache to reduce Yahoo load */
 /* Same rule as the page (scanPredatesClose in app.js): made during the NSE session, and that session is over. */
 function scanPredatesCloseS(at) {
@@ -4571,7 +4360,8 @@ const NIFTY_TREND_WHY = 'Nifty not in an uptrend (needs Nifty above its EMA50 an
 function completedLenS(T) {
   const n = (T || []).length; if (!n) return 0;
   const { m, key } = istNowParts();
-  return istDateKeyS(T[n - 1]) === key && m >= 9 * 60 + 15 && m < 15 * 60 + 35 ? n - 1 : n;
+  /* from 09:00: a pre-open print (09:00-09:08) already stamps today's bar - it is forming, not a completed day */
+  return istDateKeyS(T[n - 1]) === key && m >= 9 * 60 && m < 15 * 60 + 35 ? n - 1 : n;
 }
 
 /* The stock-level READY checks, in one place: the live scan and the backtest call this, so the backtest
@@ -4741,6 +4531,10 @@ async function computeMomentumS() {
     let iL = nb.T.length - 1; while (iL >= 0 && istDateKeyS(nb.T[iL]) > (top[0]?.date || today)) iL--;
     const nLast = nb.C.length - 1, ret = (a, b) => a >= 0 && b >= 0 && nb.C[b] > 0 ? +((nb.C[a] / nb.C[b] - 1) * 100).toFixed(1) : null;
     perf.nifty = { mtd: ret(nLast, iL), r6: ret(iL, iL - 126), r12: ret(iL, iL - 252) };
+    /* the cash rule as tested (research/mom10.js): Nifty vs its 200-day average on the LIST date (the last close before
+       the rebalance), not today - it used today's live Nifty, so the month's decision could flip mid-month (27 Nov 2026) */
+    if (iL >= 199) { const s200 = nb.C.slice(iL - 199, iL + 1).reduce((a, b) => a + b, 0) / 200;
+      perf.listFilter = { aboveSma200: nb.C[iL] > s200, nifty: +nb.C[iL].toFixed(2), sma200: +s200.toFixed(2), date: istDateKeyS(nb.T[iL]) }; }
   } catch {}
   const nextMonth = monthStartKey(new Date(Date.parse(thisMonth) + 40 * 864e5).toISOString().slice(0, 10));
   const out = {
@@ -4751,7 +4545,7 @@ async function computeMomentumS() {
     sells: prevTop.filter(r => !curSet.has(r.sym)).map(r => ({ sym: r.sym, nowRank: cur.find(x => x.sym === r.sym)?.rank || null })),
     buys: top.filter(r => !prevSet.has(r.sym)).map(r => r.sym),
     livePreview: live.slice(0, MOM_TOP).map(r => ({ sym: r.sym, rank: r.rank, inList: curSet.has(r.sym) })),
-    niftyFilter: { aboveSma200: nifty.aboveSma200 ?? null, nifty: nifty.nifty ?? null, sma200: nifty.sma200 ?? null },
+    niftyFilter: perf.listFilter || { aboveSma200: nifty.aboveSma200 ?? null, nifty: nifty.nifty ?? null, sma200: nifty.sma200 ?? null },
     universe: { stocks: data.length, ranked: cur.length }, perf,
     generatedAt: new Date().toISOString(),
   };
@@ -4814,9 +4608,14 @@ async function getNiftyRegime() {
     /* trendUp: the READY gate (backtest 7 Nov 2026 - pullbacks went from break-even to +0.3% a trade with it).
        aboveSma200: Nifty above its 200-day average (the Monthly momentum filter). */
     const sma200 = C.slice(n - 200).reduce((a, b) => a + b, 0) / 200;
+    /* The same on the last COMPLETED bar: a signal from yesterday's close is judged with yesterday's Nifty trend and
+       relative strength, as in the backtest (27 Nov 2026 - it used today's live values) */
+    const liveN = completedLenS(d.T) < n, Cp = liveN ? C.slice(0, -1) : C, np = Cp.length;
+    const trendUpPrev = np > 60 ? Cp[np - 1] > emaS(Cp, 50) && emaS(Cp, 20) > emaS(Cp, 50) : null;
     SV().NIFTY_REGIME_CACHE = { status, allowReady, nifty:+price.toFixed(2), ema20:+e20.toFixed(2), ema50:+e50.toFixed(2), ema200:+e200.toFixed(2), note,
-      trendUp: price > e50 && e20 > e50, sma200: +sma200.toFixed(2), aboveSma200: price > sma200 };
+      trendUp: price > e50 && e20 > e50, trendUpPrev, sma200: +sma200.toFixed(2), aboveSma200: price > sma200 };
     SV().NIFTY_CLOSES = C.slice();
+    SV().NIFTY_CLOSES_PREV = Cp.slice();
     SV().NIFTY_REGIME_TS = Date.now();
     return SV().NIFTY_REGIME_CACHE;
   } catch (er) {
@@ -4827,20 +4626,21 @@ async function getNiftyRegime() {
 
 /* ── Results (earnings) calendar ──
    NSE's corporate event calendar lists board meetings for financial results. A stock with results today or
-   within the next 5 trading days is not a fresh swing entry (gap risk). The manual EARNINGS_DATES list is
-   merged in. If NSE cannot be reached (it sometimes blocks cloud hosts) nothing is blocked and the
+   within the next 5 trading days is not a fresh swing entry (gap risk). Yahoo's calendar fills in when NSE's
+   list is not current. If neither can be reached (it sometimes blocks cloud hosts) nothing is blocked and the
    response says the check was unavailable. Exchange holidays are not excluded from the trading-day count. */
 const RESULTS_BLOCK_TRADING_DAYS = 5;
 let RESULTS_CAL_CACHE = null, RESULTS_CAL_TS = 0;
 /* Last successful NSE results list ({ts, rows:[[sym, date, purpose]]}), also saved to disk. A failed fetch used
-   to replace the calendar with the manual list only, so a stock reporting in 3 days showed READY in that scan. */
+   to replace the calendar with an empty one, so a stock reporting in 3 days showed READY in that scan. */
 let RESULTS_CAL_LAST_GOOD = null;
 function nseDateParam(ms) {
   const d = new Date(ms + 330 * 60000);
   return `${String(d.getUTCDate()).padStart(2,'0')}-${String(d.getUTCMonth()+1).padStart(2,'0')}-${d.getUTCFullYear()}`;
 }
-function parseNseDateKey(s) {
-  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})$/.exec(String(s || '').trim());
+/* NSE's "05-Dec-2026" (or "5-dec-2026 ...") -> "2026-12-05"; null when it is not that shape. One parser for every NSE list. */
+function nseDdMmmToKey(s) {
+  const m = /^(\d{1,2})-([A-Za-z]{3})-(\d{4})/.exec(String(s || '').trim());
   if (!m) return null;
   const mon = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'].indexOf(m[2].toLowerCase()) + 1;
   return mon ? `${m[3]}-${String(mon).padStart(2,'0')}-${String(+m[1]).padStart(2,'0')}` : null;
@@ -4859,6 +4659,8 @@ function tradingDaysUntil(fromKey, toKey) {
   /* Results on a weekend are priced in on the next session, so count that session. */
   const endDow = new Date(end).getUTCDay();
   if (step > 0 && (endDow === 0 || endDow === 6)) count += 1;
+  /* A past weekend / holiday date counted 0 ("today"): on a Monday, Saturday's results looked upcoming and blocked. */
+  if (step < 0 && count === 0) count = -1;
   return count;
 }
 /* ── Free fallbacks when NSE refuses (22 Nov 2026) ──
@@ -4920,7 +4722,7 @@ async function freeCalendarTick() {
           const r = await withTimeout(get(`https://query1.finance.yahoo.com/v1/finance/visualization?lang=en-US&region=US&crumb=${encodeURIComponent(c.crumb)}`, { Cookie: c.cookie, 'Content-Type': 'application/json', Accept: 'application/json' }, body, 'POST'), 15000, 'Yahoo splits');
           if (r.status !== 200) throw new Error('splits HTTP ' + r.status);
           const rows = JSON.parse(r.body)?.finance?.result?.[0]?.documents?.[0]?.rows || [];
-          for (const [tk, name, at, oldW, newW] of rows) {
+          for (const [tk, , at, oldW, newW] of rows) {
             if (!/\.NS$/.test(String(tk))) continue;
             const sym = String(tk).replace(/\.NS$/, '').toUpperCase(), date = String(at || '').slice(0, 10);
             if (/^\d{4}-\d{2}-\d{2}$/.test(date)) (splits[sym] = splits[sym] || []).push({ date, subject: `Split / bonus ${+newW || '?'}:${+oldW || '?'} (Yahoo)`, kind: 'split' });
@@ -5029,7 +4831,7 @@ async function loadResultsCalendar() {
     if (!bySym.has(k)) bySym.set(k, []);
     bySym.get(k).push({ date, purpose });
   };
-  let ok = false, source = 'manual list only', error = null;
+  let ok = false, source = '', error = null;
   try {
     const evPath = `/api/event-calendar?index=equities&from_date=${nseDateParam(Date.now() - 3 * 86400000)}&to_date=${nseDateParam(Date.now() + 12 * 86400000)}`;
     const mk = () => ({ u: NSE_WWW + evPath, hdr: { Accept:'application/json', Referer: NSE_WWW + '/companies-listing/corporate-filings-event-calendar', Origin: NSE_WWW } });
@@ -5047,7 +4849,7 @@ async function loadResultsCalendar() {
     const rows = JSON.parse(r.body);
     if (!Array.isArray(rows)) throw new Error('unexpected NSE response');
     const good = [];
-    rows.forEach(x => { if (/result/i.test(`${x.purpose || ''} ${x.bm_desc || ''}`)) { const d = parseNseDateKey(x.date); add(x.symbol, d, x.purpose || 'Financial Results'); good.push([x.symbol, d, x.purpose || 'Financial Results']); } });
+    rows.forEach(x => { if (/result/i.test(`${x.purpose || ''} ${x.bm_desc || ''}`)) { const d = nseDdMmmToKey(x.date); add(x.symbol, d, x.purpose || 'Financial Results'); good.push([x.symbol, d, x.purpose || 'Financial Results']); } });
     ok = true; source = 'NSE event calendar';
     RESULTS_CAL_LAST_GOOD = { ts: Date.now(), rows: good }; saveUniverseToDisk();
   } catch (er) {
@@ -5061,9 +4863,8 @@ async function loadResultsCalendar() {
   if (source !== 'NSE event calendar') {
     let n = 0;
     for (const [t, e] of Object.entries(FREE_CAL.earn || {})) if (e?.earn && !e.error) { const sym = t.replace(/\.NS$/, ''); if (!bySym.has(sym.toUpperCase()) || !bySym.get(sym.toUpperCase()).some(x => x.date === e.earn)) { add(sym, e.earn, e.est ? 'Results (Yahoo estimate)' : 'Financial Results (Yahoo)'); const l = bySym.get(sym.toUpperCase()); l[l.length - 1].estimate = !!e.est; n++; } }
-    if (n) { ok = true; source = (source === 'manual list only' ? '' : source + ' + ') + `Yahoo calendar (${n} stocks)`; }
+    if (n) { ok = true; source = (source ? source + ' + ' : '') + `Yahoo calendar (${n} stocks)`; }
   }
-  EARNINGS_DATES.forEach(x => add(String(x.sym).replace('NSE:',''), x.date, 'Results (manual list)'));
   RESULTS_CAL_CACHE = { bySym, ok, source, error, fetchedAt: new Date().toISOString() };
   /* Retry a failed fetch after ~10 minutes instead of an hour. */
   RESULTS_CAL_TS = ok && !error ? Date.now() : Date.now() + 2 * 3600e3;   /* NSE refused / failed: next try in 3 hours (it refuses Render) */
@@ -5097,9 +4898,8 @@ async function apiMyTradeScreener(req, res) {
 
 /* One line: what exactly has to happen (and at what price) for this stock to become READY. */
 
-/* Per-stock outcome of the last scan (every eligible stock, not just the top 20) - for /api/screener-diag. */
 async function runMyTradeScreenerScan() {
-  const scanDiag = [], sectorRet = [];
+  const sectorRet = [];
 
   /* Market regime (Nifty vs EMA20/50/200) and the results calendar are loaded once per scan. */
   const [niftyTrend, resultsCal] = await Promise.all([getNiftyRegime(), getResultsCalendar()]);
@@ -5117,11 +4917,8 @@ async function runMyTradeScreenerScan() {
     priceRule: 'Live current price > ₹10 (no upper price cap)',
     whitelistUsed: false
   };
-  /* Angel One candles: every stock's live quote in one go (50 a request) before the batches ask for them one by one */
-  const angelCandlesNow = dataSrc() === 'angel' || (dataSrc() === 'yahoo' && ANGEL_PREFS.candles === 'angel' && angelReady());
-  if (angelCandlesNow) { try { await withTimeout(angelPrefetchQuotes(universe), 30000, 'Angel One quotes'); } catch (e) { console.warn(e.message); } }
   const startedAt = Date.now();
-  const maxScanMs = angelCandlesNow ? 120000 : 85000;
+  const maxScanMs = 85000;
   const BATCH = 20;
   let timedOut = false;
   let scannedAttempted = 0;
@@ -5159,15 +4956,13 @@ async function runMyTradeScreenerScan() {
         /* 1-month return for the sector-strength ranking (every eligible stock counts, not only bullish ones). */
         const secInfo = sectorInfoFor(ticker);
         if (secInfo?.sector && C.length > 22) sectorRet.push({ sector: secInfo.sector, ret: (C[C.length-1] / C[C.length-22] - 1) * 100 });
-        const dg = { sym: ticker.replace(/\.(NS|BO)$/,''), price: +m.price.toFixed(2), bias: m.bias, picked: m.picked || null,
-          decisionScore: m.decisionScore, rr: m.rrBull, longTrend: m.price > m.e200 && m.e50 > m.e200 };
-        scanDiag.push(dg);
         const bullish = m.bias === 'Bullish';
         if (bullish) biasEligibleCount++;
         /* Tags (backtested, shown and recorded - they do not change READY) and the Pattern breakouts list. */
         const sym0 = ticker.replace(/\.(NS|BO)$/, ''), stTags = SwingPlan.stockTags({ H, L, C }) || {};
         const tags = { hhhl: !!stTags.hhhl, off52: stTags.off52 ?? null, near52: !!stTags.near52, dbAbove: !!stTags.dbAbove, dbNeck: stTags.doubleBottom?.neck ?? null };
-        if (bullish) { const pb = SwingPlan.patternBreakout({ H, L, C, V, atr: m.atr }); if (pb) patternCands.push({ sym: sym0, ticker, ...pb, tags }); }
+        /* pattern breakouts: patternBreakout applies the tested trend filter itself (close > EMA50 > EMA200) */
+        { const pb = SwingPlan.patternBreakout({ H, L, C, V, atr: m.atr }); if (pb) patternCands.push({ sym: sym0, ticker, ...pb, tags }); }
 
         /* Swing READY gate (tested 20 Nov 2026, SwingPlan.swingGate): EMA20/50 cross with relative strength, or a gap-up
            near the 52-week high. The signal is a CLOSE: during the session yesterday's completed bar is the signal (buy
@@ -5179,11 +4974,13 @@ async function runMyTradeScreenerScan() {
         const nB = C.length, liveBar = completedLenS(daily.T) < nB, nearClose = istNowParts().m >= 15 * 60;
         const vToday = null;   /* enrichDailyForLiveScreenerS already projected today's volume to a full day - do not do it twice */
         const D = { O: daily.O, H, L, C, V, rs3m: rs.rs3m, entry: m.price };
-        const gPrev = liveBar ? SwingPlan.swingGate({ ...D, i: nB - 2 }) : null;
+        /* yesterday's signal: relative strength on the signal bar (stock and Nifty without today's forming bar) */
+        const rsPrev = liveBar ? SwingPlan.relStrength(C.slice(0, nB - 1), SV().NIFTY_CLOSES_PREV || niftyCloses) : rs;
+        const gPrev = liveBar ? SwingPlan.swingGate({ ...D, rs3m: rsPrev.rs3m, i: nB - 2 }) : null;
         const gNow = SwingPlan.swingGate({ ...D, vToday });
         const g = gPrev?.ok ? gPrev : gNow;
         /* 20-day breakout list (separate from READY, tested 21 Nov 2026): same signal-on-a-close rule as READY. */
-        { const bPrev = liveBar ? SwingPlan.breakout20({ H, L, C, V, i: nB - 2, rs3m: rs.rs3m, entry: m.price }) : null;
+        { const bPrev = liveBar ? SwingPlan.breakout20({ H, L, C, V, i: nB - 2, rs3m: rsPrev.rs3m, entry: m.price }) : null;
           const bNow = SwingPlan.breakout20({ H, L, C, V, rs3m: rs.rs3m, vToday, entry: m.price });
           const bo = bPrev?.ok ? bPrev : bNow?.ok ? bNow : null;
           if (bo) bo20Cands.push({ sym: sym0, ticker, ...bo, fresh: freshOf('breakout', bo.stop), price: +m.price.toFixed(2), signalDay: bPrev?.ok ? 'yesterday' : 'today', signalDate: istDateKeyS(daily.T[bPrev?.ok ? nB - 2 : nB - 1]),
@@ -5198,7 +4995,6 @@ async function runMyTradeScreenerScan() {
         const readyOk = g.ok && !forming && !resultsBlock && !eventBlock;
         if (g.ok && !forming && resultsBlock) resultsBlockedCount++;
         if (g.ok && !forming && eventBlock && !resultsBlock) eventBlockedCount++;
-        Object.assign(dg, { gate: g.ok ? g.setup : null, signalDay, forming, near: nearTxt, rs3m: rs.rs3m });
         const blockReasons = [];
         if (resultsBlock) blockReasons.push(resultsInfo.date === todayKey ? `Results today (${resultsInfo.date})` : `Results in ${resultsInfo.tradingDays} trading day${resultsInfo.tradingDays===1?'':'s'} (${resultsInfo.date}) - avoid fresh swing entry`);
         blockReasons.push(...evChk.reasons);
@@ -5242,7 +5038,8 @@ async function runMyTradeScreenerScan() {
   if (secRank.length >= 5) { SV().LAST_SECTOR_STRENGTH = { ts: Date.now(), map: secPos }; saveUniverseToDisk(); }
   /* The tested READY gate needs Nifty in its uptrend (as tested); its own strength rule (RS for the cross) is in the gate. */
   for (const x of ready.splice(0)) {
-    if (marketTrend.trendUp === false) {
+    /* the Nifty trend on the signal bar: yesterday's for a signal at yesterday's close */
+    if ((x.signalDay === 'yesterday' && marketTrend.trendUpPrev != null ? marketTrend.trendUpPrev : marketTrend.trendUp) === false) {
       regimeBlockedCount++;
       watch.push({ ...x, tradeStatus:'WATCH', isStrictQualified:false, regimeBlock:true, watchReason: NIFTY_TREND_WHY, confirmationNeeded: NIFTY_TREND_WHY, trigger:'Needs Nifty back above its EMA50 with EMA20 above EMA50' });
       continue;
@@ -5288,7 +5085,6 @@ async function runMyTradeScreenerScan() {
     .filter(b => !b.resultsBlock && !b.eventBlock)
     .sort((a, b) => a.riskPct - b.riskPct).slice(0, 15);
   const breakouts20Note = marketTrend.trendUp === false ? `20-day breakouts paused: ${NIFTY_TREND_WHY}` : '';
-  SV().LAST_SCAN_DIAG = { ts: Date.now(), rows: scanDiag };
   const result = {
     picks,
     watchlist,
@@ -5351,13 +5147,6 @@ async function runMyTradeScreenerScan() {
   return result;
 }
 
-/* ── Legacy screener code below is retained, but public routes use /api/my-trade-screener. ── */
-let SCREENER_CACHE = null, SCREENER_TS = 0;
-const SCREENER_TTL = 60 * 60 * 1000; /* 1 hour cache */
-
-/* News cache — per symbol, 15 min TTL */
-
-
 /* ══════════════════════════════════════════════════════════════════════
    ECONOMIC CALENDAR — Key Indian + US market events
    Static/manual calendar (not a live exchange calendar; verify important dates before trading)
@@ -5389,6 +5178,43 @@ const NSE_HOLIDAYS_BUILTIN = [['2026-01-15','Municipal Corporation Election - Ma
   ['2026-11-24','Prakash Gurpurb Sri Guru Nanak Dev'],['2026-12-25','Christmas']];
 const NSE_DATED_HOLIDAYS = new Set([...NSE_HOLIDAYS_BUILTIN.map(h => h[0]), ...String(process.env.NSE_HOLIDAYS || '').split(',').map(s => s.trim()).filter(Boolean)]);
 function isNseHoliday(key) { return NSE_DATED_HOLIDAYS.has(key) || NSE_FIXED_HOLIDAYS_MD.has(key.slice(5)); }
+/* Holidays the list does not have (2027 onwards: NSE refuses Render, so its list cannot be fetched there): from 09:25 IST
+   a weekday on which Nifty has not traded today is a holiday - learned from the market itself (27 Nov 2026). */
+const NSE_CLOSED_SEEN = {};   /* day -> { closed, at } */
+async function nseClosedTodayCheck() {
+  const t = new Date(Date.now() + 5.5 * 3600e3), key = t.toISOString().slice(0, 10), m = t.getUTCHours() * 60 + t.getUTCMinutes();
+  if (t.getUTCDay() < 1 || t.getUTCDay() > 5 || isNseHoliday(key) || m < 9 * 60 + 25 || m > 15 * 60 + 30) return false;
+  const seen = NSE_CLOSED_SEEN[key];
+  if (seen && (seen.closed || seen.traded || Date.now() - seen.at < 10 * 60e3)) return seen.closed;   /* a trade seen today settles it */
+  try {
+    const q = await withTimeout(getIndexFallbackPrice('NSE:NIFTY', '^NSEI'), 15000, 'Nifty session check');
+    const traded = q?.marketTime > 0 && istDateKey(q.marketTime * 1000) === key;
+    /* a holiday only after two checks 10+ minutes apart both see no trade (one stale quote must not cancel a trading day) */
+    const pendingAt = !traded ? (seen?.pendingAt || Date.now()) : null, confirmed = !traded && Date.now() - pendingAt >= 10 * 60e3;
+    NSE_CLOSED_SEEN[key] = { closed: confirmed, traded, pendingAt, at: Date.now() };
+    if (!traded && !confirmed) return false;
+    if (!traded) { NSE_DATED_HOLIDAYS.add(key); console.log('NSE: no trade by ' + Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') + ' - treated as a holiday: ' + key); }
+    return !traded;
+  } catch { NSE_CLOSED_SEEN[key] = { closed: false, at: Date.now() }; return false; }
+}
+/* MCX sessions: on an NSE holiday the morning session is closed (evening from 17:00); fully closed on the holidays
+   below. The close is 23:30 while the US is on standard time (early Nov - mid Mar), 23:55 otherwise. */
+const MCX_FULL_CLOSED_RE = /republic|good friday|independence|gandhi|christmas/i;
+function usDstOn(key) {
+  const y = +key.slice(0, 4), nth = (mo, n) => { const d = new Date(Date.UTC(y, mo, 1)); const first = (7 - d.getUTCDay()) % 7 + 1; return `${y}-${String(mo + 1).padStart(2, '0')}-${String(first + 7 * (n - 1)).padStart(2, '0')}`; };
+  return key >= nth(2, 2) && key < nth(10, 1);   /* 2nd Sunday of March .. 1st Sunday of November */
+}
+function mcxSessionOpen(key, m) {
+  const wd = new Date(key + 'T00:00:00Z').getUTCDay();
+  if (wd < 1 || wd > 5) return false;
+  const close = usDstOn(key) ? 23 * 60 + 55 : 23 * 60 + 30;
+  if (isNseHoliday(key)) {
+    const name = (NSE_CAL?.holidays || []).find(h => h.date === key)?.name || '';
+    if (MCX_FULL_CLOSED_RE.test(name) || /^(01-26|08-15|10-02|12-25)$/.test(key.slice(5))) return false;
+    return m >= 17 * 60 && m <= close;
+  }
+  return m >= 9 * 60 && m <= close;
+}
 
 /* ── NSE calendar data, refreshed once a day (free NSE APIs, the option-chain session):
    - trading holidays: the list above only had fixed dates, so 10 Nov 2026 (Diwali Balipratipada) ran the scans
@@ -5403,7 +5229,6 @@ try { const j = JSON.parse(require('fs').readFileSync(NSE_CAL_FILE, 'utf8')); NS
 /* Every listed day is closed for the normal session; "*" only says a special (Muhurat) session is held. */
 function applyNseHolidays() { for (const h of NSE_CAL.holidays) NSE_DATED_HOLIDAYS.add(h.date); }
 applyNseHolidays();
-const nseDdMmmToKey = s => { const m = /^(\d{2})-([A-Za-z]{3})-(\d{4})/.exec(String(s || '').trim()); const mon = { Jan:'01', Feb:'02', Mar:'03', Apr:'04', May:'05', Jun:'06', Jul:'07', Aug:'08', Sep:'09', Oct:'10', Nov:'11', Dec:'12' }; return m && mon[m[2]] ? `${m[3]}-${mon[m[2]]}-${m[1]}` : null; };
 const nseDateParamS = ms => { const t = new Date(ms + 5.5 * 3600e3); return `${String(t.getUTCDate()).padStart(2, '0')}-${String(t.getUTCMonth() + 1).padStart(2, '0')}-${t.getUTCFullYear()}`; };
 function corpKind(subject) {
   const s = String(subject || '');
@@ -5478,8 +5303,15 @@ function stockEventCheckS(code, todayKey = istDateKey()) {
   }
   return { block: reasons.length > 0, reasons, notes, items, surveillance: surv || null };
 }
+/* Every holiday the app acts on: NSE's list plus NSE_HOLIDAYS on Render and days learned as closed (the calendar page
+   used to show only NSE's list, so a holiday set in the env never appeared there although scans skipped it). */
+function nseHolidayList() {
+  const have = new Set(NSE_CAL.holidays.map(h => h.date));
+  const extra = [...NSE_DATED_HOLIDAYS].filter(d => !have.has(d)).map(date => ({ date, name: NSE_CLOSED_SEEN[date]?.closed ? 'Market closed (no trade seen)' : 'NSE holiday' }));
+  return [...NSE_CAL.holidays, ...extra].sort((a, b) => a.date.localeCompare(b.date));
+}
 function upcomingSpecialSession(todayKey = istDateKey()) {
-  return NSE_CAL.holidays.filter(h => h.date >= todayKey).sort((a, b) => a.date.localeCompare(b.date))
+  return nseHolidayList().filter(h => h.date >= todayKey).sort((a, b) => a.date.localeCompare(b.date))
     .map(h => ({ ...h, tradingDays: tradingDaysUntil(todayKey, h.date) })).slice(0, 3);
 }
 function previousNseTradingDay(d) {
@@ -5506,20 +5338,13 @@ function generatedFnoExpiries(fromKey, days = 120) {
   return out;
 }
 
-/* US daylight saving (2nd Sunday of March to 1st Sunday of November) moves US data releases one hour
-   later in IST in winter. */
-function usDst(key) {
-  const y = +key.slice(0, 4), nthSun = (m, n) => { const d = new Date(Date.UTC(y, m, 1)); return 1 + ((7 - d.getUTCDay()) % 7) + 7 * (n - 1); };
-  const start = `${y}-03-${String(nthSun(2, 2)).padStart(2, '0')}`, end = `${y}-11-${String(nthSun(10, 1)).padStart(2, '0')}`;
-  return key >= start && key < end;
-}
 /* Weekly / monthly US releases that move MCX crude, natural gas and bullion, generated by their usual rule
    (Wednesday EIA crude inventories, Thursday EIA gas storage, first-Friday payrolls). A US holiday can move
    a release by a day - flagged in the description. */
 function generatedMacroEvents(fromKey, days = 21) {
   const out = [], start = new Date(fromKey + 'T00:00:00Z');
   for (let i = 0; i <= days; i++) {
-    const d = new Date(start.getTime() + i * 86400000), key = d.toISOString().slice(0, 10), dow = d.getUTCDay(), dst = usDst(key);
+    const d = new Date(start.getTime() + i * 86400000), key = d.toISOString().slice(0, 10), dow = d.getUTCDay(), dst = usDstOn(key);   /* US data comes an hour later in IST in winter */
     const t1030 = dst ? '8:00 pm IST' : '9:00 pm IST', t0830 = dst ? '6:00 pm IST' : '7:00 pm IST';
     const note = ' Generated by the usual weekday rule; a US holiday can move it by a day.';
     if (dow === 3) out.push({ date:key, time:t1030, event:'US EIA Crude Inventories', category:'EIA', impact:'HIGH', desc:`Weekly US crude stock change, ${t1030}. A surprise draw lifts crude, a build weighs on it.` + note, country:'US', generated:true });
@@ -5551,37 +5376,21 @@ function apiCalendar(req, res) {
     source:'RBI / FOMC (manual) + generated F&O expiries, EIA and payrolls', updatedAt:'2026-11-03T00:00:00.000Z', checkedAt:new Date().toISOString() });
 }
 
-/* ══════════════════════════════════════════════════════════════════════
-   EARNINGS DATES — static/manual list for top NSE stocks; verify with exchange/company filings
-   India results cycle: Q4 Apr-May, Q1 Jul-Aug, Q2 Oct-Nov, Q3 Jan-Feb
-══════════════════════════════════════════════════════════════════════ */
-const EARNINGS_DATES = [
-  /* Optional manual additions ({ sym:'NSE:XYZ', name, date:'YYYY-MM-DD', quarter }) for a stock the NSE event
-     calendar misses. Results dates normally come from the NSE event calendar (getResultsCalendar). */
-].sort((a,b)=>a.date.localeCompare(b.date));
-
+/* /api/earnings?sym= - the stock's results date from the live results calendar (the screener's own data). "soon" holds
+   only a date that blocks a fresh entry (an estimated date is shown in "upcoming" but does not block), the same rule
+   as the screener and /api/swing-context. sourceFailed: the calendar could not be read, so "none" is not known. */
 async function apiEarnings(req, res, p) {
   const sym   = p.get('sym') || null;
   const today = istDateKey();
-  /* Live NSE results calendar first (same data the screener uses), manual list as fallback. */
-  try {
-    const cal = await getResultsCalendar();
-    if (sym && cal.ok) {
-      const s = sym.replace('NSE:','');
-      const info = resultsCheckFor(s, cal, today);
-      const upcoming = info && info.tradingDays >= 0 ? [{ sym:'NSE:'+s, date:info.date, quarter:info.purpose, daysUntil:daysBetweenKeys(today, info.date), tradingDaysUntil:info.tradingDays, source:cal.source }] : [];
-      const soon = upcoming.filter(x => x.tradingDaysUntil <= RESULTS_BLOCK_TRADING_DAYS);
-      return send(res, { upcoming, past:[], soon, warned: soon.length > 0, source:cal.source, checkedAt:new Date().toISOString() });
-    }
-  } catch (er) { /* fall through to the manual list */ }
-  let list = EARNINGS_DATES;
-  /* Exact symbol match: substring matching made e.g. sym=GL match IGL and raise a false warning. */
-  if (sym) { const want = sym.startsWith('NSE:') ? sym : 'NSE:' + sym; list = list.filter(e => e.sym === want); }
-  const upcoming = list.filter(e => e.date >= today).map(e => ({ ...e, daysUntil: daysBetweenKeys(today, e.date) }));
-  const past     = list.filter(e => e.date <  today).slice(-5).reverse();
-  /* Warning: if earnings within 5 days */
-  const soon = upcoming.filter(e => e.daysUntil <= 5);
-  send(res, { upcoming, past, soon, warned: soon.length > 0, source:'manual-upcoming-only', updatedAt:'2026-05-16T08:45:00.000Z', checkedAt:new Date().toISOString(), note:'Old earnings dates removed. This is a manual no-key list; verify before trade.' });
+  let cal = null;
+  try { cal = await getResultsCalendar(); } catch { cal = null; }
+  if (!cal || !cal.ok) return send(res, { upcoming:[], past:[], soon:[], warned:false, sourceFailed:true, source:cal?.source || '', error:cal?.error || 'results calendar unavailable', checkedAt:new Date().toISOString() });
+  if (!sym) return send(res, { upcoming:[], past:[], soon:[], warned:false, source:cal.source, note:'pass ?sym=', checkedAt:new Date().toISOString() });
+  const s = sym.replace('NSE:','');
+  const info = resultsCheckFor(s, cal, today);
+  const upcoming = info && info.tradingDays >= 0 ? [{ sym:'NSE:'+s, date:info.date, quarter:info.purpose, daysUntil:daysBetweenKeys(today, info.date), tradingDaysUntil:info.tradingDays, estimate:info.estimate, block:info.block, source:cal.source }] : [];
+  const soon = upcoming.filter(x => x.block);
+  send(res, { upcoming, past:[], soon, warned: soon.length > 0, source:cal.source, checkedAt:new Date().toISOString() });
 }
 
 /* ══════════════════════════════════════════════════════════════════════
@@ -5706,7 +5515,7 @@ function assembleSectors(results) {
       return {
         ...s, ticker: usedTicker || s.ticker, price:+liveRaw.toFixed(2),
         chg:+rawChg.toFixed(2), pct:+rawPct.toFixed(2), isUp:rawPct>=0,
-        source: results[i].value.source === 'NSE' ? 'NSE index value' : 'Direct Yahoo index ticker',
+        source: results[i].value.source === 'NSE' ? 'NSE index value' : results[i].value.source === 'Angel One' ? 'Angel One (NSE index)' : results[i].value.source === 'ETFxRatio' ? 'ETF x index ratio' : 'Direct Yahoo index ticker',
       };
     });
     /* Sort by % change — top performers first */
@@ -5806,21 +5615,6 @@ const nseExpKey = e => { const m = /^(\d{2})-([A-Za-z]{3})-(\d{4})$/.exec(e || '
 function istMarketHoursS() {
   const t = new Date(Date.now() + 5.5 * 3600000), d = t.getUTCDay(), m = t.getUTCHours() * 60 + t.getUTCMinutes();
   return d >= 1 && d <= 5 && !isNseHoliday(t.toISOString().slice(0, 10)) && m >= 9 * 60 && m <= 15 * 60 + 35;
-}
-/* Stale-while-revalidate for NSE: a cold NSE fetch takes 10-20 s (cookie page + contract list + chain) and often
-   fails from cloud hosts. Once one answer is in, it is returned at once while a refresh runs in the background,
-   and kept (up to maxAge) when NSE fails - before, every 3 minutes a request waited on the slow refetch, hit the
-   15 s page timeout or an NSE error, and the premiums flipped back to Black-Scholes estimates. */
-async function nseSwr(key, ttl, maxAge, producer) {
-  const old = API_CACHE.get(key);
-  /* "saved quote" on the page once the copy is more than 10 minutes old */
-  const aged = o => Date.now() - o.ts > 10 * 60e3 ? { ...o.value, stale: true, staleAgeSec: Math.round((Date.now() - o.ts) / 1000) } : o.value;
-  if (old && Date.now() - old.ts >= ttl && Date.now() - old.ts < maxAge) {
-    if (!INFLIGHT.has(key)) cacheWrap(key, 0, producer).catch(() => {});
-    return aged(old);
-  }
-  try { const r = await cacheWrap(key, ttl, producer); return r.value; }
-  catch (e) { if (old && Date.now() - old.ts < maxAge) return aged(old); throw e; }
 }
 /* Last option-chain fetch from NSE (shown in /api/health): tells whether NSE is answering this server. */
 const NSE_OC_LAST = { ok: null, error: null, errorAt: null };
@@ -5932,18 +5726,21 @@ async function apiSwingContext(req, res, p) {
   try {
     const [nifty, cal] = await Promise.all([getNiftyRegime(), getResultsCalendar().catch(() => null)]);
     const regime = marketRegime(nifty);
-    let rs = null;
+    let rs = null, rsPrev = null;
     try {
       const raw = await withTimeout(yfChart(code + '.NS', '1d', '2y'), 15000, sym + ' rs');
-      if (SV().NIFTY_CLOSES) rs = SwingPlan.relStrength(enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {}).C, SV().NIFTY_CLOSES);   /* same series as the screener */
+      const dd = enrichDailyForLiveScreenerS(parseBars(raw), raw?.meta || {});
+      if (SV().NIFTY_CLOSES) rs = SwingPlan.relStrength(dd.C, SV().NIFTY_CLOSES);   /* same series as the screener */
+      /* on the last completed bar - for a signal at yesterday's close (the screener's rsPrev) */
+      if (SV().NIFTY_CLOSES_PREV) rsPrev = completedLenS(dd.T) < dd.C.length ? SwingPlan.relStrength(dd.C.slice(0, -1), SV().NIFTY_CLOSES_PREV) : rs;
     } catch {}
     const r = cal ? resultsCheckFor(code, cal, istDateKey()) : null;
     send(res, {
       sym,
       regime: { status: regime.status, allowReady: regime.allowReady, note: regime.note, nifty: regime.nifty, ema50: regime.ema50,
-        ema20: regime.ema20, trendUp: regime.trendUp ?? null, sma200: regime.sma200 ?? null, aboveSma200: regime.aboveSma200 ?? null,
+        ema20: regime.ema20, trendUp: regime.trendUp ?? null, trendUpPrev: regime.trendUpPrev ?? null, sma200: regime.sma200 ?? null, aboveSma200: regime.aboveSma200 ?? null,
         breadthPct: regime.breadth?.pct ?? null, breadthAt: regime.breadth ? new Date(regime.breadth.ts).toISOString() : null },
-      rs,
+      rs, rsPrev,
       resultsSoon: r && r.block ? { date: r.date, tradingDaysUntil: r.tradingDays, purpose: r.purpose } : null,
       resultsCheck: cal?.ok ? (cal.source || 'NSE event calendar') : 'unavailable',
       events: stockEventCheckS(code, istDateKey()),   /* bonus / split / rights / ASM / GSM - the screener's same check */
@@ -6008,7 +5805,7 @@ async function buildQuotePayload(sym) {
       /* Price from NSE but history from Yahoo's ETF proxy: scale the ETF bars by (index / ETF price) so the
          candles, EMAs and levels sit at the index level (the shape is the ETF's, which tracks the index). */
       let proxyScale = null;
-      if ((priceData.source === 'NSE' || priceData.source === 'ETFxRatio') && NSE_INDEX_PRIMARY.has(sym)) {
+      if ((priceData.source === 'NSE' || priceData.source === 'ETFxRatio' || priceData.source === 'Angel One') && NSE_INDEX_PRIMARY.has(sym)) {
         const etfLast = +dailyR.value?.meta?.regularMarketPrice || +daily.C[daily.C.length - 1];
         if (etfLast > 0 && liveRaw > 0) {
           proxyScale = liveRaw / etfLast;
@@ -6043,14 +5840,13 @@ async function buildQuotePayload(sym) {
         dayVol: todayVol,
         exch: priceData.exch || null, priceSource: priceData.source || 'Yahoo',
         mcxAuto: mcx ? await mcxAutoCalFor(sym, price) : null,
-        candleSource: dailyR.value?.meta?.tdSource || 'Yahoo',
         daily: {T:daily.T||[],C:cv(daily.C),O:cv(daily.O),H:cv(daily.H),L:cv(daily.L),V:daily.V},
         weekly:weekly?{T:weekly.T||[],C:cv(weekly.C),O:cv(weekly.O),H:cv(weekly.H),L:cv(weekly.L),V:weekly.V}:null,
         monthly:monthly?{T:monthly.T||[],C:cv(monthly.C),O:cv(monthly.O),H:cv(monthly.H),L:cv(monthly.L),V:monthly.V}:null,
         intra: intra ?{T:intra.T||[],C:cv(intra.C), O:cv(intra.O), H:cv(intra.H), L:cv(intra.L), V:intra.V }:null,
         dataSource: {
           provider: priceData.source === 'NSE' ? (proxyScale ? `NSE index value · history from Yahoo ${ticker} scaled ×${proxyScale.toFixed(2)}` : 'NSE index value · history Yahoo')
-            : priceData.source === 'Angel One' ? `Angel One live price · candles ${dailyR.value?.meta?.tdSource || 'Yahoo'}` : 'Yahoo Finance',
+            : priceData.source === 'Angel One' ? 'Angel One live price · history Yahoo' : 'Yahoo Finance',
           mappedFrom: sym,
           ticker,
           mode: DATA_SOURCE_NOTES[sym] ? 'direct-yahoo-note' : 'direct',
@@ -6070,7 +5866,7 @@ async function buildQuotePayload(sym) {
            is today's session or the previous one by date instead of by price. */
         marketTime: dailyR.status === 'fulfilled' ? (Number(dailyR.value?.meta?.regularMarketTime) || null) : null,
         /* Last futures contract roll (ms) and its size: an MCX calibration saved before it no longer fits. */
-        rolledAt: lastRoll ? lastRoll.at * 1000 : null, rollPct: lastRoll ? +((lastRoll.ratio - 1) * 100).toFixed(2) : null,
+        rolledAt: lastRoll ? Math.max(lastRoll.at * 1000, +lastRoll.firstSeen || +lastRoll.dayT * 1000 || 0) : null, rollPct: lastRoll ? +((lastRoll.ratio - 1) * 100).toFixed(2) : null,
         updatedAt:new Date().toISOString(),
       };
   }
@@ -6105,7 +5901,6 @@ async function quickPriceFor(sym, maxAge = 0){ return (await cacheWrap(`quick:${
 async function apiQuick(req,res,p){
   const sym=p.get('sym')||'NSE:NIFTY';
   const key=`quick:${sym}`;
-  const mcxReq=isMCX(sym);
   const force=p.get('force')==='1'||p.get('fresh')==='1';
   const producer = () => quickProducer(sym);
   try{
@@ -6131,7 +5926,7 @@ async function quickProducer(sym){
   const pct  =+(pc && pc>0 ? (chg/pc)*100 : rawPct).toFixed(2);
   const lastRoll = mcx ? futRollsFor(ticker).slice(-1)[0] : null;
   return {sym,price,pc,chg,pct,isUp:pct>=0,usdInr:mcx?rate:null,prevUsdInr:mcx?prevRate:null,changeBasis:mcx?changeBasis:'previousClose',basisTime:mcx?basisTime:null,
-    rolledAt: lastRoll ? lastRoll.at * 1000 : null,
+    rolledAt: lastRoll ? Math.max(lastRoll.at * 1000, +lastRoll.firstSeen || +lastRoll.dayT * 1000 || 0) : null,
     spark: Array.isArray(spark) ? spark.map(v => conv(sym, v, rate)) : null, updatedAt:new Date().toISOString()};
 }
 
@@ -6465,7 +6260,7 @@ async function apiSearch(req,res,p){
 }
 
 /* ── /api/health ── */
-function apiHealth(req,res){const ks=angelStatus();send(res,{freeSources:{fiiDii:FREE_CAL.fiiDii?{source:FREE_CAL.fiiDii.source,last:FREE_CAL.fiiDii.days?.[0]?.date,fetchedAt:FREE_CAL.fiiDii.fetchedAt}:null,fiiDiiError:FREE_CAL.fiiErr||null,yahooCalendarStocks:Object.keys(FREE_CAL.earn||{}).length,yahooSplitsAt:FREE_CAL.splitsTs?new Date(FREE_CAL.splitsTs).toISOString():null,resultsSource:RESULTS_CAL_CACHE?.source||null},angel:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null,prefs:ks.prefs,history:{fresh:ks.history.fresh,total:ks.history.total,loading:ks.history.loading,failed:ks.history.failed},liveServed:ks.stats.liveServed,liveFallbacks:ks.stats.liveFallbacks},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
+function apiHealth(req,res){const ks=angelStatus();send(res,{freeSources:{fiiDii:FREE_CAL.fiiDii?{source:FREE_CAL.fiiDii.source,last:FREE_CAL.fiiDii.days?.[0]?.date,fetchedAt:FREE_CAL.fiiDii.fetchedAt}:null,fiiDiiError:FREE_CAL.fiiErr||null,yahooCalendarStocks:Object.keys(FREE_CAL.earn||{}).length,yahooSplitsAt:FREE_CAL.splitsTs?new Date(FREE_CAL.splitsTs).toISOString():null,resultsSource:RESULTS_CAL_CACHE?.source||null},angel:{configured:ks.configured,connected:ks.connected,ready:ks.ready,until:ks.until,lastOk:ks.lastOk,lastError:ks.lastError,indices:ks.instruments?.indices??null,notFound:ks.instruments?.notFound??null,livePrices:ks.livePrices,liveServed:ks.stats.liveServed,liveFallbacks:ks.stats.liveFallbacks},status:'ok',v:'1.0',strayTopLevelFiles:STRAY_PUBLIC_FILES,time:new Date().toISOString(),usdInr:usdInrCache.rate,cacheSize:API_CACHE.size,nseCookie:NSE_COOKIE_STATS,nseCalls:NSE_CALLS,nseRefused:{count:NSE_DENIED.count,last:NSE_DENIED.last,pausedUntil:NSE_DENIED.until>Date.now()?new Date(NSE_DENIED.until).toISOString():null},outbound:outboundStats()});}
 
 
 /* ── STATIC ── */
@@ -6478,7 +6273,6 @@ const MIME={'.html':'text/html; charset=utf-8','.js':'application/javascript; ch
    Set APP_PASSWORD in the environment (Render env vars, or APP_PASSWORD=... npm start locally).
    There is deliberately NO default password: a missing APP_PASSWORD disables login.
 ══════════════════════════════════════════════════════════════════════ */
-const APP_VERSION  = '1.0';
 const IS_PROD      = process.env.NODE_ENV === 'production' || process.env.RENDER === 'true' || !!process.env.RENDER_EXTERNAL_URL || !!process.env.RENDER_SERVICE_ID;
 const APP_PASSWORD = process.env.APP_PASSWORD || '';
 const SESSION_TTL  = 7 * 24 * 60 * 60 * 1000; /* 7 days */
@@ -6646,8 +6440,7 @@ function parseBody(req) {
 const PAGE_CSS = ['base.css', 'td-v23-bottom-tab-slight-lower.css', 'td-v24-professional-desktop-ui.css', 'td-screener-context.css', 'td-real-tab-mode-fix.css',
   'td-bottom-default-fix.css', 'td-polish-v7.css', 'td-scroll-overlap-fix-only.css', 'td-bottom-tab-small-lift-ios-fix.css', 'td-v25-quiet-terminal.css',
   'td-v26-market-gradient.css', 'td-v24b.css', 'td-final-uniform-picker-fix.css', 'td-ui-polish.css', 'td-v27-assist.css', 'td-theme.css'].map(f => 'css/' + f);
-const PAGE_JS = ['swing-plan.js', 'js/app.js', 'js/td-journal.js', 'js/td-angel.js', 'js/td-trace.js', 'js/td-ui.js', 'js/td-real-tab-mode-fix-js.js', 'js/td-bottom-default-fix-js.js',
-  'js/td-final-market-snapshot-fix.js'];
+const PAGE_JS = ['swing-plan.js', 'js/app.js', 'js/td-journal.js', 'js/td-angel.js', 'js/td-trace.js', 'js/td-ui.js', 'js/td-real-tab-mode-fix-js.js', 'js/td-bottom-default-fix-js.js'];
 const BUNDLES = {};
 function pageBundle(req, res, kind) {
   const files = kind === 'css' ? PAGE_CSS : PAGE_JS, full = files.map(f => path.join(__dirname, 'public', f));
@@ -6703,7 +6496,7 @@ const STATIC_CACHE = new Map();
      disk resets (Render free), any browser that still has the data uploads it again on its next visit.
    - Web Push (VAPID, RFC 8291) straight from Node's crypto: alerts reach the phone with the app closed.
      The VAPID key is derived from APP_SECRET, so it stays the same across restarts.
-   - Server alert engine (every minute in market hours), scheduled screener scans (11:00 and 15:00 IST)
+   - Server alert engine (every minute in market hours), scheduled screener scans (11:00 and 15:10 IST)
      and, on Render, a self-ping that keeps the free instance awake during trading hours.
 ══════════════════════════════════════════════════════════════════ */
 const nodeCrypto = require('crypto');
@@ -6762,7 +6555,31 @@ const VAPID = (() => {
     return { key, pub: b64u(pub) };
   } catch (e) { console.warn('Web Push disabled:', e.message); return null; }
 })();
-function webPush(sub, payload) {
+/* Devices that receive alerts, also kept in the Render variable TD_PUSH_SUBS (27 Nov 2026): Render wipes data/ on every
+   deploy and restart, and with it the device list - alerts then went to nobody until a phone opened TradeDesk. The
+   My trades card shows the value to paste once (base64 JSON of [{endpoint, keys}]). */
+(function loadEnvSubs() {
+  const raw = String(process.env.TD_PUSH_SUBS || '').trim(); if (!raw) return;
+  try {
+    const arr = JSON.parse(/^\s*\[/.test(raw) ? raw : Buffer.from(raw, 'base64').toString('utf8'));
+    for (const s of Array.isArray(arr) ? arr : []) if (s && /^https:\/\//.test(s.endpoint || '') && s.keys?.p256dh && s.keys?.auth && !USER_STORE.subs.some(x => x.endpoint === s.endpoint))
+      USER_STORE.subs.push({ endpoint: s.endpoint, keys: { p256dh: s.keys.p256dh, auth: s.keys.auth }, ts: Date.now(), env: true });
+  } catch (e) { console.warn('TD_PUSH_SUBS could not be read:', e.message); }
+})();
+const pushBackupValue = () => Buffer.from(JSON.stringify(USER_STORE.subs.map(s => ({ endpoint: s.endpoint, keys: s.keys })))).toString('base64');
+const pushEnvSet = () => new Set((() => { try { const raw = String(process.env.TD_PUSH_SUBS || '').trim(); const a = raw ? JSON.parse(/^\s*\[/.test(raw) ? raw : Buffer.from(raw, 'base64').toString('utf8')) : []; return (Array.isArray(a) ? a : []).map(s => s.endpoint); } catch { return []; } })());
+/* Push services drop messages over ~4 KB: keep the body under ~3,000 bytes. ttl: seconds the push service keeps trying a
+   phone that is offline - a stop or level alert is useless hours later (it used to be 24 h for everything). */
+function pushFit(payload) {
+  const p = { ...payload }, max = 3000;
+  if (Buffer.byteLength(JSON.stringify(p)) > max) {
+    let b = String(p.body || '');
+    while (b.length > 40 && Buffer.byteLength(JSON.stringify({ ...p, body: b })) > max - 60) b = b.slice(0, Math.floor(b.length * 0.9));
+    p.body = b.replace(/\s+\S*$/, '') + '\n… more in TradeDesk';
+  }
+  return p;
+}
+function webPush(sub, payload, ttl = 4 * 3600) {
   return new Promise(resolve => {
     try {
       const ua = Buffer.from(sub.keys.p256dh, 'base64url'), auth = Buffer.from(sub.keys.auth, 'base64url');
@@ -6781,7 +6598,7 @@ function webPush(sub, payload) {
       const claims = b64u(JSON.stringify({ aud: u.origin, exp: Math.floor(Date.now() / 1000) + 12 * 3600, sub: process.env.RENDER_EXTERNAL_URL || 'mailto:tradedesk@example.com' }));
       const sig = nodeCrypto.sign('sha256', Buffer.from(`${head}.${claims}`), { key: VAPID.key, dsaEncoding: 'ieee-p1363' });
       const r = https.request({ hostname: u.hostname, port: u.port || 443, path: u.pathname + u.search, method: 'POST', timeout: 10000,
-        headers: { TTL: '86400', Urgency: 'high', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', 'Content-Length': body.length,
+        headers: { TTL: String(Math.max(60, Math.round(ttl))), Urgency: 'high', 'Content-Encoding': 'aes128gcm', 'Content-Type': 'application/octet-stream', 'Content-Length': body.length,
           Authorization: `vapid t=${head}.${claims}.${b64u(sig)}, k=${VAPID.pub}` } }, x => { x.resume(); x.on('end', () => resolve(x.statusCode)); });
       r.on('timeout', () => { r.destroy(); resolve(0); });
       r.on('error', () => resolve(0));
@@ -6789,20 +6606,34 @@ function webPush(sub, payload) {
     } catch (e) { console.warn('Web Push send failed:', e.message); resolve(0); }
   });
 }
+/* ttl by kind: price / stop / level alerts 1 h, everything else 4 h (payload.ttl overrides) */
 async function pushAll(payload) {
-  if (!VAPID || !USER_STORE.subs.length) return { sent: 0, devices: 0 };
+  if (!VAPID || !USER_STORE.subs.length) { if (payload) console.warn('Push not sent (no device registered):', payload.title); return { sent: 0, devices: 0 }; }
+  const ttl = Number(payload.ttl) > 0 ? Number(payload.ttl) : /alert|stop|target|level|zone|trail/i.test(String(payload.tag || '') + ' ' + String(payload.title || '')) ? 3600 : 4 * 3600;
+  const msg = pushFit({ ...payload, ttl: undefined });
   let sent = 0;
-  const keep = [];
+  const keep = [], codes = [];
   for (const sub of USER_STORE.subs) {
-    const st = await webPush(sub, payload);
-    if (st >= 200 && st < 300) sent++;
+    const st = await webPush(sub, msg, ttl);
+    if (st >= 200 && st < 300) sent++; else codes.push(st);
     if (st !== 404 && st !== 410) keep.push(sub); else console.warn('Push subscription expired - removed');
   }
+  if (codes.length) console.warn('Push failed for ' + codes.length + ' device(s): ' + codes.join(','), '-', payload.title);
   if (keep.length !== USER_STORE.subs.length) { USER_STORE.subs = keep; saveStore(); }
   return { sent, devices: USER_STORE.subs.length };
 }
+/* After a restart the server has the devices (TD_PUSH_SUBS) but not the trades / alerts / Track record (they come back when a
+   browser opens TradeDesk). Tell the user once, so nothing goes unwatched without them knowing. */
+const STORE_FRESH = !Object.keys(USER_STORE.keys || {}).length;
+setTimeout(() => {
+  if (STORE_FRESH && !Object.keys(USER_STORE.keys || {}).length && USER_STORE.subs.length)
+    pushAll({ title: 'TradeDesk restarted - open it once', body: 'The server restarted and needs your trades and alerts again. Open TradeDesk once (any device) - after that every alert works as before.', tag: 'td-restart', url: '/', ttl: 12 * 3600 }).catch(() => {});
+}, 3 * 60e3);
 async function apiPush(req, res, pn) {
-  if (pn === '/api/push/key') return send(res, { enabled: !!VAPID, publicKey: VAPID ? VAPID.pub : null, devices: USER_STORE.subs.length });
+  if (pn === '/api/push/key') { const envS = pushEnvSet(); return send(res, { enabled: !!VAPID, publicKey: VAPID ? VAPID.pub : null, devices: USER_STORE.subs.length,
+    backup: { saved: USER_STORE.subs.filter(s => envS.has(s.endpoint)).length, missing: USER_STORE.subs.filter(s => !envS.has(s.endpoint)).length } }); }
+  /* the TD_PUSH_SUBS value for Render (GET, signed-in only like every /api route) */
+  if (pn === '/api/push/backup') return send(res, { name: 'TD_PUSH_SUBS', value: pushBackupValue(), devices: USER_STORE.subs.length });
   if (req.method !== 'POST') return err(res, 'Use POST', 405);
   if (!VAPID) return err(res, 'Web Push needs APP_PASSWORD on the server', 400);
   try {
@@ -6823,7 +6654,7 @@ function istNowParts() { const t = new Date(Date.now() + 5.5 * 3600000); return 
 function symMarketOpenS(sym) {
   const { d, m, key } = istNowParts();
   if (d < 1 || d > 5) return false;
-  if (/^MCX:/.test(sym)) return m >= 9 * 60 && m <= 23 * 60 + 55;
+  if (/^MCX:/.test(sym)) return mcxSessionOpen(key, m);
   return !isNseHoliday(key) && m >= 9 * 60 + 15 && m <= 15 * 60 + 30;
 }
 function storeAlerts() { try { const a = JSON.parse(USER_STORE.keys.td_alerts?.v || '[]'); return Array.isArray(a) ? a : []; } catch { return []; } }
@@ -6864,7 +6695,9 @@ async function serverAlertTick() {
 /* ── Scheduled screener scans (IST): 11:00 and 15:00 send the READY / ready-on-limit / quick bounce stocks (with
    entry, stop, target and the quantity for the user's capital and risk %). Two scans instead of four halves the
    Yahoo calls; 15:00 leaves time to buy before the close. ── */
-const SCAN_TIMES_IST = [11 * 60, 15 * 60];
+/* 15:10 (was 15:00, 27 Nov 2026): today's signals are tested on the CLOSE - ten minutes nearer it, still ~15 minutes to
+   buy after the alert (a scan takes about a minute). */
+const SCAN_TIMES_IST = [11 * 60, 15 * 60 + 10];
 function sizingLine(entry, stop, sizeFactor = 1) {
   const num = k => { try { return +JSON.parse(USER_STORE.keys[k]?.v || 'null'); } catch { return NaN; } };
   const cap = num('td_pos_capital'), rp = num('td_pos_risk_pct');
@@ -6879,7 +6712,7 @@ function scanSignals(data, slot) {
   for (const x of data.picks || []) {
     const pl = x.plan || {}, bo = (x.pickedSetup || x.selectedStrategy) === 'Breakout with Volume', fill = +x.price > 0 ? +x.price : pl.entry;
     const t2 = +x.exit2R > 0 ? +x.exit2R : +pl.stop > 0 && fill > pl.stop ? fill + 2 * (fill - pl.stop) : null;   /* the screener's own 2R, so list, alert and record agree */
-    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)}${x.gateV2 ? ' · exit: trailing stop 4 ATR under the highest close, or a close below EMA20 after day 5 (the 09:20 alert gives each new stop)' : ` · exit 2R ${t2 ? inr(t2) : '--'} or day 15`}${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
+    out.push({ id: `ready|${x.sym}`, signalDate: x.signalDate || null, text: `READY ${x.sym} (${x.pickedSetup || x.selectedStrategy}): buy ~${inr(fill)}${pl.entry && Math.abs(pl.entry - fill) > fill * 0.001 ? ` (zone ${inr(pl.entry)})` : ''} · stop ${inr(pl.stop)}${x.gateV2 ? ' · exit: trailing stop 4 ATR under the highest close, or a close below EMA20 after day 5 (the 09:05 alert gives each new stop)' : ` · exit 2R ${t2 ? inr(t2) : '--'} or day 15`}${x.gateV2 ? (x.signalDay === 'yesterday' ? " · signal at yesterday's close" : " · signal at today's close") : ` (T1 ${inr(pl.target)})`}${sizingLine(fill, pl.stop, bo ? 0.5 : 1)}` });
   }
   /* Quick Bounce is watch-only (2 in 3 win, but no profit with 5 positions open over 10 years): no alert. Pattern
      breakouts are judged on the day's close, so they are alerted at the 15:00 scan only. */
@@ -6893,6 +6726,7 @@ function scanSignals(data, slot) {
 async function scheduledScanTick() {
   const { d, m, key } = istNowParts();
   if (d < 1 || d > 5 || isNseHoliday(key)) return;
+  if (SCAN_TIMES_IST.some(t => m >= t && m < t + 20) && await nseClosedTodayCheck()) return;   /* a holiday the list does not have */
   const slot = SCAN_TIMES_IST.find(t => m >= t && m < t + 20);
   if (slot == null || USER_STORE.scans[`${key}|${slot}`]) return;
   USER_STORE.scans = { [`${key}|${slot}`]: Date.now() };   /* keep only the latest marker */
@@ -6902,7 +6736,9 @@ async function scheduledScanTick() {
   let data = SV().MY_TRADE_SCREENER_CACHE && Date.now() - SV().MY_TRADE_SCREENER_TS < 20 * 60 * 1000 && (!lastSlot || istMin(SV().MY_TRADE_SCREENER_TS) >= 15 * 60) ? SV().MY_TRADE_SCREENER_CACHE : null;
   if (!data) {
     if (!SV().MY_TRADE_SCREENER_INFLIGHT) SV().MY_TRADE_SCREENER_INFLIGHT = runMyTradeScreenerScan().finally(() => { SV().MY_TRADE_SCREENER_INFLIGHT = null; });
-    data = await SV().MY_TRADE_SCREENER_INFLIGHT;
+    /* a failed scan is tried again at the next minute inside the 20-minute window (it used to use up the slot silently) */
+    try { data = await SV().MY_TRADE_SCREENER_INFLIGHT; }
+    catch (e) { console.warn(`Scheduled scan ${slot} failed (retrying):`, e.message); delete USER_STORE.scans[`${key}|${slot}`]; saveStore(); return; }
   }
   const sig = scanSignals(data, slot).filter(x => !x.signalDate || flagOnce(`sig|${x.id}|${x.signalDate}`)), hhmm = `${Math.floor(slot / 60)}:${String(slot % 60).padStart(2, '0')}`;
   try { traceStockRecord(data?.picks || [], key); } catch (e) { console.warn('Stock trace:', e.message); }
@@ -6970,9 +6806,10 @@ async function goldPlanS(sym = 'MCX:GOLDPETAL') {
   const q = (await cacheWrap(`quote:${sym}`, TTL.mcx, () => buildQuotePayload(sym))).value;
   let k = 1;
   try { const c = JSON.parse(USER_STORE.keys['td_mcx_cal2_' + sym]?.v || 'null'); if (c && c.mcx > 0 && c.proxy > 0 && Date.now() - c.ts < 3 * 86400e3 && !(q.rolledAt && c.ts < q.rolledAt)) { const kk = c.mcx / c.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } } catch {}
-  /* the real MCX price from Angel One (26 Nov 2026) when it is newer than the user's own calibration */
-  { const a = q.mcxAuto, u = (() => { try { return JSON.parse(USER_STORE.keys['td_mcx_cal2_' + sym]?.v || 'null'); } catch { return null; } })();
-    if (a && a.mcx > 0 && a.proxy > 0 && !(u && +u.ts > +a.ts && Date.now() - u.ts < 3 * 86400e3)) { const kk = a.mcx / a.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } }
+  /* the real MCX price from Angel One (26 Nov 2026) when the user has no calibration of their own (a typed price wins until
+     Reset, as on the page) */
+  { const a = q.mcxAuto;
+    if (k === 1 && a && a.mcx > 0 && a.proxy > 0 && !(q.rolledAt && a.ts < q.rolledAt)) { const kk = a.mcx / a.proxy; if (kk > 0.8 && kk < 1.25) k = kk; } }
   const d = q.daily, n = d.C.length;
   if (n < 60 || !(q.price > 0)) throw new Error(`${MCX_NAME[sym] || sym} history too short`);
   const C = d.C.map(v => v * k), H = d.H.map(v => v * k), L = d.L.map(v => v * k), price = q.price * k;
@@ -7049,7 +6886,7 @@ async function openTradeWatchTick() {
     }
   } finally { WATCH_RUNNING = false; }
 }
-/* Once a day (09:20): time exits, results / corporate actions close to an open trade, Gold Petal expiry. */
+/* Once a day (09:05): time exits, results / corporate actions close to an open trade, Gold Petal expiry. */
 async function openTradeDailyChecks() {
   const open = storeJournal().filter(t => t.status === 'open'), today = istDateKey(), msgs = [];
   if (!open.length) return msgs;
@@ -7063,9 +6900,15 @@ async function openTradeDailyChecks() {
     /* Trailing exit (23 Nov 2026): from the completed daily candles since the entry - one quote per open trade a day. */
     if (t.kind === 'stock' && t.exitMode === 'trail' && t.openedAt && +t.entry > 0 && +t.stop > 0) try {
       const q = (await cacheWrap(`quote:${sym}`, TTL.quote, () => buildQuotePayload(sym))).value, d = q?.daily;
-      const idx = (d?.T || []).map((ts, i) => [istDateKey(ts * 1000), i]).filter(([k]) => k > t.openedAt && k < today).map(([, i]) => i);
+      /* Day 1 as tested = the session after the signal close. A buy saved before 15:00 IST on its entry day was a
+         yesterday's-close signal: the entry day is day 1 (its close only - its low may be from before the buy). Otherwise
+         (a buy near today's close, or an older trade without openedTs) day 1 is the next session. */
+      const tsIst = +t.openedTs > 0 ? new Date(+t.openedTs + 5.5 * 3600e3) : null;
+      const entryDay1 = !!(tsIst && tsIst.toISOString().slice(0, 10) === t.openedAt && tsIst.getUTCHours() * 60 + tsIst.getUTCMinutes() < 15 * 60);
+      const days = (d?.T || []).map((ts, i) => [istDateKey(ts * 1000), i]).filter(([k]) => (entryDay1 ? k >= t.openedAt : k > t.openedAt) && k < today);
+      const idx = days.map(([, i]) => i);
       if (idx.length) {
-        const w = SwingPlan.trailWalk(d, idx[0], idx[idx.length - 1], +t.entry, +t.stop);
+        const w = SwingPlan.trailWalk(d, idx[0], idx[idx.length - 1], +t.entry, +t.stop, { firstCloseOnly: entryDay1 && days[0][0] === t.openedAt });
         const lv = (USER_STORE.trailLv ||= {});
         if (w.exit === 'ema' && flagOnce(`j|${t.id}|trail-ema`)) msgs.push(`${name}: closed below EMA20 (${inr(w.level)} vs ${inr(w.e20)}) - the trailing exit sells at today's open`);
         else if (w.exit === 'time' && flagOnce(`j|${t.id}|trail-time`)) msgs.push(`${name}: day ${w.days} - the trailing exit's time limit; sell today`);
@@ -7116,7 +6959,8 @@ async function globalCueS() {
   if (pct(d.spFut) != null) add('spFut', 'S&P fut'); else add('sp500', 'S&P');
   if (pct(d.nqFut) != null) add('nqFut', 'Nasdaq fut'); else add('nasdaq', 'Nasdaq');
   if (pct(d.spFut) == null) add('dow', 'Dow', 0.5);
-  add('nikkei', 'Nikkei'); add('hangseng', 'Hang Seng');
+  /* Nikkei / Hang Seng: listed, not scored (no link to Nifty's gap over ~2,350 days - the page's rule, 27 Nov 2026) */
+  add('nikkei', 'Nikkei', 0); add('hangseng', 'Hang Seng', 0);
   if (liveNow(d.dax)) add('dax', 'DAX', 0.5);
   const vix = +d.vix?.price > 0 && !d.vix?.error ? +d.vix.price : null, vp = pct(d.vix);
   if (vix != null) { parts.push(`India VIX ${vix.toFixed(1)}`); if (vix < 15) score += 0.75; else if (vix > 20) score -= 1; }
@@ -7180,7 +7024,7 @@ async function morningBrief() {
     lines.push(h.length ? 'News:\n' + h.map(i => `${i.impactScore > 0 ? '▲' : '▼'} ${String(i.title).slice(0, 120)}${i.source ? ` (${i.source})` : ''}`).join('\n') : 'News: no big market-moving headline since last evening');
   } catch { lines.push('News: not reachable - check the News tab'); }
   try { const e = SwingPlan.goldPetalExpiry(today, isNseHoliday); if (e.tradingDaysLeft <= 5) lines.push(`Gold Petal contract expires ${e.date} (${e.tradingDaysLeft} trading days) - roll or exit`); } catch {}
-  lines.push('MCX (Gold Petal, Crude Oil, Natural Gas): 09:45 alerts only a ready buy, 17:00 always sends a status line. Nifty options 10:00 (bull put) and 15:05 on the day after an expiry (weekly sells). Stock scans 11:00 and 15:00.');
+  lines.push('MCX (Gold Petal, Crude Oil, Natural Gas): 09:45 alerts only a ready buy, 17:00 always sends a status line. Nifty options: 15:05 on the first trading day after an expiry (bull put + weekly sells). Stock scans 11:00 and 15:10. Open-trade exits 09:05.');
   return lines.join('\n');
 }
 
@@ -7190,24 +7034,27 @@ async function assistantTick() {
   if (ASSIST_RUNNING) return;
   const { d, m, key } = istNowParts();
   if (d < 1 || d > 5) return;
-  const nseDay = !isNseHoliday(key);
   ASSIST_RUNNING = true;
   try {
+    /* from 09:25 a weekday without a Nifty trade counts as a holiday (years after the built-in 2026 list) */
+    try { await nseClosedTodayCheck(); } catch {}
+    const nseDay = !isNseHoliday(key);
     const at = (min, id) => m >= min && m < min + 20 && flagOnce(`job|${id}|${key}`);
-    /* Angel One: the session ends at midnight every day - a reminder to log in before the market opens. */
-    if (nseDay && angelAutoSet() && !angelSession() && at(8 * 60 + 40, 'angel-auto-login')) { try { await angelAutoLogin('08:40'); } catch (e) { console.warn(e.message); } }
-    if (nseDay && angelSession() && at(8 * 60 + 42, 'angel-hist')) angelHistWarm('08:42');
+    /* Angel One: the session ends at midnight every day. Automatic login on every weekday (MCX trades on NSE holidays too,
+       and its evening plan uses the Angel One price); the reminder only on NSE days. */
+    if (angelAutoSet() && !angelSession() && at(8 * 60 + 40, 'angel-auto-login')) { try { await angelAutoLogin('08:40'); } catch (e) { console.warn(e.message); } }
     if (nseDay && ANGEL.key && !angelSession() && at(8 * 60 + 45, 'angel-login')) await pushAll({ title: 'Connect Angel One for today', body: 'Live option premiums, India VIX and index values come from Angel One. Its login ends at midnight - tap to connect (TradeDesk -> My trades -> Connect Angel One).', tag: 'td-angel', url: '/api/smartapi/login' });
     if (nseDay && at(9 * 60 + 30, 'brief')) await pushAll({ title: `☀ TradeDesk morning brief · ${key}`, body: await morningBrief(), tag: 'td-brief', url: '/' });
-    else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. MCX may trade; an MCX alert still comes at 09:45 if there is a trade.`, tag: 'td-brief', url: '/' });
+    else if (!nseDay && at(9 * 60 + 30, 'holiday')) await pushAll({ title: 'NSE holiday today', body: `${NSE_CAL.holidays.find(h => h.date === key)?.name || 'Trading holiday'} - no NSE scans today. ${mcxSessionOpen(key, 17 * 60) ? 'MCX morning session closed; the MCX check runs at 17:00 (evening session).' : 'MCX is closed all day too.'}`, tag: 'td-brief', url: '/' });
     /* Gold Petal: an alert only when the plan is a trade (BUY with the drivers, or SELL); otherwise the status is
        kept for the 15:00 "nothing ready" line. The 17:00 check catches the US-data evening. */
     /* A check missed today (the server was deployed / restarted after 09:45 or 17:00) runs once at the next minute,
        so a new deploy does not mean a silent day. */
     const mcxMissed = MCX_ALERT_SYMS.some(s => MCX_STATUS[s]?.day !== key);
-    const mcxCatch = mcxMissed && ((m >= 10 * 60 + 5 && m < 17 * 60) || (m >= 17 * 60 + 20 && m < 23 * 60)) && flagOnce(`job|mcx-catchup|${key}|${m < 17 * 60 ? 'am' : 'pm'}`);
+    const mcxCatch = mcxMissed && mcxSessionOpen(key, m) && ((m >= 10 * 60 + 5 && m < 17 * 60) || (m >= 17 * 60 + 20 && m < 23 * 60)) && flagOnce(`job|mcx-catchup|${key}|${m < 17 * 60 ? 'am' : 'pm'}`);
+    /* only while MCX trades (no 09:45 on an NSE holiday - the morning session is closed; nothing on full MCX holidays) */
     for (const [min, id] of [[9 * 60 + 45, 'gold-am'], [17 * 60, 'gold-pm'], [-1, 'catch-up']]) {
-      if (min < 0 ? mcxCatch : at(min, id)) {
+      if (min < 0 ? mcxCatch : (mcxSessionOpen(key, min) && at(min, id))) {
         let readyNow = 0;
         if (min < 12 * 60) await traceGoldDaily(key).catch(e => console.warn('MCX trace:', e.message));   /* yesterday's candle first */
         for (const sym of MCX_ALERT_SYMS) {
@@ -7275,13 +7122,15 @@ async function assistantTick() {
       if (!niftyRetry) await traceNiftyCheck(key, m, 'mark').catch(e => console.warn('Nifty trace:', e.message));
     }
     if (at(15 * 60 + 40, 'trace-nifty-settle')) await traceNiftyCheck(key, m, 'settle').catch(e => console.warn('Nifty trace:', e.message));
-    if (nseDay && at(9 * 60 + 20, 'trade-checks')) {
+    /* 09:05 (was 09:20, after the 09:15 open, while the messages say "sell at today's open"): yesterday's candles are final
+       and the pre-open (09:00-09:08) still takes orders */
+    if (nseDay && at(9 * 60 + 5, 'trade-checks')) {
       const msgs = await openTradeDailyChecks().catch(() => []);
       if (msgs.length) await pushAll({ title: '📋 Your open trades', body: msgs.join('\n'), tag: 'td-trades', url: '/?view=trades' });
     }
     /* Gold Petal: price reached the planned level of a "wait for a dip" buy or "wait for a rise" sell, once a day,
        MCX hours. */
-    if (m >= 9 * 60 && m <= 23 * 60 + 30) for (const sym of MCX_ALERT_SYMS) {
+    if (mcxSessionOpen(key, m)) for (const sym of MCX_ALERT_SYMS) {
       if (!GOLD_PLAN_LAST[sym] || Date.now() - GOLD_PLAN_LAST[sym].ts > 30 * 60e3) { try { GOLD_PLAN_LAST[sym] = { plan: await goldPlanS(sym), ts: Date.now() }; } catch { GOLD_PLAN_LAST[sym] = { plan: null, ts: Date.now() }; } }
       const g = GOLD_PLAN_LAST[sym]?.plan;
       /* The plan is rebuilt every 30 min from the live price, so once price falls to the planned dip level the new plan
@@ -7660,7 +7509,7 @@ async function handleRequest(req,res){
   if(pn==='/api/quickprice')       return apiQuick(req,res,ps);
   if(pn==='/api/market-calendar') {
     const today = istDateKey();
-    return send(res, { holidays: NSE_CAL.holidays, upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
+    return send(res, { holidays: nseHolidayList(), upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
       goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today,
       /* Loose copies are unused leftovers once public/ is current (the page version label shows that): a quiet
          housekeeping note, not an error. GitHub's upload page never deletes files, so they stay until removed. */
@@ -7674,8 +7523,6 @@ async function handleRequest(req,res){
   if(pn==='/api/health')           return apiHealth(req,res);
   /* Angel One SmartAPI: daily login (redirect to Angel One and back), status, disconnect */
   if(pn==='/api/smartapi/status')  return send(res, angelStatus());
-  if(pn==='/api/smartapi/prefs')   return apiAngelPrefs(req,res);
-  if(pn==='/api/screener-compare') return apiScreenerCompare(req,res,ps);
   if(pn==='/api/fno')              return apiFno(req,res,ps);
   if(pn==='/api/assistant-status') return send(res, { day: istDateKey(), mcx: MCX_STATUS, mcxNames: MCX_NAME, nifty: NIFTY_STATUS, angel: angelReady() });
   if(pn==='/api/smartapi/login') {
@@ -7692,10 +7539,6 @@ async function handleRequest(req,res){
     await angelLogout(); return send(res, { ok: true, connected: false });
   }
   if(pn==='/api/strategy')         return apiStrategy(req,res,ps);
-  /* Old screener endpoints are intentionally routed to the new one-scan Ready/Watchlist engine.
-     This prevents stale old scanner logic from being used by bookmarks, cached UI, or old buttons. */
-  if(pn==='/api/screener')         return apiMyTradeScreener(req,res);
-  if(pn==='/api/qualified-screener') return apiMyTradeScreener(req,res);
   if(pn==='/api/my-trade-screener') return apiMyTradeScreener(req,res);
   if(pn==='/api/calendar')         return apiCalendar(req,res);
   if(pn==='/api/earnings')         return apiEarnings(req,res,ps);
@@ -7705,7 +7548,6 @@ async function handleRequest(req,res){
   if(pn==='/api/store')            return apiStore(req,res);
   if(pn==='/api/momentum')         return apiMomentum(req,res,ps);
   if(pn.startsWith('/api/push/'))  return apiPush(req,res,pn);
-  if(pn==='/api/screener-diag') return send(res, SV().LAST_SCAN_DIAG);
   if(pn==='/api/sector-map') {
     const map = {}; Object.entries(LIVE_UNIVERSE?.industry || {}).forEach(([k, v]) => { if (v.sector) map[k] = v.sector; });
     return send(res, { count: Object.keys(map).length, source: LIVE_UNIVERSE?.source || null, map });

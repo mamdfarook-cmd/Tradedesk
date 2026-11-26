@@ -570,8 +570,21 @@
       const risk = price - stop;
       return { name, price: R2(price), stop: R2(stop), target: R2(price + 2 * risk), riskPct: R2(risk / price * 100), note };
     };
-    const now = stockTags({ H, L, C }), prev = stockTags({ H: H.slice(0, i), L: L.slice(0, i), C: C.slice(0, i) });
-    if (now?.doubleBottom?.above && !(prev?.doubleBottom?.above) && C[i - 1] <= now.doubleBottom.neck) return plan('Double bottom breakout', now.doubleBottom.low, `Close above the neckline ${now.doubleBottom.neck}`);
+    /* exactly as backtested (research/swing10.js, 27 Nov 2026): both patterns need close > EMA50 > EMA200 (the app used
+       its broader "Bullish bias"), and the double bottom checks every pair of the last 6 confirmed swing lows (the newest
+       with each older one) for a neckline crossed today - the app stopped at the first pair of the right shape */
+    const emaS0 = p => { const k = 2 / (p + 1); let e = +C[0]; for (let j = 1; j <= i; j++) e = +C[j] * k + e * (1 - k); return e; };   /* seeded at C[0], as in the backtest */
+    const C2 = C.map(Number), e50 = emaS0(50), e200 = emaS0(200);
+    if (!(e50 > 0 && e200 > 0 && C2[i] > e50 && e50 > e200)) return null;
+    { const { sl } = swingPoints(H, L, i), lows = sl.slice(-6).reverse();   /* newest first */
+      for (let a = 1; a < lows.length; a++) {
+        const p = lows[a], q = lows[0];
+        if (q - p >= 10 && q - p <= 60 && i - q <= 20 && Math.abs(L[p] - L[q]) / L[p] <= 0.03) {
+          let m = -Infinity; for (let j = p; j <= q; j++) m = Math.max(m, +H[j]);
+          if (m > L[p] * 1.05 && C[i] > m && C[i - 1] <= m) return plan('Double bottom breakout', Math.min(L[p], L[q]), `Close above the neckline ${R2(m)}`);
+        }
+      }
+    }
     if (i >= 26) {
       const bh = Math.max(...H.slice(i - 25, i)), bl = Math.min(...L.slice(i - 25, i));
       let v20 = 0; for (let j = i - 20; j < i; j++) v20 += +V[j] || 0; v20 /= 20;
@@ -648,7 +661,6 @@
     const sr = srLevels({ H, L, C, i: i - 1, price });
     const res = (sr.resistances || []).map(x => +x.v).filter(v => v > price * 1.002).sort((a, b) => a - b)[0] || null;
     const stop = valid(ctx.stop) && ctx.stop < price ? +ctx.stop : price - 1.5 * atr, risk = price - stop;
-    const room = res && risk > 0 ? (res - price) / risk : null;
     const tfPct = ctx.tf && ctx.tf.denom > 0 ? ctx.tf.bull / ctx.tf.denom : null;
     const trendPts = tfPct != null ? tfPct : ((price > e20 ? 1 : 0) + (e20 > e50 ? 1 : 0) + (e50 > e200 ? 1 : 0)) / 3;
     const trendTxt = tfPct != null ? `${ctx.tf.bull}/${ctx.tf.denom} timeframes bullish (Analysis → Trend)` : `daily EMAs: price ${price > e20 ? '>' : '<'} EMA20, EMA20 ${e20 > e50 ? '>' : '<'} EMA50, EMA50 ${e50 > e200 ? '>' : '<'} EMA200`;
@@ -721,8 +733,10 @@
      trails 4 ATR under the highest close since the entry; sell on a daily close below EMA20 after day 5; at most 60
      trading days. b = daily bars {H, L, C}; bars from..to are the completed days after the entry (day 1 = from). */
   const TRAIL = { atr: 4, emaAfter: 5, maxDays: 60 };   /* 4 ATR from 23 Nov 2026 (3 ATR before): 3.75-5 ATR all tested about the same, +0.57R vs +0.53R */
-  function trailWalk(b, from, to, entry, stop) {
-    const C = b.C.map(Number), H = b.H.map(Number), L = b.L.map(Number), n = C.length;
+  /* opts.firstCloseOnly: bar 'from' is the ENTRY day (a buy on yesterday's signal) - day 1 as tested, but only its close
+     counts (its low may have come before the buy). A gap below the stop exits at the open, as tested (27 Nov 2026). */
+  function trailWalk(b, from, to, entry, stop, opts = {}) {
+    const C = b.C.map(Number), H = b.H.map(Number), L = b.L.map(Number), O = (b.O || []).map(Number), n = C.length;
     const atr = [], e20 = []; let a = 0, e = null;
     for (let i = 0; i < n; i++) {
       const tr = i ? Math.max(H[i] - L[i], Math.abs(H[i] - C[i - 1]), Math.abs(L[i] - C[i - 1])) : H[i] - L[i];
@@ -732,7 +746,11 @@
     let st = +stop, hc = +entry, d = 0;
     for (let i = Math.max(0, from); i <= Math.min(to, n - 1); i++) {
       d++;
-      if (L[i] <= st) return { exit: 'stop', idx: i, level: R2(st), trail: R2(st), hc: R2(hc), days: d };
+      const closeOnly = opts.firstCloseOnly && i === from;
+      if (closeOnly ? C[i] <= st : L[i] <= st) {
+        const lv = closeOnly ? C[i] : O[i] > 0 && O[i] < st ? O[i] : st;   /* gap down through the stop: filled at the open */
+        return { exit: 'stop', idx: i, level: R2(lv), trail: R2(st), hc: R2(hc), days: d, gap: !closeOnly && O[i] > 0 && O[i] < st };
+      }
       hc = Math.max(hc, C[i]); st = Math.max(st, hc - TRAIL.atr * atr[i]);
       if (d > TRAIL.emaAfter && C[i] < e20[i]) return { exit: 'ema', idx: i, level: R2(C[i]), trail: R2(st), hc: R2(hc), days: d, e20: R2(e20[i]) };
       if (d >= TRAIL.maxDays) return { exit: 'time', idx: i, level: R2(C[i]), trail: R2(st), hc: R2(hc), days: d };

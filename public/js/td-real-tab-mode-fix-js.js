@@ -13,18 +13,7 @@
   function fixBottomTabsForCurrentMode(){
     /* Single tab-visibility owner: delegate to tdSyncTabs (bottom-default-fix script) when present, so two
        interval "fixers" no longer fight over the same buttons. */
-    if(typeof window.tdSyncTabs === 'function') return window.tdSyncTabs();
-    const tabs=[...document.querySelectorAll('.tb .tbt')];
-    const set=(allowed)=>tabs.forEach(b=>{
-      const ok=allowed.includes(b.dataset.tab);
-      b.style.display=ok?'':'none';
-      if(!ok) b.classList.remove('active');
-    });
-    if(document.body.classList.contains('market-mode') || document.body.classList.contains('crypto-mode')){show('tbar','none');return;}
-    show('tbar','flex');
-    if(document.body.classList.contains('td-index-mode')) set(['analysis','marketinfo']);
-    else if(document.body.classList.contains('td-mcx-mode')) set(['overview','analysis','marketinfo']);
-    else if(document.body.classList.contains('td-stock-mode')) set(['overview','analysis','screener','marketinfo']);
+    window.tdSyncTabs?.();
   }
 
   const oldApply = window.applyInstrumentData;
@@ -39,9 +28,6 @@
   const oldRender = window.renderTab;
   if(typeof oldRender === 'function'){
     window.renderTab = async function(tab){
-      if(tab==='strategy'){ANALYSIS_VIEW='strategy';tab='analysis';}
-      if(tab==='score'){ANALYSIS_VIEW='decision';tab='analysis';}
-      if(tab==='alerts'){tabMarketInfo._view='alerts';tab='marketinfo';}
       const r = await oldRender.call(this, tab);
       fixBottomTabsForCurrentMode();
       const active = document.querySelector(`.tb .tbt[data-tab="${tab}"]`);
@@ -84,7 +70,7 @@
     const live = tcBeginRender();
     show('es','none');show('ls','none');show('ih','none');show('tbar','none');show('tc','flex');
     document.body.classList.add('market-mode');
-    document.body.classList.remove('crypto-mode','td-index-mode','td-stock-mode','td-mcx-mode');
+    document.body.classList.remove('td-index-mode','td-stock-mode','td-mcx-mode');
     const sidebar=document.getElementById('sidebar'); if(sidebar) sidebar.style.display='none';
     tc.innerHTML='<div class="td-market-compact"><div class="ls" style="display:flex;min-height:80px"><div class="sp"></div></div></div>';
     try{ await preloadMarketContext(force); }catch(e){}
@@ -128,29 +114,12 @@
     </div>`;
   };
 
-  const oldShowGlobal = window.showGlobalTab;
-  if(typeof oldShowGlobal === 'function'){
-    window.showGlobalTab = async function(tab){
-      if(tab==='marketinfo' && document.body.classList.contains('market-mode') && !tabMarketInfo._view){
-        return renderCompactMarketDashboardV19();
-      }
-      const sidebar=document.getElementById('sidebar'); if(sidebar) sidebar.style.display='none';
-      document.body.classList.add('market-mode');
-      return oldShowGlobal.apply(this, arguments);
-    };
-  }
-
-
+  /* Leaving the Markets page brings the stock / index / MCX list back (the mode itself is set by td-bottom-default-fix-js.js). */
   document.addEventListener('DOMContentLoaded', function(){
     document.querySelectorAll('.nbtn').forEach(btn=>{
       btn.addEventListener('click',()=>setTimeout(()=>{
-        const v=btn.dataset.view;
         const sidebar=document.getElementById('sidebar');
-        if(v!=='markets' && sidebar) sidebar.style.display='';
-        if(v==='markets') { /* rendered once by the main nav handler */ }
-        else if(v==='indices') { document.body.classList.remove('market-mode','crypto-mode'); modeClear(); document.body.classList.add('td-index-mode'); fixBottomTabsForCurrentMode(); }
-        else if(v==='commodities') { document.body.classList.remove('market-mode','crypto-mode'); modeClear(); document.body.classList.add('td-mcx-mode'); fixBottomTabsForCurrentMode(); }
-        else if(v==='stocks') { document.body.classList.remove('market-mode','crypto-mode'); modeClear(); document.body.classList.add('td-stock-mode'); fixBottomTabsForCurrentMode(); }
+        if(btn.dataset.view!=='markets' && sidebar) sidebar.style.display='';
       },80));
     });
   });

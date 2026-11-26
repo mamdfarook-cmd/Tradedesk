@@ -1,3 +1,150 @@
+# Older pages reviewed + unused code removed (27 Nov 2026 · page version 27 Nov 2026 · 4)
+
+Search, calendar, sector pages, theme and layout reviewed in depth (they had only been opened and checked for errors).
+
+**Search**
+- A slow suggestion reply no longer reopens the list after you already picked a stock or pressed Enter.
+- Yahoo's BSE-only results are left out: every result opens as NSE:<symbol>, so a BSE row opened a symbol that does
+  not exist.
+- The "Recently viewed" list only takes a stock after it really loaded (a typo used to join the list).
+
+**Calendar / results dates**
+- A results date on a past weekend counted as "today": on a Monday, Saturday's results still blocked a fresh entry.
+- The calendar page and the "next holiday" note now include holidays set in NSE_HOLIDAYS on Render and days the app
+  learned were closed (scans already skipped them; the page did not show them).
+- /api/earnings follows the screener's rule (an estimated date is shown but does not block) and says when the results
+  calendar could not be read, instead of looking like "no results".
+- Still manual: RBI / FOMC dates after December 2026 (update ECON_CALENDAR in server.js when they are published), and
+  NSE's 2027 holiday list (Render variable NSE_HOLIDAYS until NSE publishes it).
+
+**Sectors**
+- The sector list is re-asked every 5 minutes (the server's cache answers, no extra Yahoo calls) - an open page showed
+  the first list it loaded for the rest of the day.
+- The global-markets refresh no longer drops the sector page's "updated" time and its no-data / still-loading notes.
+- The automatic refresh of a half-loaded sector page keeps the Sectors / Calendar / News bar.
+- Small finance banks (AU, Equitas, Ujjivan ...) are classed as Banking, not Finance.
+
+**Theme / layout**
+- Journal and alert pop-ups and toasts open above the phone tab bar (they were partly under it).
+- The last lines of a page are no longer hidden behind the tab bar on iPhones (home-bar inset added).
+- Calendar badges readable on the dark theme (they were light pastel pills); EIA / gas storage have their own colour.
+- Logout button readable; tab labels shorten instead of overflowing on phones 360 px and narrower; the full-screen
+  chart clears the notch in landscape.
+
+**Unused code removed (no behaviour change)**
+- Unused local variables in the stock pages, the server and swing-plan.js (found with the TypeScript checker; 0 left).
+- The hidden Strategy / Decision / Alerts / Screener tab buttons (never shown - the tab bar allows three tabs), the
+  never-visible Global Markets sidebar list and its updater, showGlobalTab and its two wrappers
+  (td-final-market-snapshot-fix.js deleted), the old crypto page's code and CSS, unreachable renderTab branches.
+- Server: duplicate helpers merged (usDst -> usDstOn, parseNseDateKey -> nseDdMmmToKey), the empty manual earnings
+  list, and the unused routes /api/screener, /api/qualified-screener (old aliases) and /api/screener-diag.
+- CSS for elements that no longer exist. Checked by rendering 11 saved pages with the old and the new stylesheet at
+  340 / 390 / 820 / 1024 / 1400 px: every element's style is identical except the two intended changes above.
+- Re-checked: READY gate vs backtest 449 / 449 (0 missed, 0 stop differences), 20-day breakouts 2,126 / 2,126; every
+  page opened on phone and desktop with no errors.
+
+# Checked on the real Angel One account (27 Nov 2026 · page version 27 Nov 2026 · 3)
+
+- Checked live with the user's Angel One account: login / automatic login, stock quotes with circuit limits and 52-week
+  range, futures OI history, OI build-up, gainers / losers, the margin calculator and the MCX Gold Petal price all answer
+  in the expected format. Option Greeks and the put/call ratio answered "No data available" (checked after midnight IST -
+  Angel One's analytics feeds; the app falls back to the India VIX IV and shows "-").
+- After the close (from 15:30) the stock price is Yahoo's official close, and the Overview's Exchange data card (circuit
+  limits, 52-week range) still comes from Angel One's last quote - it would have disappeared every evening.
+
+# Pattern breakouts and Monthly momentum exactly as tested (27 Nov 2026 · page version 27 Nov 2026 · 2)
+
+- **Pattern breakouts:** the double bottom now checks every pair of the last 6 swing lows (the newest with each older
+  one) for a neckline crossed today, and both patterns need close > EMA50 > EMA200 (EMAs seeded as in the backtest) -
+  the app stopped at the first pair of the right shape and used its broader "Bullish bias". Checked on 60 stocks x 10
+  years: the app and the backtest (research/swing10.js) fire on the same 2,491 signals, none different.
+- **Monthly momentum:** the "cash when Nifty is below its 200-day average" rule is judged on the list date (the last close
+  before the rebalance), as tested - it used today's live Nifty, so the month's decision could flip mid-month. Score
+  formula re-checked against research/mom10.js: 4,001 of 4,001 identical.
+- READY gate re-checked after the changes (research/gatecheck.js): 449 of 449 tested signals found, 0 missed, 0 stop
+  differences.
+
+# Final check (27 Nov 2026 · page version 27 Nov 2026 · 1)
+
+Five independent reviews (screener vs backtest, stock pages, markets / MCX, options, notifications) and a run of every
+page on phone and desktop. Every confirmed finding fixed:
+
+**Alerts / schedule**
+- Render wipes data/ on every deploy / restart, and with it the list of devices that get alerts (alerts then went to
+  nobody). The device list can now be kept in the Render variable **TD_PUSH_SUBS** (My trades -> Phone / browser alerts
+  -> Copy backup). After a restart the server sends one "TradeDesk restarted - open it once" notification, because your
+  trades and alerts come back only when a browser opens TradeDesk.
+- A rotated browser subscription signs itself up again (service worker); push messages are kept under ~3 KB ("… more in
+  TradeDesk"); stop / level alerts expire after 1 hour if a phone is offline (24 h before), others after 4 hours.
+- A failed 11:00 / 15:10 scan is retried inside its window instead of silently using up the slot.
+- Times: the stock scan near the close moved to **15:10** (today's signals are tested on the close; it was 15:00); the
+  open-trade check (trailing stops, time exits) to **09:05** (pre-open; its messages say "sell at today's open").
+- MCX sessions: no 09:45 MCX alert or level alert on an NSE holiday (MCX's morning session is closed; the evening
+  session from 17:00 is used); none at all on Republic Day, Good Friday, Independence Day, Gandhi Jayanti, Christmas;
+  the MCX close is 23:30 while the US is on winter time (23:55 in summer). Angel One logs in on every weekday.
+- Holidays after 2026: the built-in list is 2026 only and NSE refuses Render, so from 09:25 a weekday on which Nifty has
+  not traded (two checks 10 minutes apart) is treated as a holiday - no scans / Nifty alerts on it.
+- Texts fixed (the Nifty option alert is at 15:05, not 10:00).
+
+**Screener / Overview (as tested)**
+- A READY / 20-day-breakout signal at YESTERDAY's close is judged with yesterday's relative strength and Nifty trend
+  (it used today's live values, so a valid signal could vanish or appear during the day). Screener and Overview alike.
+- A pre-open print (09:00-09:15) no longer makes today's bar look complete.
+- Live stock prices from Angel One only in the session (09:15-15:30); after the close the price is Yahoo's = NSE's
+  official close, as the screener uses.
+- Switching stocks quickly could build the new stock's verdict / score from the old stock's data - fixed.
+- The Fresh / Hold score now uses the News tab's own headlines, and the verdict bar updates when the news arrives.
+- A failed background news request is no longer remembered as "no news".
+- 52-week position: "104% of the range" on a breakout day now reads 100% (above it - new 52-week high today).
+
+**Track record / My trades (as tested)**
+- A gap down through a stop is booked at the open, not at the stop (the backtest's fill).
+- A buy on yesterday's signal counts its entry day as day 1 (EMA20 exit after day 5, day 60); its close only.
+
+**Options**
+- The 15:05 Nifty alert and the Track record never use a saved option chain as if it were live (a failed quote served
+  the morning's / yesterday's premiums); they retry until 15:25. The Market Pulse cards say "Saved quote" and never
+  "ENTRY TODAY" from a saved chain.
+- Option Builder: a typed IV is used for every leg (also the estimated ones); time to expiry in fractional days.
+
+**Markets / MCX**
+- Global Bias: Nikkei and Hang Seng no longer count (no link to Nifty's opening gap over ~2,350 days; S&P 0.48, Nasdaq
+  0.46, VIX -0.39, DAX 0.29) - listed, not scored. Page and morning brief alike.
+- A typed MCX price is dropped after a futures roll (it could survive one, ~12% off for natural gas).
+- Sector source labels; Fin Ex-Bank history scaling if Angel One ever lists it.
+
+**New: full-screen candle chart** - "⤢ Full" on the chart (or double-tap it): daily / weekly / monthly candles, 3M / 6M /
+1Y / All, pinch or scroll to zoom, the EMAs and the plan's lines.
+
+# Sources settled, full re-check (26 Nov 2026 · page version 26 Nov 2026 · 2)
+
+- **Yahoo vs Angel One removed, sources fixed as tested:** Yahoo's daily candles were NSE's official close and volume in
+  804 of 804 cases (checked against NSE's bhavcopy for 271 stocks x 3 days); Angel One's candle closes differed by 0.25%+
+  on some days for 264 of 272 stocks. So charts, the screener and the backtests keep Yahoo's candles; live prices,
+  index values, VIX, option premiums / IV / Greeks / margin, circuit limits, 52-week range, F&O data and the MCX price
+  level come from Angel One. Removed with it: the comparison tab, both switches, the daily Angel One candle download
+  (~270 Angel One requests a day) and /api/screener-compare, /api/smartapi/prefs. TD_LIVE_PRICES = yahoo stays as an
+  emergency switch.
+- **Option Builder:** a real expiry-date picker (the live expiry list from Angel One) next to Expiry (days); a date picked
+  for Nifty is no longer sent for Bank Nifty. A leg without a live price is estimated at the market IV of the nearest
+  strike (a far wing outside the loaded strikes was priced at the typed IV: with IV 25% an iron condor showed a debit and
+  0% probability). An IV you type is used for every leg. The margin always uses the contract lot.
+- **News:** a slow or failed request said "No news found" - now "did not load" with Retry (and 35 s instead of 15 s); an
+  empty answer is not kept on the page; the last 24 hours are shown only with 5+ headlines, else the week.
+- **MCX:** a price you type is no longer replaced by the automatic Angel One calibration a few minutes later (it wins
+  until Reset); an old automatic calibration is not used after 3 days or a contract roll.
+- **Angel One robustness:** a 403 that is not a token problem (rate limit, API without permission) no longer logs out;
+  the same stock asked twice while its quote is on the way shares one request; an MCX / CDS row can no longer answer an
+  NSE token with the same number; the USD/INR fallback waits at most 4 s and only when Yahoo has had no rate for 30 min.
+- **Small:** Nifty Market Pulse loads the F&O card alongside the page (it added up to 25 s); the futures-OI day count;
+  "not connected" is not cached for 10 minutes; "NSE open interest" label; no log line per request for the 7 indices
+  Angel One does not list.
+- **CSS:** the Swing list's "Fresh · Hold" chip was stretched full width (a left-over rule from the 19 Nov Kite comparison,
+  and again by the 26 Nov · 1 rules) - compact again.
+- Checked: two independent code reviews of every change since 25 Nov (server and page), all confirmed findings fixed;
+  local runs against a fake Angel One and with Angel One not connected (everything falls back to Yahoo / estimates as
+  before); the screener scan code is byte-for-byte the same as on 25 Nov.
+
 # More from Angel One, checked against Yahoo (26 Nov 2026 · page version 26 Nov 2026 · 1)
 
 Everything is read-only and needs Angel One connected; whatever Angel One cannot give falls back to what was used before.

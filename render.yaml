@@ -27,10 +27,14 @@ services:
         sync: false
       - key: SMARTAPI_TOTP_SECRET
         sync: false
-      # Optional: TD_SCREENER_CANDLES = angel (screener candles from Angel One), TD_LIVE_PRICES = yahoo (live prices from Yahoo).
-      - key: TD_SCREENER_CANDLES
-        sync: false
+      # Optional emergency switch: TD_LIVE_PRICES = yahoo (live stock prices from Yahoo instead of Angel One).
       - key: TD_LIVE_PRICES
+        sync: false
+      # Devices that get alerts, kept across Render restarts: paste the value from My trades -> Phone / browser alerts -> Copy backup.
+      - key: TD_PUSH_SUBS
+        sync: false
+      # Optional: extra NSE holidays (YYYY-MM-DD,YYYY-MM-DD) - not needed: a weekday without a Nifty trade by ~09:35 counts as one.
+      - key: NSE_HOLIDAYS
         sync: false
       # The site's own address (Angel One's login comes back to APP_URL/api/smartapi/callback).
       - key: APP_URL

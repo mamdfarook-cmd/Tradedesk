@@ -1,13 +1,13 @@
   /* Children of the scrolling content column must never shrink: sub-tab bars were squeezed to 23px and clipped. */
   #tc > *{flex-shrink:0}
   /* Sidebar rows (desktop list and phone picker): name + meta on the left, price over change on the right. */
-  #sidebar .ic:not(.mkt-row) .icp{max-width:none!important;overflow:visible!important;text-overflow:clip!important;white-space:nowrap!important}
-  #sidebar .ic:not(.mkt-row) .icp .q-px,#sidebar .ic:not(.mkt-row) .icp .q-chg{display:block;margin-left:0}
-  @media(max-width:820px){ #sidebar .ic:not(.mkt-row) .icp .q-px{font-size:.72rem} #sidebar .ic:not(.mkt-row) .icp .q-chg{font-size:.66rem} }
-  #sidebar .ic:not(.mkt-row){display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;grid-template-rows:auto auto;column-gap:10px!important;row-gap:2px;align-items:center!important}
-  #sidebar .ic:not(.mkt-row) .icn{grid-column:1;grid-row:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
-  #sidebar .ic:not(.mkt-row) .ics{grid-column:1;grid-row:2;margin:0!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-  #sidebar .ic:not(.mkt-row) .icp{grid-column:2;grid-row:1 / span 2;margin:0!important;text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:1px}
+  #sidebar .view .ic .icp{max-width:none!important;overflow:visible!important;text-overflow:clip!important;white-space:nowrap!important}
+  #sidebar .view .ic .icp .q-px,#sidebar .view .ic .icp .q-chg{display:block;margin-left:0}
+  @media(max-width:820px){ #sidebar .view .ic .icp .q-px{font-size:.72rem} #sidebar .view .ic .icp .q-chg{font-size:.66rem} }
+  #sidebar .view .ic{display:grid!important;grid-template-columns:minmax(0,1fr) auto!important;grid-template-rows:auto auto;column-gap:10px!important;row-gap:2px;align-items:center!important}
+  #sidebar .view .ic .icn{grid-column:1;grid-row:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.2}
+  #sidebar .view .ic .ics{grid-column:1;grid-row:2;margin:0!important;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #sidebar .view .ic .icp{grid-column:2;grid-row:1 / span 2;margin:0!important;text-align:right;display:flex;flex-direction:column;align-items:flex-end;gap:1px}
   .icp .q-px{color:#e8eef8;font-weight:800}
   .icp .q-chg{font-size:.72rem;font-weight:800;color:var(--tx3)}
   .icp .q-up{color:var(--bull)!important}

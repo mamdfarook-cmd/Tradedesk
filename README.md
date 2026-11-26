@@ -52,6 +52,12 @@ http://localhost:3000
 
 Render deploys from a GitHub repository (it has no zip upload).
 
+**Keep alerts working after restarts (do once):** Render wipes the server's disk on every deploy / restart, including
+the list of devices that get alerts. After turning alerts on (My trades -> Phone / browser alerts -> Turn on for this
+device) press **Copy backup** on the same card and save it on Render as **TD_PUSH_SUBS** (Environment). Repeat only when
+you add a new phone / browser. After any restart you get one "TradeDesk restarted - open it once" notification: opening
+TradeDesk once gives the server your trades and alerts back.
+
 1. Unzip, and upload the **contents** of the `TradeDesk` folder (not the folder itself) to your GitHub repository, so
    `server.js` and `package.json` sit at the top level of the repository. Replacing an older version: delete the old
    `public/index.html` first, or upload over it - every file in this zip replaces its old copy.
@@ -76,7 +82,7 @@ Optional: NSE_HOLIDAYS = extra trading holidays, comma-separated YYYY-MM-DD (the
 
 Alerts arrive as phone / browser notifications (turn them on: 🔔 box on a stock, or Screener → My trades → Phone /
 browser alerts). Schedule (IST, NSE trading days unless noted):
-- 09:20 your open trades: time exit due (stocks day 15, MCX day 10 / 20), results / ex-dates close, Gold Petal
+- 09:05 your open trades: time exit due (stocks day 15, MCX day 10 / 20), results / ex-dates close, Gold Petal
   expiry (only when there is one).
 - 09:30 morning brief: new entries allowed / small size / not today, global bias, India market regime,
   holidays, high-impact events, your open trades and open risk, up to 3 market-moving headlines.
@@ -86,15 +92,15 @@ browser alerts). Schedule (IST, NSE trading days unless noted):
 - Nifty options, only on the first trading day after a weekly expiry (as tested): 10:00 a reminder if Angel One is not
   connected; 15:05 one alert with the bull-put rule (held to expiry) and the weekly sells (trend sell of one side, short strangle,
   both 2%+ away, exit on a close at 2x the premium / credit) with today's strikes and premiums from Angel One.
-- 11:00 and 15:00 stock scans: READY stocks of the tested gate (from 20 Nov 2026: EMA20 crosses above EMA50 while the
+- 11:00 and 15:10 stock scans: READY stocks of the tested gate (from 20 Nov 2026: EMA20 crosses above EMA50 while the
   stock beats Nifty over 3 months, or a 2%+ gap-up on 2x volume near the 52-week high; signal on a close; from 23 Nov 2026 a trailing
-  exit: stop 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days - 09:20 tells you
-  each new stop for trades in My trades). 11:00 alerts yesterday's-close signals, 15:00 today's; pattern breakouts at 15:00. Quick
-  Bounce was removed (23 Nov 2026). At 15:00, when nothing was ready, one quiet line with the day's MCX and Nifty
+  exit: stop 4 ATR under the highest close, sell on a close below EMA20 after day 5, at most 60 days - 09:05 tells you
+  each new stop for trades in My trades). 11:00 alerts yesterday's-close signals, 15:10 today's; pattern breakouts at 15:10. Quick
+  Bounce was removed (23 Nov 2026). At 15:10, when nothing was ready, one quiet line with the day's MCX and Nifty
   status (so a silent day is not mistaken for a broken app).
 
 Track record (Screener → Track record) has three sub-tabs, all checked once a day:
-- Stocks: every READY pick (the server records the 11:00 / 15:00 scan picks even when the app is closed), entry =
+- Stocks: every READY pick (the server records the 11:00 / 15:10 scan picks even when the app is closed), entry =
   the price when it turned READY; one record per stock until it closes, none on weekends / NSE holidays. READY records
   from 23 Nov 2026 use the trailing exit; 19-22 Nov: the whole position at 2R or the stop, else the close of day 15
   (older records keep T1 / T2 / day 10). Results by tag (delivery, PCR, structure, 52-week high, double bottom).
@@ -132,11 +138,13 @@ SMARTAPI_API_KEY on Render and the daily "Connect Angel One" login (Screener -> 
 midnight), option premiums of every expiry, the NSE indices Angel One lists and India VIX come live from Angel One - no
 NSE call. Read-only, no orders, so no static IP. Setup in SMARTAPI-SETUP.txt; /api/health -> angel,
 /api/smartapi/status.
-Since 26 Nov 2026 also: live stock prices (exchange quotes, circuit limits, 52-week range), daily candles (loaded once a
-day; used by the screener / Overview only after "Screener candles" is switched to Angel One on Screener -> Yahoo vs Angel
-One, where both sources are compared), option IV / Greeks per strike and strategy margin in the Option Builder, F&O
-activity (PCR, OI build-up, gainers / losers, futures OI - information only), MCX contract prices for the calibration,
-and USD/INR futures as a fallback. /api/screener-compare, /api/fno, /api/smartapi/prefs.
+Since 26 Nov 2026 also: live stock prices (exchange quotes, circuit limits, 52-week range; TD_LIVE_PRICES = yahoo
+turns this off), option IV / Greeks per strike, the strategy margin and a real expiry-date picker in the Option Builder,
+F&O activity (PCR, OI build-up, gainers / losers, futures OI - information only), MCX contract prices for the
+calibration, and USD/INR futures as a fallback. /api/fno.
+Daily / weekly / monthly candles stay on Yahoo: checked 26 Nov 2026 against NSE's bhavcopy, Yahoo's daily close and
+volume were NSE's official figures in 804 of 804 cases; Angel One's candle closes differed by 0.25%+ on some days for
+264 of 272 stocks (likely the last traded price instead of NSE's official close).
 Layout (20 Nov 2026): Indices = Nifty 50 / Next 50 / Midcap 150 (sectors are on Markets -> Sectors); MCX = Gold Petal,
 Crude Oil, Natural Gas (the backtested ones). The list folds after a pick. Stock / MCX: Overview · Analysis (one
 Technicals page) · News. Nifty: Market Pulse · Technicals · Option Builder. Removed: Decision, the stock Strategy page,
@@ -158,7 +166,7 @@ Backtested changes (19 Nov 2026) - see CHANGES.md for the numbers:
 
 Notes for the free plan:
 - The server keeps itself awake around the clock (it calls its own address every 10 minutes), so there is no cold
-  start and alerts / the 11:00 and 15:00 scans always run. That uses about 744 of the 750 free instance hours a
+  start and alerts / the 11:00 and 15:10 scans always run. That uses about 744 of the 750 free instance hours a
   month, so it works only while this is your ONLY free Render web service: a second free service would use up the
   hours before the month ends and Render would pause both until the 1st.
 - Render's free disk is wiped on every deploy: your alerts / Track Record come back automatically the next time

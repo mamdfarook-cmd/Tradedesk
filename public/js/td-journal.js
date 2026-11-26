@@ -170,7 +170,10 @@ function jFromForm(p){
   const kind = p.kind || 'stock';
   const t = { id: 't' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6), kind, sym: p.sym ? String(p.sym).trim().toUpperCase() : jSymNorm(document.getElementById('j-sym')?.value),
     name: p.name || '', setup: p.setup || (kind === 'stock' ? 'Manual' : ''), side: p.side || 'BUY', qty: jNum('j-qty'), lotQty: +p.lotQty || (kind === 'stock' ? 1 : 1),
-    openedAt: document.getElementById('j-date')?.value || jTodayKey(), status: 'open', note: document.getElementById('j-note')?.value || '' };
+    openedAt: document.getElementById('j-date')?.value || jTodayKey(), status: 'open', note: document.getElementById('j-note')?.value || '',
+    /* when it was saved: a buy before 15:00 IST on its entry day = yesterday's-close signal, so the trailing exit counts that
+       day as day 1 (as tested); a buy near the close = today's signal, day 1 is tomorrow */
+    openedTs: Date.now() };
   if(t.sym && !/^(NSE|MCX):/.test(t.sym)) t.sym = 'NSE:' + t.sym;
   if(kind === 'option') Object.assign(t, { optType: p.optType || 'P', shortStrike: jNum('j-short'), longStrike: jNum('j-long'), credit: jNum('j-credit'), expiry: document.getElementById('j-exp')?.value || p.expiry || '',
     wing: jNum('j-long') > 0 ? Math.abs(jNum('j-short') - jNum('j-long')) : 0, callStrike: +p.callStrike || null,
@@ -226,9 +229,23 @@ function jPushHtml(st){
   const n = +st.devices || 0;
   return `<div class="idea-card j-push">
     <div class="idea-head"><div><div class="idea-kicker">Phone / browser alerts</div><div class="idea-title">${!st.enabled ? 'Not available on this server' : n ? `On for ${n} device${n === 1 ? '' : 's'}` : 'No device gets alerts yet'}</div></div></div>
-    <div class="idea-foot">Stop / target on your trades, new READY stocks, the 09:30 brief, MCX 09:45 / 17:00 and Nifty options 10:00 come as notifications. A deploy clears the device list - open TradeDesk once on each device afterwards and it signs up again.</div>
-    <div class="j-actions"><button class="idea-btn" onclick="enablePushNow().then(() => setTimeout(tabJournal, 800))">Turn on for this device</button>${n ? '<button class="idea-btn ghost" onclick="testPushNow()">Send test</button>' : ''}</div>
+    <div class="idea-foot">Stop / target / trailing-stop on your trades, price alerts, READY stocks (11:00 and 15:10), the 09:30 brief, MCX 09:45 / 17:00 and the Nifty option rule at 15:05 on the day after an expiry come as notifications.</div>
+    ${st.enabled && n ? (st.backup?.missing
+      ? `<div class="idea-foot" style="color:var(--warn)"><b>Keep alerts after a restart:</b> Render wipes the device list on every deploy / restart. Press <b>Copy backup</b>, then on Render -> Environment set <b>TD_PUSH_SUBS</b> to the copied text and save (once; again only after adding a new device).</div>`
+      : `<div class="idea-foot" style="color:var(--bull)">Device list backed up on Render (TD_PUSH_SUBS) - alerts keep working after a restart. After a restart you get one "open TradeDesk once" notification so your trades are watched again.</div>`) : ''}
+    <div class="j-actions"><button class="idea-btn" onclick="enablePushNow().then(() => setTimeout(tabJournal, 800))">Turn on for this device</button>${n ? '<button class="idea-btn ghost" onclick="testPushNow()">Send test</button>' : ''}${n && st.backup?.missing ? '<button class="idea-btn ghost" onclick="jPushBackup(this)">Copy backup</button>' : ''}</div>
   </div>`;
+}
+/* copies the TD_PUSH_SUBS value for Render (the device list) */
+async function jPushBackup(btn){
+  try{
+    const j = await apiFetch('/api/push/backup', 10000);
+    await navigator.clipboard.writeText(j.value);
+    if(btn){ btn.textContent = 'Copied - paste into TD_PUSH_SUBS on Render'; btn.disabled = true; }
+  }catch(e){
+    /* no clipboard permission: show the text to copy by hand */
+    try { const j = await apiFetch('/api/push/backup', 10000); prompt('Copy this into TD_PUSH_SUBS on Render:', j.value); } catch(e2){ alert('Could not read the backup: ' + e2.message); }
+  }
 }
 
 /* Angel One SmartAPI (live premiums, India VIX, index values): the day's login - Angel One ends it at midnight. */

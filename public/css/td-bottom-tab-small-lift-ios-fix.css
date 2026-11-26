@@ -17,11 +17,7 @@
   /* Prevent iPhone Safari auto-zoom while typing/searching stocks. */
   input,
 select,
-textarea,
-.search,
-#search,
-#stockSearch,
-#symSearch {
+textarea {
     font-size:16px!important;
   }
 }

@@ -5,7 +5,7 @@
 ══════════════════════════════════════════════════════════════════════ */
 /* Page version - shown on the market pill (tap/hover) and the Markets page, so a phone can be checked against the
    latest upload. Bump it with every page change. */
-const TD_UI_VERSION = '26 Nov 2026 · 1';
+const TD_UI_VERSION = '27 Nov 2026 · 4';
 const TD_PHONE = () => window.matchMedia('(max-width:820px)').matches;
 
 
@@ -35,8 +35,77 @@ const cssVar = (n, d) => { try{ return getComputedStyle(document.documentElement
 function tdEma(C, p){ const out = []; if(C.length < p) return out; const k = 2 / (p + 1); let e = C.slice(0, p).reduce((a, b) => a + b, 0) / p; out[p - 1] = e; for(let i = p; i < C.length; i++){ e = C[i] * k + e * (1 - k); out[i] = e; } return out; }
 function chartCardHtml(){
   return `<div class="idea-card td-chart-card${tdChartOpen() ? '' : ' closed'}">
-    <div class="td-chart-head" onclick="tdToggleChart()"><span class="idea-kicker">Chart · daily</span><span class="td-chart-legend"><i style="background:#f5c542"></i>EMA20 <i style="background:#38bdf8"></i>EMA50 <i style="background:#a78bfa"></i>EMA200</span><span class="td-chart-tg" aria-label="Show or hide the chart">▾</span></div>
-    <div class="td-chart-box"></div><div class="td-chart-msg idea-foot"></div></div>`;
+    <div class="td-chart-head" onclick="tdToggleChart()"><span class="idea-kicker">Chart · daily</span><span class="td-chart-legend"><i style="background:#f5c542"></i>EMA20 <i style="background:#38bdf8"></i>EMA50 <i style="background:#a78bfa"></i>EMA200</span>
+      <button type="button" class="td-chart-fs" onclick="event.stopPropagation();tdChartFull()" title="Open the full-screen candle chart" aria-label="Open the full-screen candle chart">⤢ Full</button><span class="td-chart-tg" aria-label="Show or hide the chart">▾</span></div>
+    <div class="td-chart-box" ondblclick="tdChartFull()" title="Double-tap / double-click for the full-screen chart"></div><div class="td-chart-msg idea-foot"></div></div>`;
+}
+
+/* ── Full-screen candle chart (27 Nov 2026): daily / weekly / monthly candles of the open instrument with EMA20/50/200
+   and the plan's lines; pinch / drag to zoom and scroll; Esc or ✕ closes. No extra data calls (the Overview's bars). ── */
+let TD_FULL = null;
+function tdBarsOf(tf){
+  const d = tf === 'W' ? CUR_DATA?.weekly : tf === 'M' ? CUR_DATA?.monthly : CUR_DATA?.daily;
+  if(!d?.C?.length) return [];
+  const k = typeof isMCXSymbol === 'function' && isMCXSymbol(CUR_SYM) && typeof mcxCalK === 'function' ? mcxCalK(CUR_SYM) : 1;
+  const tz = CUR_DATA.dataSource?.timezone || 'Asia/Kolkata', by = new Map();
+  for(let i = 0; i < d.C.length; i++){
+    const t = +d.T?.[i], o = +d.O?.[i], h = +d.H?.[i], l = +d.L?.[i], c = +d.C?.[i];
+    if(!(t > 0) || ![o, h, l, c].every(v => Number.isFinite(v) && v > 0)) continue;
+    let key; try{ key = new Intl.DateTimeFormat('en-CA', { timeZone: tz, year:'numeric', month:'2-digit', day:'2-digit' }).format(new Date(t * 1000)); }catch{ key = new Date(t * 1000).toISOString().slice(0, 10); }
+    by.set(key, { time: key, open: o * k, high: h * k, low: l * k, close: c * k });
+  }
+  return [...by.values()].sort((a, b) => a.time.localeCompare(b.time));
+}
+function tdChartFullClose(){
+  if(!TD_FULL) return;
+  try{ TD_FULL.ro?.disconnect(); }catch{} try{ TD_FULL.chart?.remove(); }catch{}
+  TD_FULL.el?.remove(); document.removeEventListener('keydown', TD_FULL.onKey); document.body.classList.remove('td-full-open'); TD_FULL = null;
+}
+async function tdChartFull(tf, range){
+  if(!CUR_DATA?.daily?.C?.length) return;
+  tf = tf || TD_FULL?.tf || 'D'; range = range || TD_FULL?.range || '6M';
+  let L; try{ L = await loadLwc(); }catch(e){ alert('Chart not available: ' + e.message); return; }
+  if(!TD_FULL){
+    const el = document.createElement('div'); el.className = 'td-chart-full'; el.setAttribute('role', 'dialog'); el.setAttribute('aria-label', 'Full-screen chart');
+    document.body.appendChild(el); document.body.classList.add('td-full-open');
+    const onKey = e => { if(e.key === 'Escape') tdChartFullClose(); };
+    document.addEventListener('keydown', onKey);
+    TD_FULL = { el, onKey };
+  }
+  try{ TD_FULL.ro?.disconnect(); }catch{} try{ TD_FULL.chart?.remove(); }catch{}
+  Object.assign(TD_FULL, { tf, range, sym: CUR_SYM });
+  const name = (document.getElementById('ihn')?.textContent || CUR_SYM || '').trim();
+  const btn = (v, cur, fn, label) => `<button type="button" class="td-fs-b${v === cur ? ' on' : ''}" onclick="${fn}">${label}</button>`;
+  TD_FULL.el.innerHTML = `<div class="td-fs-head"><b>${escHtml(name)}</b>
+      <span class="td-fs-grp">${btn('D', tf, "tdChartFull('D')", 'Daily')}${btn('W', tf, "tdChartFull('W')", 'Weekly')}${btn('M', tf, "tdChartFull('M')", 'Monthly')}</span>
+      <span class="td-fs-grp">${['3M', '6M', '1Y', 'All'].map(r => btn(r, range, `tdChartFull(null,'${r}')`, r)).join('')}</span>
+      <button type="button" class="td-fs-x" onclick="tdChartFullClose()" aria-label="Close the chart">✕</button></div>
+    <div class="td-fs-box"></div>
+    <div class="td-fs-foot"><i style="background:#f5c542"></i>EMA20 <i style="background:#38bdf8"></i>EMA50 <i style="background:#a78bfa"></i>EMA200 · pinch or scroll to zoom, drag to move${PLAN_LEVELS[CUR_SYM] ? ' · entry / stop / T1 of the plan' : ''}</div>`;
+  const box = TD_FULL.el.querySelector('.td-fs-box'), bars = tdBarsOf(tf);
+  if(bars.length < 5){ box.innerHTML = '<div class="idea-foot" style="padding:20px">Not enough history for this view.</div>'; return; }
+  const bull = cssVar('--bull', '#22c55e'), bear = cssVar('--bear', '#ef4444'), tx = cssVar('--tx2', '#9aa3b2');
+  const chart = L.createChart(box, { width: box.clientWidth || window.innerWidth, height: box.clientHeight || Math.max(240, window.innerHeight - 120),
+    layout: { background: { type: 'solid', color: 'transparent' }, textColor: tx, fontSize: 11 },
+    grid: { vertLines: { color: 'rgba(255,255,255,.04)' }, horzLines: { color: 'rgba(255,255,255,.05)' } },
+    rightPriceScale: { borderVisible: false }, timeScale: { borderVisible: false, rightOffset: 4 }, crosshair: { mode: 0 },
+    localization: { priceFormatter: v => (+v).toLocaleString('en-IN', { maximumFractionDigits: 2 }) } });
+  const cs = chart.addCandlestickSeries({ upColor: bull, downColor: bear, borderVisible: false, wickUpColor: bull, wickDownColor: bear });
+  cs.setData(bars);
+  const C = bars.map(b => b.close);
+  [[20, '#f5c542'], [50, '#38bdf8'], [200, '#a78bfa']].forEach(([p, col]) => {
+    const e = tdEma(C, p); if(!e.length) return;
+    chart.addLineSeries({ color: col, lineWidth: 1, priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false })
+      .setData(bars.map((b, i) => e[i] != null ? { time: b.time, value: e[i] } : null).filter(Boolean));
+  });
+  const line = (price, color, title, style = 2) => { if(Number.isFinite(+price) && +price > 0) cs.createPriceLine({ price: +price, color, lineWidth: 1, lineStyle: style, axisLabelVisible: true, title }); };
+  const plan = PLAN_LEVELS[CUR_SYM];
+  if(plan){ line(plan.entry, cssVar('--acc', '#00bcd4'), plan.label || 'Entry', 0); line(plan.stop, bear, 'Stop'); line(plan.t1, bull, 'T1'); }
+  const per = tf === 'W' ? { '3M': 13, '6M': 26, '1Y': 52 } : tf === 'M' ? { '3M': 6, '6M': 12, '1Y': 24 } : { '3M': 63, '6M': 126, '1Y': 252 };
+  const show = range === 'All' ? bars.length : per[range] || bars.length;
+  chart.timeScale().setVisibleLogicalRange({ from: Math.max(0, bars.length - show), to: bars.length + 2 });
+  TD_FULL.chart = chart;
+  if(window.ResizeObserver){ TD_FULL.ro = new ResizeObserver(() => { try{ chart.applyOptions({ width: box.clientWidth, height: box.clientHeight }); }catch{} }); TD_FULL.ro.observe(box); }
 }
 async function drawTdChart(card){
   destroyTdChart();
@@ -106,6 +175,7 @@ function tdAfterRender(tab){
   const tc = document.getElementById('tc'); if(!tc || !CUR_SYM) return;
   const sym = CUR_SYM, isIdx = typeof isIndexSymbol === 'function' && isIndexSymbol(sym), isMcx = typeof isMCXSymbol === 'function' && isMCXSymbol(sym);
   destroyTdChart();
+  if(TD_FULL && TD_FULL.sym !== sym) tdChartFullClose();   /* another instrument opened: the full-screen chart was the old one */
   const wantChart = (tab === 'overview' && !isIdx) || (isIdx && tab === 'analysis:pulse');
   if(wantChart){
     const first = tab === 'overview' ? null : tc.querySelector('.analysis-bar, .td-analysis-bar, [class*="anl-bar"]');

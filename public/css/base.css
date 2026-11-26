@@ -183,7 +183,7 @@
       .ip{height:150px}
     }
 
-    /* CRYPTO TAB */
+    /* SIDEBAR SPARKLINE */
     .spark{display:flex;align-items:flex-end;gap:2px;height:32px;margin-top:8px}
     /* ALERTS TAB */
     .alert-panel{background:var(--bgc);border:1px solid var(--brd);border-radius:var(--r);padding:18px;margin-bottom:14px}
@@ -230,10 +230,10 @@
     .cal-event{background:var(--bgc);border:1px solid var(--brd);border-radius:var(--rs);padding:10px 13px;margin-bottom:7px;display:flex;gap:12px;align-items:flex-start}
     .cal-date{font-size:.75rem;font-weight:800;color:var(--tx3);min-width:55px;padding-top:2px;font-variant-numeric:tabular-nums}
     .cal-badge{font-size:.75rem;font-weight:800;padding:2px 7px;border-radius:20px;white-space:nowrap;flex-shrink:0}
-    .cal-rbi{background:var(--bullb);color:var(--bull)}.cal-fomc{background:#E6F1FB;color:#185FA5}
-    .cal-fno{background:var(--bearb);color:var(--bear)}.cal-cpi{background:#FAEEDA;color:#854F0B}
-    .cal-gdp{background:#EAF3DE;color:#27500A}.cal-nfp{background:#E6F1FB;color:#0C447C}
-    .cal-budget{background:rgba(255,215,0,.15);color:#854F0B;border:1px solid gold}
+    /* dark-theme badge colours for every category the server sends (light pastel pills were unreadable) */
+    .cal-rbi{background:var(--bullb);color:var(--bull)}.cal-fomc{background:rgba(96,165,250,.14);color:#93c5fd}
+    .cal-fno{background:var(--bearb);color:var(--bear)}.cal-nfp{background:rgba(129,140,248,.14);color:#a5b4fc}
+    .cal-eia,.cal-ngstorage{background:rgba(245,158,11,.14);color:#fbbf24}.cal-other{background:rgba(148,163,184,.12);color:var(--tx2)}
     .cal-high{border-left:3px solid var(--bear)}.cal-med{border-left:3px solid var(--neu)}
     .cal-days{font-size:.75rem;background:var(--bgi);border-radius:20px;padding:2px 8px;color:var(--tx2);white-space:nowrap}
     /* EARNINGS */
@@ -256,8 +256,6 @@
     .sugg-item:last-child{border-bottom:none}.sugg-item:hover{background:rgba(0,188,212,.08)}
     .sugg-sym{font-weight:700;color:var(--acc)}.sugg-name{font-size:.72rem;color:var(--tx3);margin-top:1px}
     .sugg-ex{font-size:.68rem;background:var(--bgi);color:var(--tx3);padding:1px 7px;border-radius:10px}
-    /* SWING */
-    /* CRYPTO PULSE */
   
 /* ═════════ MOBILE-FIRST TRADING APP REDESIGN OVERRIDES ═════════ */
 html{background:var(--bg);overflow-x:hidden;scroll-behavior:smooth}
@@ -440,9 +438,7 @@ button,input,select{font:inherit}
   .view.selector-open .selector-toggle{position:sticky;top:0;z-index:60;margin-bottom:8px;background:linear-gradient(135deg,rgba(0,188,212,.22),rgba(0,230,118,.1));backdrop-filter:blur(12px)}
   .view.selector-open .vt{display:none}
   .sbox{position:relative!important;top:auto!important;background:transparent!important;padding:0!important}
-  .pgrid{max-height:180px;overflow-y:auto;padding-right:2px}
-  #view-markets.selector-open{max-height:300px}
-  #view-stocks.selector-open{max-height:300px}
+  .pgrid{max-height:180px;overflow-y:auto;padding-right:2px}  #view-stocks.selector-open{max-height:300px}
   .ih{top:86px!important}
   .tc{padding-top:10px!important}
 }
@@ -1689,13 +1685,6 @@ body{letter-spacing:.005em}
    Strategy + Decision live inside Analysis. Alerts + Forward Test live inside Market.
 */
 @media(max-width:720px){
-  /* Hide old crowded bottom-tab items even if older JS tries to show them */
-  .tb .tbt[data-tab="strategy"],
-  .tb .tbt[data-tab="score"],
-  .tb .tbt[data-tab="alerts"],
-  .tb .tbt[data-tab="forwardtest"],
-  .tb .tbt[data-tab="screener"]{display:none!important}
-
   /* Bottom tab: bigger readable buttons, but less dead black space below */
   .tb{
     min-height:44px!important;
@@ -1789,13 +1778,7 @@ body{letter-spacing:.005em}
   .logo::before{width:24px!important;height:24px!important;border-radius:9px!important;font-size:.54rem!important}
   .logo::after{left:30px!important;bottom:-4px!important;height:1.5px!important}
 
-  /* Keep Screener visible in the bottom bar; Strategy/Decision stay inside Analysis, Alerts/Forward inside Market. */
-  .tb .tbt[data-tab="screener"]{display:inline-flex!important}
-  .tb .tbt[data-tab="strategy"],
-  .tb .tbt[data-tab="score"],
-  .tb .tbt[data-tab="alerts"]{display:none!important}
-
-  /* 4 readable tabs in one row: Overview / Analysis / Screener / Market */
+  /* the tabs in one row: Overview / Analysis / Market */
   .tb{
     justify-content:space-between!important;
     gap:6px!important;
@@ -1827,20 +1810,6 @@ body{letter-spacing:.005em}
   .ml{padding-bottom:44px!important}
 }
 /* ═════════ END v15 SCREENER TAB + PREMIUM LOGO POLISH ═════════ */
-
-/* ═════════ v16 BOTTOM TAB DUPLICATE FIX ═════════
-   Fix: Crypto Overview / Market Pulse were appearing together with stock bottom tabs
-   because v15 forced every .tbt to display with !important.
-*/
-@media(max-width:820px){
-  body:not(.crypto-mode) .tb .tbt[data-tab="cryptodetail"],
-  body:not(.crypto-mode) .tb .tbt[data-tab="cryptopulse"]{display:none!important}
-
-  body.crypto-mode .tb .tbt:not([data-tab="cryptodetail"]):not([data-tab="cryptopulse"]){display:none!important}
-  body.crypto-mode .tb .tbt[data-tab="cryptodetail"],
-  body.crypto-mode .tb .tbt[data-tab="cryptopulse"]{display:inline-flex!important}
-}
-/* ═════════ END v16 BOTTOM TAB DUPLICATE FIX ═════════ */
 
 /* ═════════ v17 MOBILE UI CLEANUP + OPTION BUILDER LOADING FIX ═════════
    Visual cleanup only for header/quote/cards plus DOM loading fix for option builder.
@@ -1957,46 +1926,6 @@ body{letter-spacing:.005em}
   /* Market top category should not use the bottom tab bar. */
   body.market-mode .tb{display:none!important}
 
-  /* Crypto: keep only Market Pulse visible. */
-
-  /* Compact market selector: small two-column value tabs, not long list cards. */
-  #view-markets.selector-open{
-    max-height:360px!important;
-    display:grid!important;
-    grid-template-columns:repeat(2,minmax(0,1fr))!important;
-    gap:7px!important;
-    padding-bottom:8px!important;
-    overflow:auto!important;
-  }
-  #view-markets .selector-toggle,
-  #view-markets .vt{grid-column:1/-1!important}
-  #view-markets.selector-open .mkt-row{
-    display:flex!important;
-    min-height:46px!important;
-    margin:0!important;
-    padding:8px 9px!important;
-    border-radius:13px!important;
-    gap:6px!important;
-    align-items:center!important;
-  }
-  #view-markets.selector-open .mkt-row .icn{
-    font-size:.68rem!important;
-    line-height:1.05!important;
-    white-space:nowrap!important;
-    overflow:hidden!important;
-    text-overflow:ellipsis!important;
-  }
-  #view-markets.selector-open .mkt-row .ics{
-    display:none!important;
-  }
-  #view-markets.selector-open .mkt-row .icp{
-    font-size:.66rem!important;
-    line-height:1.1!important;
-    max-width:72px!important;
-    overflow:hidden!important;
-    text-overflow:ellipsis!important;
-    white-space:nowrap!important;
-  }
 
   /* Keep market content compact because there is no bottom tab below it. */
   body.market-mode .tc{padding-bottom:8px!important}
@@ -2007,12 +1936,6 @@ body{letter-spacing:.005em}
     background:linear-gradient(180deg,rgba(10,10,15,.98),rgba(10,10,15,.90))!important;
     padding-top:5px!important;
   }
-}
-@media(max-width:420px){
-  #view-markets.selector-open{max-height:330px!important;gap:6px!important}
-  #view-markets.selector-open .mkt-row{min-height:42px!important;padding:7px 8px!important}
-  #view-markets.selector-open .mkt-row .icn{font-size:.64rem!important}
-  #view-markets.selector-open .mkt-row .icp{font-size:.62rem!important;max-width:66px!important}
 }
 /* ═════════ END v18 TAB RULES + MARKET COMPACT VIEW ═════════ */
 

@@ -6,8 +6,7 @@
 /* ---------- 1. Shared layout ---------- */
 :root{ --td-radius:10px; --td-radius-s:7px; }
 html[class*="theme-"] body{font-family:var(--th-font)!important;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility}
-html[class*="theme-"] .icp,html[class*="theme-"] .td-mtab-val,html[class*="theme-"] .ihp,html[class*="theme-"] td,
-html[class*="theme-"] .pl-lv b,html[class*="theme-"] .tp-detail-value{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
+html[class*="theme-"] .icp,html[class*="theme-"] .td-mtab-val,html[class*="theme-"] .ihp,html[class*="theme-"] td,html[class*="theme-"] .tp-detail-value{font-variant-numeric:tabular-nums;font-feature-settings:"tnum" 1}
 html[class*="theme-"] .td-mtab-val,html[class*="theme-"] .ihp{font-family:var(--th-num)!important}
 
 /* slim scrollbars */
@@ -30,7 +29,7 @@ html[class*="theme-"] .lvl-card,html[class*="theme-"] .gauge-card,html[class*="t
 html[class*="theme-"] .scr-card,html[class*="theme-"] .trade-plan-card,html[class*="theme-"] .tp-section,html[class*="theme-"] .tp-decision,
 html[class*="theme-"] .pos-calc,html[class*="theme-"] .market-verdict,html[class*="theme-"] .ni,html[class*="theme-"] .cal-event,
 html[class*="theme-"] .alert-item,html[class*="theme-"] .sugg-item,html[class*="theme-"] .idea-card,html[class*="theme-"] .scr-sum-card,
-html[class*="theme-"] .td-mtab,html[class*="theme-"] .pl-group,html[class*="theme-"] .chart-wrap,html[class*="theme-"] .td-data-panel{
+html[class*="theme-"] .td-mtab,html[class*="theme-"] .pl-group,html[class*="theme-"] .td-data-panel{
   background:var(--bgc)!important;border:1px solid var(--brd)!important;box-shadow:var(--th-shadow)!important;border-radius:var(--td-radius)!important}
 html[class*="theme-"] .ov-item,html[class*="theme-"] .sbi,html[class*="theme-"] .tp-item,html[class*="theme-"] .tp-mini,html[class*="theme-"] .tp-detail,
 html[class*="theme-"] .tp-qrow,html[class*="theme-"] .lvl-row,html[class*="theme-"] .pat-item,html[class*="theme-"] .sr,html[class*="theme-"] .zone-row,
@@ -96,7 +95,7 @@ html[class*="theme-"] .es .ei{color:var(--acc)!important;opacity:.85}
   html[class*="theme-"] .ov-box,html[class*="theme-"] .sc,html[class*="theme-"] .strat-hero,html[class*="theme-"] .lvl-card,
   html[class*="theme-"] .gauge-card,html[class*="theme-"] .alert-panel,html[class*="theme-"] .scr-header,html[class*="theme-"] .trade-plan-card,
   html[class*="theme-"] .tp-section,html[class*="theme-"] .tp-decision,html[class*="theme-"] .pos-calc,html[class*="theme-"] .market-verdict,
-  html[class*="theme-"] .idea-card,html[class*="theme-"] .chart-wrap,html[class*="theme-"] .td-data-panel,
+  html[class*="theme-"] .idea-card,html[class*="theme-"] .td-data-panel,
   html[class*="theme-"] .ni,html[class*="theme-"] .cal-event,html[class*="theme-"] .alert-item{padding:10px 11px!important;margin-bottom:9px!important}
   html[class*="theme-"] .tp-detail,html[class*="theme-"] .tp-mini,html[class*="theme-"] .tp-item,html[class*="theme-"] .ov-item,
   html[class*="theme-"] .strat-cell,html[class*="theme-"] .lvl-row,html[class*="theme-"] .sr,html[class*="theme-"] .zone-row,
@@ -150,3 +149,20 @@ html.theme-midnight{
   --tx:#e8eef8; --tx2:#aab6c8; --tx3:#7d8aa0;
   --th-hdr:rgba(10,15,26,.92); --th-bar:rgba(13,19,34,.94); --th-hover:rgba(255,255,255,.04); --th-scroll:#2c3b55; --th-shadow:0 0 0 transparent;
 }
+
+
+/* 27 Nov 2026 layout fixes (td-theme.css is last in the bundle) */
+/* Pop-ups above the phone tab bar (.tb is z 9999 there): the journal / alert boxes and toasts were partly under it. */
+.j-modal{z-index:10050!important}
+#td-alert-pop{z-index:10100!important}
+.td-toast{z-index:10200!important}
+@media(max-width:820px){
+  /* the last lines of a page sat behind the tab bar on iPhones (the bar grows by the home-bar inset) */
+  body:not(.market-mode) .tc{padding-bottom:calc(56px + env(safe-area-inset-bottom))!important}
+  /* a long label no longer pushes the tabs off a narrow phone */
+  body:not(.market-mode) .tbt.tbt{overflow:hidden!important;text-overflow:ellipsis!important}
+}
+@media(max-width:360px){body:not(.market-mode) .tb .tbt.tbt{padding:0 4px!important;font-size:.68rem!important}}
+.icp{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%}
+/* full-screen chart: clear of the notch / rounded corners in landscape too */
+.td-chart-full{padding-left:max(10px,env(safe-area-inset-left))!important;padding-right:max(10px,env(safe-area-inset-right))!important}

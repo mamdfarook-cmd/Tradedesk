@@ -16,6 +16,21 @@ self.addEventListener('push', event => {
   }));
 });
 
+/* The browser can replace a push subscription (expiry, key rotation). Sign the new one up with the server at once - before
+   27 Nov 2026 alerts stopped until TradeDesk was opened again. */
+self.addEventListener('pushsubscriptionchange', event => {
+  event.waitUntil((async () => {
+    try {
+      const k = await (await fetch('/api/push/key', { credentials: 'same-origin' })).json();
+      if (!k || !k.publicKey) return;
+      const pad = '='.repeat((4 - k.publicKey.length % 4) % 4), raw = atob((k.publicKey + pad).replace(/-/g, '+').replace(/_/g, '/'));
+      const key = Uint8Array.from(raw, c => c.charCodeAt(0));
+      const sub = event.newSubscription || await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: key });
+      await fetch('/api/push/subscribe', { method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ subscription: sub.toJSON() }) });
+    } catch (e) {}
+  })());
+});
+
 self.addEventListener('notificationclick', event => {
   event.notification.close();
   const targetUrl = (event.notification.data && event.notification.data.url) || '/';

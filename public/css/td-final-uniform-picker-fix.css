@@ -1,9 +1,7 @@
 @media(max-width:820px){
   /* One behavior for selector panels: tap category to open, then inner compact scroll. */
   #view-indices.selector-open,
-  #view-commodities.selector-open,
-  #view-crypto.selector-open,
-  #view-markets.selector-open{
+  #view-commodities.selector-open{
     max-height:360px!important;
     height:auto!important;
     overflow-y:auto!important;
@@ -19,19 +17,13 @@
 
   #view-indices .selector-toggle,
   #view-commodities .selector-toggle,
-  #view-crypto .selector-toggle,
-  #view-markets .selector-toggle,
   #view-indices .vt,
-  #view-commodities .vt,
-  #view-crypto .vt,
-  #view-markets .vt{
+  #view-commodities .vt{
     grid-column:1/-1!important;
   }
 
   #view-indices.selector-open .selector-toggle,
-  #view-commodities.selector-open .selector-toggle,
-  #view-crypto.selector-open .selector-toggle,
-  #view-markets.selector-open .selector-toggle{
+  #view-commodities.selector-open .selector-toggle{
     position:sticky!important;
     top:0!important;
     z-index:80!important;
@@ -40,9 +32,7 @@
 
   /* Uniform compact cards for Index, MCX and Global Market rows. */
   #view-indices.selector-open .ic,
-  #view-commodities.selector-open .ic,
-  #view-crypto.selector-open .ic,
-  #view-markets.selector-open .mkt-row{
+  #view-commodities.selector-open .ic{
     display:flex!important;
     min-height:46px!important;
     margin:0!important;
@@ -54,9 +44,7 @@
   }
 
   #view-indices.selector-open .icn,
-  #view-commodities.selector-open .icn,
-  #view-crypto.selector-open .icn,
-  #view-markets.selector-open .mkt-row .icn{
+  #view-commodities.selector-open .icn{
     font-size:.68rem!important;
     line-height:1.05!important;
     white-space:nowrap!important;
@@ -65,16 +53,12 @@
   }
 
   #view-indices.selector-open .ics,
-  #view-commodities.selector-open .ics,
-  #view-crypto.selector-open .ics,
-  #view-markets.selector-open .mkt-row .ics{
+  #view-commodities.selector-open .ics{
     display:none!important;
   }
 
   #view-indices.selector-open .icp,
-  #view-commodities.selector-open .icp,
-  #view-crypto.selector-open .icp,
-  #view-markets.selector-open .mkt-row .icp{
+  #view-commodities.selector-open .icp{
     margin-left:auto!important;
     font-size:.66rem!important;
     line-height:1.1!important;
@@ -84,8 +68,6 @@
     white-space:nowrap!important;
     text-align:right!important;
   }
-  #view-crypto.selector-open .ic > div[style*="flex:1"]{min-width:0!important}
-
   /* Keep stocks/search normal; only traded-category lists are forced into compact grid. */
   #view-stocks.selector-open{
     max-height:330px!important;
@@ -95,29 +77,21 @@
 }
 @media(max-width:420px){
   #view-indices.selector-open,
-  #view-commodities.selector-open,
-  #view-crypto.selector-open,
-  #view-markets.selector-open{
+  #view-commodities.selector-open{
     max-height:330px!important;
     gap:6px!important;
   }
   #view-indices.selector-open .ic,
-  #view-commodities.selector-open .ic,
-  #view-crypto.selector-open .ic,
-  #view-markets.selector-open .mkt-row{
+  #view-commodities.selector-open .ic{
     min-height:42px!important;
     padding:7px 8px!important;
   }
   #view-indices.selector-open .icn,
-  #view-commodities.selector-open .icn,
-  #view-crypto.selector-open .icn,
-  #view-markets.selector-open .mkt-row .icn{
+  #view-commodities.selector-open .icn{
     font-size:.64rem!important;
   }
   #view-indices.selector-open .icp,
-  #view-commodities.selector-open .icp,
-  #view-crypto.selector-open .icp,
-  #view-markets.selector-open .mkt-row .icp{
+  #view-commodities.selector-open .icp{
     font-size:.62rem!important;
     max-width:66px!important;
   }

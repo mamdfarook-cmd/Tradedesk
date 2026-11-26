@@ -8,8 +8,6 @@
 .tp-limit-head{font-size:.95rem;font-weight:800;color:var(--tx);display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .tp-limit-head b{color:var(--bull)}
 .tp-limit-sub{font-size:.76rem;color:var(--tx2);margin-top:6px;line-height:1.5}
-body.td-stock-mode .tb .tbt[data-tab="screener"],
-body:not(.td-stock-mode) .tb .tbt[data-tab="screener"]{display:none!important}
 #td-alert-pop{position:fixed;inset:0;z-index:9000;background:rgba(0,0,0,.55);display:flex;align-items:flex-start;justify-content:center;padding:70px 16px 16px;overflow:auto}
 .alert-pop-card{width:100%;max-width:440px;background:var(--bgp);border:1px solid var(--brdl);border-radius:14px;padding:14px 16px;box-shadow:0 12px 40px rgba(0,0,0,.5)}
 .alert-pop-head{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:10px}
