@@ -1,3 +1,13 @@
+# Markets footer and Market breadth on phones (27 Nov 2026 · page version 27 Nov 2026 · 5)
+
+- The "Housekeeping" note is gone from the Markets page. It listed old loose files at the top of the GitHub repository
+  (from a web-page upload); they are not used by the app. Its "Hide" choice lived in the browser, so clearing browsing
+  data brought it back. The list is still in the server log and /api/health; upload-to-github.ps1 removes the files.
+- Nifty -> Market Pulse -> Market bias: the four breadth boxes (Advances / Declines / A/D ratio / Unchanged) are 2 x 2 on
+  phones; in one row "Unchanged" was cut off at the right edge.
+- GIFT Nifty: Moneycontrol now refuses automated requests (HTTP 403 for the app's requests), so the card shows "--".
+  Not worked around; the Global Bias does not use GIFT Nifty (it uses S&P / Nasdaq futures, VIX and Asia).
+
 # Older pages reviewed + unused code removed (27 Nov 2026 · page version 27 Nov 2026 · 4)
 
 Search, calendar, sector pages, theme and layout reviewed in depth (they had only been opened and checked for errors).

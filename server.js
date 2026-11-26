@@ -50,8 +50,8 @@ const SRC_STATS = { since: new Date().toISOString(), yahoo: srcStatInit() };
 })();
 /* Files uploaded through the GitHub web page land at the TOP of the repository (its file picker cannot keep
    folders), while the page keeps loading the old copies in public/ - on 13 Nov 2026 the phone kept the old header
-   and pull-to-refresh after an "upload". List such loose copies; the page shows a warning while any exist. */
-const STRAY_PUBLIC_FILES = (() => {
+   and pull-to-refresh after an "upload". Such loose copies are only logged (they are not used; upload-to-github.ps1 removes them). */
+const STRAY_PUBLIC_FILES = (() => {   /* also listed in /api/health */
   const fs0 = require('fs'), p0 = require('path'), names = new Set();
   const walk = d => { try { for (const e of fs0.readdirSync(d, { withFileTypes: true })) { if (e.isDirectory()) walk(p0.join(d, e.name)); else names.add(e.name); } } catch {} };
   walk(p0.join(__dirname, 'public'));
@@ -7510,10 +7510,7 @@ async function handleRequest(req,res){
   if(pn==='/api/market-calendar') {
     const today = istDateKey();
     return send(res, { holidays: nseHolidayList(), upcoming: upcomingSpecialSession(today), fetchedAt: NSE_CAL.ts.hol ? new Date(NSE_CAL.ts.hol).toISOString() : null,
-      goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today,
-      /* Loose copies are unused leftovers once public/ is current (the page version label shows that): a quiet
-         housekeeping note, not an error. GitHub's upload page never deletes files, so they stay until removed. */
-      strayFiles: STRAY_PUBLIC_FILES.length ? { count: STRAY_PUBLIC_FILES.length, sample: STRAY_PUBLIC_FILES.slice(0, 4) } : null });
+      goldPetalExpiry: SwingPlan.goldPetalExpiry(today, isNseHoliday), today });
   }
   if(pn==='/api/news')             return apiNews(req,res,ps);
   if(pn==='/api/vix')              return apiVix(req,res);
