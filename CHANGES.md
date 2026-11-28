@@ -1,3 +1,23 @@
+# MCX Track record only on a fill; Advances / Declines colours (28 Nov 2026 · page version 28 Nov 2026 · 2)
+
+- MCX Track record works like the stocks: a trade is recorded only when price is at the plan's entry. At 09:45 / 17:00 a
+  plan already at its entry is recorded and alerted as "ready" (as before). A plan whose entry is still away is no longer
+  written down as "Waiting for X today" (which became "Not filled" the next morning, every day): the price check during
+  MCX hours records it, and sends the "at your buy level" alert, when price actually reaches the entry. No extra calls.
+- Markets -> A/D Ratio card: the advances are green and the declines red (both took the ratio's colour, so on a weak day
+  "11↑ 38↓" was all red); the ratio line is green above 1, red below.
+
+# Faster first load of prices; Angel One card without the account name (28 Nov 2026 · page version 28 Nov 2026 · 1)
+
+- Prices on a first open (after the 5-minute price cache ran out, outside market hours) no longer wait for Angel One.
+  Each stock's quick price used to fetch Yahoo, then ask Angel One for exchange data (circuit limits, 52-week range) that
+  the quick price does not even show. The requests reached Angel One one after another, and its 1-request-a-second
+  limit made a page of 10 stocks wait up to about 7 s. The quick price now skips that step; the stock Overview still
+  shows the Exchange data card (its Angel One request now runs at the same time as Yahoo, and waits at most 1.5 s more).
+- Index prices: Yahoo's mini chart is fetched at the same time as Angel One's value instead of after it.
+- Screener -> My trades -> Angel One card: "Connected · until ..." - the account name is no longer shown, and the
+  account name / client code are no longer sent to the page.
+
 # Markets footer and Market breadth on phones (27 Nov 2026 · page version 27 Nov 2026 · 5)
 
 - The "Housekeeping" note is gone from the Markets page. It listed old loose files at the top of the GitHub repository

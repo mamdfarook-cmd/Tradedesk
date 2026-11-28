@@ -1051,9 +1051,11 @@ async function angelIndexQuotes() {
 async function angelIndexPrice(sym, ticker) {
   const ins = await angelInstruments(), id = ins.idx?.[sym];
   if (!id) throw new Error(sym + ' not in Angel One\'s index list');
+  /* Yahoo's mini chart is asked at the same time as Angel One's value (it used to wait for it) */
+  const yP = ticker ? withTimeout(getPriceAndChange(ticker, sym), 8000, ticker + ' mini chart').catch(() => null) : Promise.resolve(null);
   const q = (await angelIndexQuotes())[id], live = +q?.ltp, prev = +q?.close;
   if (!(live > 0)) throw new Error('Angel One gave no value for ' + sym);
-  let y = null; if (ticker) { try { y = await withTimeout(getPriceAndChange(ticker, sym), 8000, ticker + ' mini chart'); } catch {} }
+  const y = await yP;
   const scale = NSE_INDEX_PRIMARY.has(sym) && y?.liveRaw > 0 ? live / y.liveRaw : 1;   /* Fin Ex-Bank: Yahoo has only the ETF */
   if (NSE_INDEX_PRIMARY.has(sym) && scale > 1 && NSE_SNAP.ratio[sym]?.day !== istDateKey()) { NSE_PROXY_RATIO[sym] = scale; NSE_SNAP.ratio[sym] = { k: scale, day: istDateKey() }; nseSnapSave(); }
   const spark = (y?.spark || []).map(v => v * scale); if (spark.length) spark[spark.length - 1] = live; else spark.push(live);
@@ -1373,7 +1375,7 @@ function angelStatus() {
       lastOk: ANGEL_AUTO.lastOk, lastError: ANGEL_AUTO.failMsg, stopped: ANGEL_AUTO.stopped, failsToday: ANGEL_AUTO.tries.filter(t => t.day === istDateKey() && !t.ok).length },
     /* names (never values) of the Angel-like variables this server sees - tells a typo in the name from a missing one */
     envNames: Object.keys(process.env).filter(k => /SMARTAPI|ANGEL/i.test(k)).sort(),
-    connected: !!s, user: s?.user || null, name: s?.name || null,
+    connected: !!s,   /* the account name / client code are not sent to the page (28 Nov 2026) */
     until: s ? new Date(s.until).toISOString() : null, ready: angelReady(),
     redirectUrl: (APP_URL || '') + '/api/smartapi/callback',
     instruments: ins ? { day: ins.day, options: Object.fromEntries(Object.entries(ins.opt || {}).map(([k, v]) => [k, v.length])), lot: ins.lot || {},
@@ -1414,7 +1416,8 @@ function nseSnapSave() {
 const NSE_PROXY_RATIO = {};   /* Fin Ex-Bank index / ETF price: the built-in ratio (Angel One does not list this index) */
 for (const [sym, o] of Object.entries(NSE_SNAP.ratio || {})) if (o?.k > 0) NSE_PROXY_RATIO[sym] = o.k;
 const FINEXBANK_RATIO_DEFAULT = Number(process.env.FINEXBANK_RATIO) > 100 ? Number(process.env.FINEXBANK_RATIO) : 978.8;
-async function getIndexFallbackPrice(sym, ticker) {
+/* wantExch: false = the caller keeps only price / change / mini chart (the quick price), so no Angel One exchange data is asked */
+async function getIndexFallbackPrice(sym, ticker, wantExch = true) {
   /* NSE stocks: Angel One's live quote when connected (26 Nov 2026) - the exchange's price, 52-week range and circuit limits */
   if (angelLiveOn() && angelStockCode(sym)) {
     try { const v = await withTimeout(angelStockPrice(sym, ticker), 12000, sym + ' Angel One'); ANGEL_STATS.liveServed++; return v; }
@@ -1422,13 +1425,16 @@ async function getIndexFallbackPrice(sym, ticker) {
   }
   /* Outside the session: Yahoo's price (NSE's official close), with the exchange data (circuit limits, 52-week range) from
      Angel One's last quote - the Overview's Exchange data card disappeared every evening otherwise (27 Nov 2026) */
-  else if (angelStockCode(sym) && angelReady() && !/^yahoo$/i.test(process.env.TD_LIVE_PRICES || '')) {
+  else if (wantExch && angelStockCode(sym) && angelReady() && !/^yahoo$/i.test(process.env.TD_LIVE_PRICES || '')) {
+    /* The Angel One quote is asked at the same time as Yahoo (not after it): the page's prices then arrive together and go
+       to Angel One as ONE batched request. Asked after Yahoo, each came back at a different moment, became its own request
+       in Angel One's 1-a-second queue, and a page of 10 stocks waited up to ~7 s (28 Nov 2026). The price never waits
+       more than 1.5 s for the exchange data: without it the card fills on the next refresh (quote kept 5 min). */
+    const code = angelStockCode(sym);
+    const exP = angelInstruments().then(ins => { const tok = ins.eq?.[code]; return tok ? withTimeout(angelQuoteOne('NSE', tok), 4000, sym + ' Angel One exchange data') : null; }).catch(() => null);
     const y = await getPriceAndChange(ticker, sym);
-    try {
-      const ins = await angelInstruments(), code = angelStockCode(sym), tok = ins.eq?.[code];
-      if (tok) { const q = await withTimeout(angelQuoteOne('NSE', tok), 5000, sym + ' Angel One exchange data');
-        if (!q.tradingSymbol || String(q.tradingSymbol).toUpperCase() === code + '-EQ') return { ...y, exch: angelExchInfo(q) }; }
-    } catch {}
+    const q = await Promise.race([exP, new Promise(r => setTimeout(() => r(null), 1500))]);
+    if (q && (!q.tradingSymbol || String(q.tradingSymbol).toUpperCase() === code + '-EQ')) return { ...y, exch: angelExchInfo(q) };
     return y;
   }
   /* Angel One first when connected: live value and previous close of the NSE indices it lists. */
@@ -5919,7 +5925,7 @@ async function quickProducer(sym){
   const rate=fxBasis.live;
   const prevRate=fxBasis.prev;
   const ticker=getTicker(sym);
-  const {liveRaw,prevRaw,rawPct,changeBasis,basisTime,spark}=await withTimeout(getIndexFallbackPrice(sym, ticker), 20000, ticker + ' quick price');
+  const {liveRaw,prevRaw,rawPct,changeBasis,basisTime,spark}=await withTimeout(getIndexFallbackPrice(sym, ticker, false), 20000, ticker + ' quick price');   /* exchange data is not part of the quick price */
   const price=conv(sym,liveRaw,rate);
   const pc   =conv(sym,prevRaw,mcx?prevRate:rate);
   const chg  =+(price-pc).toFixed(2);
@@ -7066,7 +7072,15 @@ async function assistantTick() {
             GOLD_PLAN_LAST[sym] = { plan: g, ts: Date.now() };
             const waiting = !trade && g.entry > 0 && (g.side === 'SELL' || (g.side === 'BUY' && !g.driverBlock));
             MCX_STATUS[sym] = { day: key, text: waiting ? `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - alert when price reaches ${inr(g.entry)} (now ${inr(g.price)})` : goldPlanText(g).split('\n')[0] };
-            if (trade) {
+            /* 28 Nov 2026: recorded only when price is AT the entry, like the stocks. A plan whose entry is still a little away
+               used to be written as "Waiting for X today" and became "Not filled" the next morning, every day. Now it is left
+               to the level check below, which records the trade (and alerts) when price actually reaches the entry. */
+            const filledNow = trade && (g.side === 'SELL' ? g.price >= g.entry * 0.999 : g.price <= g.entry * 1.001);
+            if (trade && !filledNow) {
+              MCX_STATUS[sym] = { day: key, text: `${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} plan waiting - recorded and alerted when price reaches ${inr(g.entry)} (now ${inr(g.price)})` };
+              GOLD_BUY_LEVEL[sym] = { sym, day: key, side: g.side, entry: g.entry, sl: g.sl, t1: g.t1, t2: g.t2, exitTarget: g.exitTarget, exitDays: g.exitDays, exitRule: g.exitRule, e20: g.e20, smallSize: g.smallSize, calK: g.calK || 1 };
+            }
+            if (filledNow) {
               const when = min < 0 ? `check at ${Math.floor(m / 60)}:${String(m % 60).padStart(2, '0')}` : min < 12 * 60 ? '09:45' : '17:00';
               traceGoldRecord(g, `ready ${when}`, key); readyNow++;
               await pushAll({ title: `${MCX_EMOJI[sym]} ${MCX_NAME[sym]} · ${g.side === 'SELL' ? 'SELL (small size)' : 'BUY'} ready · ${min < 0 ? when : min < 12 * 60 ? 'morning' : 'evening'}`, body: goldPlanText(g), tag: `td-mcx-${sym}`, url: `/?sym=${sym}` });
